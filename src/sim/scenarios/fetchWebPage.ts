@@ -60,7 +60,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
         label: 'Home router',
         sublabel: 'NAT',
         kind: 'home-router',
-        layout: { x: 560, y: 470 },
+        layout: { x: 600, y: 470 },
         ifaces: [
           { id: 'home.lan', name: 'lan', mac: ADDR.homeLan.mac, ip: ADDR.homeLan.ip, prefixLen: 24 },
           { id: 'home.wan', name: 'wan', mac: ADDR.homeWan.mac, ip: ADDR.homeWan.ip, prefixLen: 24 },
@@ -79,7 +79,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
         label: 'ISP router',
         sublabel: 'internet',
         kind: 'router',
-        layout: { x: 960, y: 470 },
+        layout: { x: 1040, y: 470 },
         ifaces: [
           { id: 'isp.cust', name: 'cust0', mac: ADDR.ispCustomer.mac, ip: ADDR.ispCustomer.ip, prefixLen: 24 },
           { id: 'isp.p1', name: 'peer1', mac: ADDR.ispToResolver.mac, ip: ADDR.ispToResolver.ip, prefixLen: 30 },
@@ -104,7 +104,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
         label: 'DNS resolver',
         sublabel: ADDR.resolver.ip,
         kind: 'dns-resolver',
-        layout: { x: 1360, y: 230 },
+        layout: { x: 1480, y: 205 },
         ifaces: [{ id: 'resolver.eth0', name: 'eth0', mac: ADDR.resolver.mac, ip: ADDR.resolver.ip, prefixLen: 32 }],
         routes: [{ network: '0.0.0.0', prefixLen: 0, via: ADDR.ispToResolver.ip, iface: 'resolver.eth0' }],
         arp: { [ADDR.ispToResolver.ip]: ADDR.ispToResolver.mac },
@@ -121,7 +121,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
         label: 'Web server',
         sublabel: `example.com · ${ADDR.server.ip}`,
         kind: 'web-server',
-        layout: { x: 1360, y: 710 },
+        layout: { x: 1480, y: 735 },
         ifaces: [{ id: 'server.eth0', name: 'eth0', mac: ADDR.server.mac, ip: ADDR.server.ip, prefixLen: 32 }],
         routes: [{ network: '0.0.0.0', prefixLen: 0, via: ADDR.ispToServer.ip, iface: 'server.eth0' }],
         arp: { [ADDR.ispToServer.ip]: ADDR.ispToServer.mac },
@@ -129,10 +129,10 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
       },
     ],
     links: [
-      { id: 'lan', a: 'laptop.eth0', b: 'home.lan', bitsPerSecond: 1e9, delay: 5e-8, label: 'Ethernet cable · 1 Gbit/s' },
-      { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: 1e9, delay: 0.002, label: 'Fiber to ISP · 1 Gbit/s · 2 ms' },
-      { id: 'bb1', a: 'isp.p1', b: 'resolver.eth0', bitsPerSecond: 1e10, delay: 0.003, label: 'Backbone · 10 Gbit/s · 3 ms' },
-      { id: 'bb2', a: 'isp.p2', b: 'server.eth0', bitsPerSecond: 1e10, delay: 0.004, label: 'Backbone · 10 Gbit/s · 4 ms' },
+      { id: 'lan', a: 'laptop.eth0', b: 'home.lan', bitsPerSecond: 1e9, delay: 5e-8, label: 'Ethernet cable · 1 Gbit/s', name: 'the Ethernet cable' },
+      { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: 1e9, delay: 0.002, label: 'Fiber to ISP · 1 Gbit/s · 2 ms', name: 'the fiber line to the ISP' },
+      { id: 'bb1', a: 'isp.p1', b: 'resolver.eth0', bitsPerSecond: 1e10, delay: 0.003, label: 'Backbone · 10 Gbit/s · 3 ms', name: 'a backbone link' },
+      { id: 'bb2', a: 'isp.p2', b: 'server.eth0', bitsPerSecond: 1e10, delay: 0.004, label: 'Backbone · 10 Gbit/s · 4 ms', name: 'a backbone link' },
     ],
   };
 }

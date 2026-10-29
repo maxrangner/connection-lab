@@ -1,4 +1,4 @@
-import { fetchWebPage, runScenario } from './sim';
+import './styles/app.css';
+import { App } from './ui/App';
 
-const r = runScenario(fetchWebPage(), { seed: 1 });
-document.querySelector('#app')!.textContent = `${r.events.length} events`;
+new App(document.querySelector<HTMLElement>('#app')!);

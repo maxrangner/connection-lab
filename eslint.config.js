@@ -22,7 +22,7 @@ export default tseslint.config(
         'error',
         {
           patterns: [
-            { group: ['**/ui/**', 'gsap', 'gsap/*'], message: 'src/sim must not depend on the UI.' },
+            { group: ['**/ui/**'], message: 'src/sim must not depend on the UI.' },
           ],
         },
       ],

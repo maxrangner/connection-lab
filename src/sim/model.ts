@@ -26,7 +26,10 @@ export interface LinkSpec {
   bitsPerSecond: number;
   /** One-way propagation delay in seconds. */
   delay: number;
+  /** Map label, e.g. "Ethernet cable · 1 Gbit/s". */
   label: string;
+  /** How narration refers to the link, e.g. "the Ethernet cable". */
+  name: string;
 }
 
 export type AppSpec =
