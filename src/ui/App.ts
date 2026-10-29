@@ -1,24 +1,26 @@
 import { CAPTURED_AT, fetchWebPage, runScenario, type ManualFault, type SimResult } from '../sim';
 import { ARP_COLOR, LAYER_COLOR, layerLabel } from './content/layers';
-import { fmtTime } from './content/narration';
+import { fmtTime } from './content/format';
+import { IsoScene } from './iso/IsoScene';
 import { Controls } from './panels/Controls';
 import { button, h } from './panels/dom';
 import { Inspector, type Detail } from './panels/Inspector';
+import { Receipt } from './panels/Receipt';
 import { loadSettings, saveSettings, SettingsPanel, type Settings } from './panels/SettingsPanel';
-import { Scene } from './scene/Scene';
 import { UrlCard } from './scene/UrlCard';
 import { Player } from './timeline/Player';
-import { buildSchedule, type Flight, type Schedule } from './timeline/schedule';
+import { buildSchedule, type Flight, type Gate, type Schedule } from './timeline/schedule';
 
 export class App {
   private settings: Settings = loadSettings();
   private faults: ManualFault[] = [];
   private result!: SimResult;
   private schedule!: Schedule;
-  private readonly scene: Scene;
+  private readonly scene: IsoScene;
   private readonly player: Player;
   private readonly controls: Controls;
   private readonly inspector: Inspector;
+  private readonly receipt: Receipt;
   private readonly settingsPanel: SettingsPanel;
   private card: UrlCard | undefined;
   private started = false;
@@ -30,7 +32,7 @@ export class App {
   constructor(root: HTMLElement) {
     this.stage = h('div', { class: 'stage' });
     this.player = new Player((v, dt) => this.frame(v, dt));
-    this.scene = new Scene(this.stage, {
+    this.scene = new IsoScene(this.stage, {
       onPickPdu: (pduId, ctx) => {
         this.player.setPlaying(false);
         this.inspector.showPdu(this.schedule, pduId, ctx, this.player.v);
@@ -39,6 +41,8 @@ export class App {
         this.player.setPlaying(false);
         this.inspector.showDevice(this.schedule, id, this.player.v);
       },
+      onGateAction: (gate) => this.releaseGate(gate),
+      onDismissBubble: () => this.player.release(true),
     });
     this.inspector = new Inspector({
       model: () => this.settings.model,
@@ -47,10 +51,15 @@ export class App {
       loseFrame: (f) => this.loseFrame(f),
       close: () => this.inspector.hide(),
     });
+    this.receipt = new Receipt((b) => {
+      this.player.setPlaying(false);
+      this.player.seek(b.v0 + 0.05);
+    });
     this.controls = new Controls(this.player, {
       stepNext: () => this.stepNext(),
       stepPrev: () => this.stepPrev(),
       restart: () => this.restart(),
+      toggleReceipt: () => this.receipt.toggle(),
     });
     this.settingsPanel = new SettingsPanel(
       {
@@ -73,52 +82,22 @@ export class App {
       h('div', { class: 'brand' }, h('span', { class: 'logo', text: '◆' }), h('h1', { text: 'How the Internet Works' }), h('span', { class: 'scenario', text: 'Fetch http://example.com/' })),
       h('div', { class: 'top-actions' }, button('Settings', () => this.settingsPanel.toggle(), '', 'Settings')),
     );
-    this.stage.append(this.skipEl, this.legendEl, this.doneEl, this.inspector.el, this.settingsPanel.el);
+    this.stage.append(this.skipEl, this.legendEl, this.doneEl, this.receipt.el, this.inspector.el, this.settingsPanel.el);
     root.append(header, this.stage, this.controls.el);
     this.simulate();
-    // Show the whole map until the user drops the URL card in.
     this.scene.setCameraMode('overview');
     this.renderLegend();
     const laptop = this.scene.deviceCenter('laptop');
-    this.card = new UrlCard(this.scene, 'http://example.com/', 'laptop', { x: laptop.x + 250, y: laptop.y - 250 }, () => this.start());
+    this.card = new UrlCard(this.scene, 'http://example.com/', 'laptop', { x: laptop.x + 560, y: laptop.y + 40 }, () => this.start());
     this.player.onState(() => {
       if (this.player.playing && !this.started) {
         this.player.setPlaying(false);
         this.card?.autoDrop();
       }
     });
+    this.player.onGate(() => this.scene.setBlocked(this.blockedGate()));
     this.installKeys();
     if (import.meta.env.DEV) this.exposeDebugHandle();
-  }
-
-  /** Dev-only hook for scripts/screenshot.mjs and manual poking in the console. */
-  private exposeDebugHandle(): void {
-    (window as unknown as Record<string, unknown>).__ie = {
-      seek: (v: number) => {
-        this.player.setPlaying(false);
-        this.player.seek(v);
-      },
-      play: () => this.player.setPlaying(true),
-      start: () => this.card?.autoDrop(),
-      info: () => ({
-        duration: this.schedule.duration,
-        beats: this.schedule.beats.map((b) => ({ v: b.v, v1: b.v1, caption: b.caption.slice(0, 80) })),
-        flights: this.schedule.flights.map((f) => ({ id: f.id, v0: f.v0, v1: f.v1, link: f.linkId, label: this.result.packets.get(f.packetId)?.label })),
-      }),
-      pickFlight: (id: string, v: number) => {
-        const f = this.schedule.flights.find((x) => x.id === id);
-        if (!f) return;
-        this.player.setPlaying(false);
-        this.player.seek(v);
-        this.inspector.showPdu(this.schedule, f.frameId, { flight: f }, v);
-      },
-      pickDevice: (id: string) => this.inspector.showDevice(this.schedule, id, this.player.v),
-      settings: (p: Partial<Settings>) => this.change(p),
-      lose: (id: string) => {
-        const f = this.schedule.flights.find((x) => x.id === id);
-        if (f) this.loseFrame(f);
-      },
-    };
   }
 
   private simulate(): void {
@@ -128,9 +107,30 @@ export class App {
     });
     this.schedule = buildSchedule(this.result);
     this.player.duration = this.schedule.duration;
+    this.applyGates();
     this.scene.setSchedule(this.schedule, this.settings.model);
     this.controls.setSchedule(this.schedule);
+    this.receipt.setSchedule(this.schedule);
     this.inspector.refresh(this.schedule, this.player.v);
+  }
+
+  private applyGates(): void {
+    const s = this.settings;
+    this.player.gates = this.schedule.gates.filter((g) => (g.kind === 'operator' ? s.operator : s.stepBubbles)).map((g) => g.v);
+    this.player.blockedAt = undefined;
+    this.scene.setBlocked(undefined);
+  }
+
+  private blockedGate(): Gate | undefined {
+    const at = this.player.blockedAt;
+    if (at === undefined) return undefined;
+    return this.schedule.gates.find((g) => Math.abs(g.v - at) < 1e-9 && (g.kind === 'operator' ? this.settings.operator : this.settings.stepBubbles));
+  }
+
+  private releaseGate(gate: Gate): void {
+    if (this.player.blockedAt === undefined || Math.abs(this.player.blockedAt - gate.v) > 1e-6) return;
+    this.scene.setBlocked(undefined);
+    this.player.release(true);
   }
 
   private resimulate(seekTo: number): void {
@@ -163,16 +163,20 @@ export class App {
       this.card?.autoDrop();
       return;
     }
+    if (this.player.blockedAt !== undefined) {
+      this.scene.setBlocked(undefined);
+      this.player.release(false);
+    }
     const v = this.player.v;
-    const b = this.schedule.beats.find((x) => x.v1 > v + 0.02);
-    this.player.playTo(b ? b.v1 : this.schedule.duration);
+    const b = this.schedule.bubbles.find((x) => x.v0 + 0.35 > v + 0.02);
+    this.player.playTo(b ? b.v0 + 0.35 : this.schedule.duration);
   }
 
   private stepPrev(): void {
     const v = this.player.v;
-    const done = this.schedule.beats.filter((x) => x.v1 < v - 0.02);
+    const done = this.schedule.bubbles.filter((x) => x.v0 + 0.35 < v - 0.02);
     this.player.setPlaying(false);
-    this.player.seek(done.length ? done[done.length - 1]!.v1 : 0);
+    this.player.seek(done.length ? done[done.length - 1]!.v0 + 0.35 : 0);
   }
 
   private loseFrame(f: Flight): void {
@@ -188,13 +192,12 @@ export class App {
     const prev = this.settings;
     this.settings = { ...prev, ...p };
     saveSettings(this.settings);
-    if (p.mss !== undefined && p.mss !== prev.mss) this.resetSim();
-    else if (p.loss !== undefined && p.loss !== prev.loss) this.resetSim();
-    else if (p.seed !== undefined && p.seed !== prev.seed) this.resetSim();
+    if ((p.mss !== undefined && p.mss !== prev.mss) || (p.loss !== undefined && p.loss !== prev.loss) || (p.seed !== undefined && p.seed !== prev.seed)) this.resetSim();
     if (p.model && p.model !== prev.model) {
       this.scene.setSchedule(this.schedule, this.settings.model);
       this.renderLegend();
     }
+    if (p.operator !== undefined || p.stepBubbles !== undefined) this.applyGates();
     if (p.camera && this.started) this.scene.setCameraMode(p.camera);
     this.inspector.refresh(this.schedule, this.player.v);
     this.settingsPanel.render();
@@ -210,18 +213,17 @@ export class App {
     const m = this.settings.model;
     const chips = ([5, 4, 3, 2, 1] as const).map((l) => h('span', { class: 'chip', text: layerLabel(l, m), attrs: { style: `--lc:${LAYER_COLOR[l]}` } }));
     chips.splice(4, 0, h('span', { class: 'chip', text: 'ARP', attrs: { style: `--lc:${ARP_COLOR}` } }));
-    this.legendEl.replaceChildren(h('span', { class: 'legend-title', text: '1 block = 1 byte' }), ...chips);
+    this.legendEl.replaceChildren(h('span', { class: 'legend-title', text: 'part length = bytes' }), ...chips);
   }
 
   private frame(v: number, dt: number): void {
-    this.scene.selectedPdu = this.inspector.selectedPdu;
     const wide = window.innerWidth > 900;
-    this.scene.insets = this.inspector.open
-      ? { right: wide ? this.inspector.el.offsetWidth : 0, bottom: wide ? 0 : this.inspector.el.offsetHeight }
-      : { right: 0, bottom: 0 };
-    this.scene.render(v, dt);
+    this.scene.insets = this.inspector.open ? { right: wide ? this.inspector.el.offsetWidth : 0, bottom: wide ? 0 : this.inspector.el.offsetHeight } : { right: 0, bottom: 0 };
+    const blocked = this.blockedGate();
+    this.scene.render(v, dt, { selectedPdu: this.inspector.selectedPdu, blocked, model: this.settings.model });
     this.card?.update(dt);
-    this.controls.update(v, this.started);
+    this.controls.update(v, this.started, blocked?.kind === 'operator' ? blocked.hint : blocked ? 'Click the bubble to continue' : undefined);
+    this.receipt.update(v);
     const skip = this.schedule.skips.find((s) => v >= s.v0 && v < s.v1);
     if (skip) {
       const k = (v - skip.v0) / (skip.v1 - skip.v0);
@@ -266,7 +268,10 @@ export class App {
       if (e.key === ' ') {
         e.preventDefault();
         if (!this.started) this.card?.autoDrop();
-        else this.player.toggle();
+        else if (this.player.blockedAt !== undefined) {
+          this.scene.setBlocked(undefined);
+          this.player.release(true);
+        } else this.player.toggle();
       } else if (e.key === 'ArrowRight') {
         e.preventDefault();
         this.stepNext();
@@ -276,9 +281,50 @@ export class App {
       } else if (e.key === 'Escape') {
         this.inspector.hide();
         this.settingsPanel.close();
+        this.receipt.close();
       } else if (e.key === 'f' || e.key === 'F') {
         this.change({ camera: this.settings.camera === 'follow' ? 'overview' : 'follow' });
+      } else if (e.key === 'r' || e.key === 'R') {
+        this.receipt.toggle();
       }
     });
+  }
+
+  /** Dev-only hook for scripts/screenshot*.mjs and manual poking in the console. */
+  private exposeDebugHandle(): void {
+    (window as unknown as Record<string, unknown>).__ie = {
+      seek: (v: number) => {
+        this.player.setPlaying(false);
+        this.player.seek(v);
+      },
+      play: () => this.player.setPlaying(true),
+      start: () => this.card?.autoDrop(),
+      release: () => {
+        this.scene.setBlocked(undefined);
+        this.player.release(true);
+      },
+      info: () => ({
+        duration: this.schedule.duration,
+        bubbles: this.schedule.bubbles.map((b) => ({ v: b.v0, v1: b.v1, device: b.deviceId, machine: b.machine, text: b.text.slice(0, 80) })),
+        gates: this.schedule.gates.filter((g) => g.kind === 'operator').map((g) => ({ id: g.id, v: g.v, action: g.action, device: g.deviceId })),
+        flights: this.schedule.flights.map((f) => ({ id: f.id, v0: f.v0, v1: f.v1, lostAt: f.lostAt, link: f.linkId, label: this.result.packets.get(f.packetId)?.label })),
+        blockedAt: this.player.blockedAt,
+      }),
+      pickFlight: (id: string, v: number) => {
+        const f = this.schedule.flights.find((x) => x.id === id);
+        if (!f) return;
+        this.player.setPlaying(false);
+        this.player.seek(v);
+        this.inspector.showPdu(this.schedule, f.frameId, { flight: f }, v);
+      },
+      pickDevice: (id: string) => this.inspector.showDevice(this.schedule, id, this.player.v),
+      settings: (p: Partial<Settings>) => this.change(p),
+      lose: (id: string) => {
+        const f = this.schedule.flights.find((x) => x.id === id);
+        if (f) this.loseFrame(f);
+      },
+      receipt: () => this.receipt.toggle(),
+      v: () => this.player.v,
+    };
   }
 }

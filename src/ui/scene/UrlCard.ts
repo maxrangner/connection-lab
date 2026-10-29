@@ -1,5 +1,5 @@
-import { clamp01, easeInOut, easeOut, lerp } from './geometry';
-import type { Scene } from './Scene';
+import { clamp01, easeInOut, easeOut, lerp } from '../iso/project';
+import type { IsoScene } from '../iso/IsoScene';
 import { el, text } from './svg';
 
 type State = 'assembling' | 'idle' | 'dragging' | 'gliding' | 'snapping' | 'absorbing' | 'gone';
@@ -27,7 +27,7 @@ export class UrlCard {
   private absorbT = 0;
 
   constructor(
-    private readonly scene: Scene,
+    private readonly scene: IsoScene,
     readonly url: string,
     private readonly targetId: string,
     start: { x: number; y: number },
@@ -131,7 +131,8 @@ export class UrlCard {
       case 'dragging':
         break;
       case 'gliding': {
-        const B = this.scene.sceneBounds;
+        const R = this.scene.sceneBounds;
+        const B = { x: R.x0, y: R.y0, w: R.x1 - R.x0, h: R.y1 - R.y0 };
         this.pos.x += this.vel.x * dt;
         this.pos.y += this.vel.y * dt;
         const fr = Math.pow(0.04, dt); // strong friction: ~4% of speed left after 1 s

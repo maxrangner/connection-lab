@@ -31,13 +31,13 @@ fs.writeFileSync(`${out}/info.json`, JSON.stringify(info, null, 2));
 
 const shots = process.env.SHOTS
   ? process.env.SHOTS.split(',').map(Number)
-  : info.beats.filter((_, i) => i % Math.ceil(info.beats.length / 14) === 0).map((b) => b.v1 - 0.05);
+  : info.bubbles.filter((_, i) => i % Math.ceil(info.bubbles.length / 14) === 0).map((b) => b.v + 0.6);
 let i = 1;
 for (const v of shots) {
   await page.evaluate((v) => window.__ie.seek(v), v);
   await page.waitForTimeout(1500); // let the follow camera settle
   await page.screenshot({ path: `${out}/${String(i++).padStart(2, '0')}-v${v.toFixed(1)}.png` });
 }
-console.log(`duration ${info.duration.toFixed(1)}s, ${info.beats.length} beats, ${info.flights.length} flights`);
+console.log(`duration ${info.duration.toFixed(1)}s, ${info.bubbles.length} bubbles, ${info.flights.length} flights, ${info.gates.length} operator gates`);
 console.log(errors.length ? `ERRORS:\n${errors.join('\n')}` : 'no console errors');
 await browser.close();

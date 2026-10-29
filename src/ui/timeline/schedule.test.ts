@@ -32,9 +32,15 @@ describe('buildSchedule', () => {
       }
       expect(t.end).toBeGreaterThanOrEqual(t.kfs[0]!.v0);
     }
-    for (let i = 1; i < s.beats.length; i++) expect(s.beats[i]!.v).toBeGreaterThanOrEqual(s.beats[i - 1]!.v);
-    expect(s.beats.every((b) => b.caption.length > 0 && !b.caption.includes('undefined'))).toBe(true);
-    expect(s.badges.every((b) => !b.text.includes('undefined'))).toBe(true);
+    for (let i = 1; i < s.bubbles.length; i++) expect(s.bubbles[i]!.v0).toBeGreaterThanOrEqual(s.bubbles[i - 1]!.v0);
+    expect(s.bubbles.every((b) => b.text.length > 0 && !b.text.includes('undefined'))).toBe(true);
+    for (let i = 1; i < s.gates.length; i++) expect(s.gates[i]!.v).toBeGreaterThanOrEqual(s.gates[i - 1]!.v);
+    for (const g of s.gates) expect(Number.isFinite(g.v)).toBe(true);
+    const ops = s.gates.filter((g) => g.kind === 'operator');
+    expect(new Set(ops.map((g) => g.action)).size).toBe(ops.length);
+    for (const g of ops) expect(g.deviceId).toBe('laptop');
+    for (const g of s.gates.filter((x) => x.kind === 'bubble')) expect(s.bubbles.some((b) => b.seq === g.seq)).toBe(true);
+    for (const sp of s.tcpSpans) expect(sp.ackedV).toBeGreaterThanOrEqual(sp.sentV);
   });
 
   it('maps visual time back to simulated time monotonically', () => {

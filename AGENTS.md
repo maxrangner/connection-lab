@@ -55,17 +55,22 @@ src/sim/                     headless protocol simulation (no DOM)
   faults.ts                  FaultPlan: random loss keyed by hash, manual "lose this packet"
   run.ts                     runScenario(scenario, { seed, faults }) → SimResult
 src/ui/                      presentation (vanilla DOM + SVG, no framework, no animation library)
-  App.ts                     wiring: simulate → schedule → scene; settings; lose-a-frame; keys; dev hook window.__ie
-  timeline/schedule.ts       SimResult → visual schedule (tracks, flights, badges, beats, timers, skips, time warp)
-  timeline/Player.ts         playhead (v), rAF loop, speed, playTo (used by step)
-  content/narration.ts       captions + badges per event (Narrator); fmtTime/fmtRate
-  content/layers.ts          layer colors, names (TCP/IP vs OSI), card rows per device kind
-  scene/Scene.ts             SVG map: device nodes ⇄ stack cards, strips, bit trains, badges, timers, page, camera
-  scene/strip.ts             PDU → byte-block strip (1 block = 1 byte; app data > 64 B collapsed); grow/diff
-  scene/wire.ts              frame → square-wave bit train (preamble first, LSB-first, decimated real bits)
-  scene/UrlCard.ts           draggable URL card (real ASCII bits, inertia, wall bounce, spring snap)
-  scene/geometry.ts, icons.ts, svg.ts
-  panels/                    Inspector (clean/full/hex, device tables), Controls (caption, transport, scrubber), SettingsPanel
+  App.ts                     wiring: simulate → schedule → scene; settings; gates; lose-a-frame; keys; dev hook window.__ie
+  timeline/schedule.ts       SimResult → visual schedule (tracks, flights, bubbles, acts, gates, timers, tcpSpans, deviceStateAt)
+  timeline/Player.ts         playhead (v), rAF loop, speed, playTo (step), gates (blockedAt / release)
+  content/speech.ts          what each machine says per event (SpeechWriter); content/format.ts time/rate formatting
+  content/layers.ts          layer colors and names (TCP/IP vs OSI)
+  iso/project.ts, prims.ts   2:1 isometric projection; extruded boxes, cylinders, plates, screen-aligned billboards; shading
+  iso/layout.ts              world geometry: towers (floors, slots, ports, sockets), cables (axis-aligned polylines), bounds
+  iso/IsoScene.ts            the scene: factories, gizmo poses from track keyframes, trains, bubbles, hints, operator input
+  iso/machines/Machine.ts    MachineKind tables: machinesFor(deviceKind), machineFor(event) (shared by speech, scene, tests)
+  iso/machines/build.ts      one builder per machine (browser, dnsDesk, httpShelf, tcpClerk, netStation, natDesk, linkStation, port)
+  iso/Train.ts               a frame on a cable: cars in byte order (preamble pilot first) with real-bit pulses; loss fizzle
+  iso/Bubbles.ts, Camera.ts  HTML speech bubbles anchored to machines; viewBox camera (follow / overview / free)
+  gizmo/Gizmo.ts             PduSnapshot → parts (core, module, bracket, plate, shellFront/Back, frame, filler), byte-true lengths
+  gizmo/GizmoView.ts         SVG for one gizmo, posed per frame (grow = bolt on/off, scatter = to/from the port, diff = changed bytes)
+  scene/UrlCard.ts, svg.ts   draggable URL card (real ASCII bits, inertia, spring snap); SVG helpers
+  panels/                    Inspector (clean/full/hex, device tables), Controls (transport, scrubber), Receipt, SettingsPanel
 src/styles/app.css           all styling; layer colors as CSS vars mirror content/layers.ts
 scripts/                     capture, event dump, screenshot scripts (Playwright)
 tests/fixtures/              raw captured bytes
@@ -74,10 +79,13 @@ tests/fixtures/              raw captured bytes
 ## UI model (how the animation works)
 
 1. `runScenario` produces the event log. `buildSchedule` walks it once and assigns each event a visual start time `v` with a duration from `BASE_COST` (shortened as the same kind of event repeats). Frames in flight get a minimum travel time; idle sim gaps with nothing on the wire become short fast-forwards (`skips`) with a clock overlay.
-2. A **track** is one packet inside one device: keyframes (`appear`, `encap`, `decap`, `change`, `rx`, `tx`) move its strip between layer rows and grow/shrink the outer header. A **flight** is one frame on one link. **Beats** are captioned steps (← / → step between their ends). **Badges** are short device-side notes.
-3. A device's card is open while any track is inside it (`cardSpans`). The follow camera frames the device or both ends of the active link, inside the part of the stage not covered by the inspector.
+2. **Factories.** Each device is an isometric tower, one floor per layer (hosts 5, routers 3), one machine per floor (plus the NAT desk on the home router's network floor, and one port per interface on the physical floor). Machines are plain SVG shapes with one motion each, driven by their current **act** (the event they perform) and the **device state** at v (ARP cache, NAT table, TCP state, outstanding segments, timers) from `deviceStateAt`.
+3. **Gizmos.** A packet is a gizmo of parts whose lengths are proportional to their real bytes (`BYTE_PX` per byte; app payload > 64 B collapses with a label). A **track** is one packet inside one device; its keyframes (`appear`, `encap`, `decap`, `change`, `rx`, `tx`) move the gizmo between floors and set its pose (outer layer bolting on/off, parts scattering to/from the port, changed-byte highlight). Gizmos sit on the front edge of every floor and machines stand behind them, so painter's order holds without sorting. Floors are tall (`FLOOR_H`) and shallow (`FD`) on purpose: a slab hides everything on the floor below with `y < FD − (FLOOR_H − height)`.
+4. **Trains.** A **flight** is one frame on one cable: the gizmo unbolted into cars in byte order (grey preamble pilot first), each with a pulse of its own bits. Lost frames tip off the cable at `lostAt`.
+5. **Words.** No narrator: **bubbles** come from the acting machine (`speech.ts`), other factories dim, and the **receipt** lists everything said so far. **Gates** are visual times playback will not cross by itself: one per bubble (setting "step through bubbles") and three operator gates after the URL drop (press the megaphone, drag the cell into the TCP chassis, pull the lever; setting "You operate"). The Player stops at a gate (`blockedAt`) until `release()`; seeking and scrubbing never block.
+6. The scene is a pure function of v. The follow camera frames the speaking device or both ends of the active cable, inside the part of the stage not covered by the inspector.
 
-To check visuals, run `npm run dev`, then `node scripts/screenshot.mjs` (sampled steps; `SHOTS=12.5,40` for specific `v`, `SETTINGS='{"mss":536,"loss":0.15,"seed":4}'`) and `node scripts/screenshot-flows.mjs` (inspector, device panel, packet loss, OSI, tablet). Screenshots go to `screenshots/` (git-ignored).
+To check visuals, run `npm run dev`, then `node scripts/screenshot.mjs` (sampled bubbles; `SHOTS=12.5,40` for specific `v`, `SETTINGS='{"mss":536,"loss":0.15,"seed":4}'`) and `node scripts/screenshot-flows.mjs` (inspector, device panel, packet loss, receipt, OSI, operator gates, step-through, tablet). Screenshots go to `screenshots/` (git-ignored). The dev hook `window.__ie` (seek, play, start, release, info, pickFlight, pickDevice, settings, lose, receipt, v) exists only in dev builds.
 
 ## Key concepts
 
@@ -89,9 +97,10 @@ To check visuals, run `npm run dev`, then `node scripts/screenshot.mjs` (sampled
 ## How to add things
 
 - **A new protocol:** add `src/sim/proto/<p>.ts` with `build`, `parse`, `describe` (absolute offsets, explanations), wire it into `decode.ts`, add the name to `Protocol` and `PROTOCOL_LAYER`, add codec tests with known-good bytes.
-- **A new scenario:** add `src/sim/scenarios/<name>.ts` returning a `Scenario` (devices with ifaces/routes/ARP seeds/apps/layout, links with real-ish speeds, delays, a map `label` and a prose `name`). Add app behaviour in `stack/apps.ts` if needed. Add narration for any new event/app action in `content/narration.ts`. Add a test in the style of `src/sim/run.test.ts`; `src/ui/timeline/schedule.test.ts` shows how to fuzz the schedule over seeds and loss. A scenario picker in the header does not exist yet (only one scenario).
-- **A new event type:** add it to `SimEventPayload`, emit it from the sim, give it a cost in `BASE_COST` (schedule.ts), handle tracks/flights there if it moves bytes, and narrate it.
-- **A new device kind:** `DeviceKind` in `model.ts`, rows in `content/layers.ts#rowsFor`, an icon in `scene/icons.ts`, a blurb in the inspector's device view.
+- **A new scenario:** add `src/sim/scenarios/<name>.ts` returning a `Scenario` (devices with ifaces/routes/ARP seeds/apps/layout, links with real-ish speeds, delays, a map `label` and a prose `name`). Add app behaviour in `stack/apps.ts` if needed. Give new events speech in `content/speech.ts` and a machine in `iso/machines/Machine.ts#machineFor` (the speech test enforces both), and world positions and port sides in `iso/layout.ts`. Add a test in the style of `src/sim/run.test.ts`; `src/ui/timeline/schedule.test.ts` shows how to fuzz the schedule over seeds and loss. A scenario picker in the header does not exist yet (only one scenario).
+- **A new event type:** add it to `SimEventPayload`, emit it from the sim, give it a cost in `BASE_COST` (schedule.ts), map it to a machine in `machineFor`, give it speech, and animate the machine's `render` for it if it should move something.
+- **A new device kind:** `DeviceKind` in `model.ts`, floors in `iso/layout.ts#floorsFor`, machines in `machinesFor`, a blurb in the inspector's device view.
+- **A new machine:** a builder in `iso/machines/build.ts` (static shapes built once, one motion in `render`), a kind in the `Machine.ts` tables; the nameplate and bubble anchor come for free.
 
 ## Real-world facts and simplifications (keep honest)
 
