@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fetchWebPage, runScenario, type ManualFault } from '../sim';
 import { buildStory, cardLabel, dnsCardLabel, type Trip } from './story';
-import { buildTimeline, packetPose, seenSoFar, trayAngle } from './timeline';
+import { buildTimeline, lockPose, packetPose, seenSoFar, stepTarget, trayAngle } from './timeline';
 
 const run = (manual: ManualFault[] = []) => buildStory(runScenario(fetchWebPage(), { seed: 1, faults: { randomLoss: 0, manual } }));
 const story = run();
@@ -289,5 +289,67 @@ describe('HTTPS in the story', () => {
     const faces = buildTimeline(s).reactions.map((r) => `${r.device}:${r.face}`);
     expect(faces.filter((f) => f === 'laptop:thumbs').length).toBe(3); // DNS answer, SYN-ACK, end of the server's hello
     expect(faces[faces.length - 1]).toBe('laptop:love');
+  });
+});
+
+describe('padlock and key', () => {
+  const s = buildStory(runScenario(fetchWebPage({ https: true }), { seed: 1, faults: { randomLoss: 0, manual: [] } }));
+  const tl = buildTimeline(s);
+  const get = s.trips.find((t) => t.card === 'GET /')!;
+
+  it('locks right after the card appears and unlocks just before it is read', () => {
+    const kinds = get.steps.map((x) => x.kind);
+    expect(kinds.indexOf('lock')).toBe(kinds.indexOf('appear') + 1);
+    expect(kinds.indexOf('unlock')).toBe(kinds.indexOf('read') - 1);
+    expect(s.trips.filter((t) => !t.locked).some((t) => t.steps.some((x) => x.kind === 'lock'))).toBe(false);
+  });
+
+  it('both ends get the key before they first need it, the server first', () => {
+    const first = (kind: 'lock' | 'unlock', device: string): number => tl.segs.find((x) => x.step.kind === kind && x.step.device === device)!.t0;
+    expect(tl.keys.get('server')!).toBeLessThan(tl.keys.get('laptop')!);
+    expect(tl.keys.get('server')!).toBeLessThanOrEqual(first('lock', 'server'));
+    expect(tl.keys.get('laptop')!).toBeLessThanOrEqual(first('unlock', 'laptop'));
+  });
+
+  it('plain HTTP has no keys', () => {
+    expect(buildTimeline(story).keys.size).toBe(0);
+  });
+
+  it('the card stays open until the lock shuts, stays dark on the way, and opens at the other end', () => {
+    const seg = (kind: string) => tl.segs.find((x) => x.trip === get && x.step.kind === kind)!;
+    expect(lockPose(seg('appear'), 0.5)).toMatchObject({ show: false, dark: 0 });
+    expect(lockPose(seg('lock'), 0)).toMatchObject({ show: true, dark: 0, open: 1, drop: 1 });
+    expect(lockPose(seg('lock'), 1)).toMatchObject({ show: true, dark: 1, open: 0, drop: 0 });
+    expect(lockPose(seg('travel'), 0.5)).toMatchObject({ show: true, dark: 1, open: 0 });
+    expect(lockPose(seg('unlock'), 0)).toMatchObject({ show: true, dark: 1, open: 0 });
+    expect(lockPose(seg('unlock'), 1)).toMatchObject({ show: false, dark: 0 });
+    expect(lockPose(seg('read'), 0.5)).toMatchObject({ show: false, dark: 0 });
+  });
+
+  it('the key is in the keyhole when it turns, and home again when it stops', () => {
+    for (const kind of ['lock', 'unlock'] as const) {
+      const seg = tl.segs.find((x) => x.trip === get && x.step.kind === kind)!;
+      for (let i = 0; i <= 100; i++) {
+        const key = lockPose(seg, i / 100).key;
+        if (key && key.turn > 0.5) expect(key.to).toBeGreaterThan(0.5);
+      }
+    }
+  });
+});
+
+describe('step buttons', () => {
+  const tl = buildTimeline(story);
+
+  it('go to the next action, and back to the start of this one or the last', () => {
+    const a = tl.segs[3]!;
+    const b = tl.segs[4]!;
+    expect(stepTarget(tl, a.t0, 1)).toBe(b.t0);
+    expect(stepTarget(tl, b.t0 + 0.5, -1)).toBe(b.t0);
+    expect(stepTarget(tl, b.t0, -1)).toBe(a.t0);
+  });
+
+  it('stop at both ends', () => {
+    expect(stepTarget(tl, tl.total, 1)).toBe(tl.total);
+    expect(stepTarget(tl, 0, -1)).toBe(0);
   });
 });

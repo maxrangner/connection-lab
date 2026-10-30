@@ -576,3 +576,86 @@ body {
 .sleeve.wifi path {
   stroke: #1f7a6f;
 }
+
+/* The padlock on a locked card, and the session key */
+.padlock-body {
+  fill: #d9a520;
+  stroke: #7d5a10;
+  stroke-width: 2;
+}
+
+.padlock-shackle {
+  fill: none;
+  stroke: #8b8f98;
+  stroke-width: 5;
+  stroke-linecap: round;
+}
+
+.padlock-hole {
+  fill: #3d352c;
+}
+
+.key-metal {
+  fill: #e6b93a;
+  stroke: #7d5a10;
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+}
+
+.key-hole {
+  fill: var(--paper);
+  stroke: #7d5a10;
+  stroke-width: 1.2;
+}
+
+.key-spark {
+  stroke: #e6b93a;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+}
+
+.keys {
+  pointer-events: none;
+}
+
+/* Props on the table */
+.prop {
+  cursor: grab;
+}
+
+.prop.held {
+  cursor: grabbing;
+}
+
+.cloud-puff {
+  fill: #e9e4dc;
+  stroke: none;
+}
+
+.cloud-prop.on .cloud-puff,
+.cloud-prop.over .cloud-puff {
+  fill: #7d8590;
+}
+
+.rain {
+  stroke: #5f8fc0;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+}
+
+.dev-screen.remembers {
+  cursor: pointer;
+}
+
+.cloud-prop {
+  filter: drop-shadow(0 3px 5px rgba(61, 53, 44, 0.3));
+}
+
+.cloud-prop .cloud-puff {
+  fill: #fffdf8;
+}
+
+.cloud-prop.on .cloud-puff,
+.cloud-prop.over .cloud-puff {
+  fill: #7d8590;
+}

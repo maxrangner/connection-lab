@@ -3,32 +3,42 @@ import { fetchWebPage, runScenario, type LossWindow, type ManualFault } from '..
 import { el } from './svg';
 import { clamp01, easeInOut, easeOutBack, iso, lerp } from './project';
 import { NetworkScene, type Camera } from './NetworkScene';
+import { drawCloud, drawSatellite, Prop, rain } from './props';
 import { Sound } from './sound';
 import { Stickers, type Features } from './stickers';
 import { buildStory, type Chapter, type Story } from './story';
-import { buildTimeline, chapterAt, seenSoFar, type Timeline } from './timeline';
+import { buildTimeline, chapterAt, seenSoFar, SKY_HEIGHT, stepTarget, type Timeline } from './timeline';
 
 /**
- * "Get example.com": drag the site card onto the laptop and watch it find the address, say hello and fetch
- * the page. Tap a packet on a cable to knock it off; tap it anywhere else to pop it open.
+ * "Get example.com". Everything you change, you change by hand on the table: drag the site card onto the laptop or
+ * the phone, stick things on it, put the cloud over the internet cables, put the satellite on the line to the ISP.
+ * Tap a packet on a cable to knock it off; tap it anywhere else to pop it open. When a run ends the card comes back.
  */
 
 /** Stormy weather happens on the internet side; the home cable stays calm. */
 const STORM_LINKS = ['wan', 'bb1', 'bb2'];
 const STORM_LOSS = 0.15;
-let features: Features = { https: false, big: false, again: false, slow: false };
-/** Stormy weather is a switch you can flip any time, before or during a run. */
+/** Visual seconds per real second while a step button races to its target. */
+const SEEK_SPEED = 16;
+/** Seconds the finished picture stays before the card comes back. */
+const LINGER = 1.4;
+
+let features: Features = { https: false, big: false };
+/** Stormy weather can change any time, before or during a run. */
 let stormy = false;
+/** The line to the ISP goes through a satellite. Set before a run: it would change what has already happened. */
+let slow = false;
 try {
-  const saved = JSON.parse(localStorage.getItem('net.features') ?? '{}') as Partial<Features> & { storm?: boolean };
-  features = { https: !!saved.https, big: !!saved.big, again: !!saved.again, slow: !!saved.slow };
+  const saved = JSON.parse(localStorage.getItem('net.features') ?? '{}') as Partial<Features> & { storm?: boolean; slow?: boolean };
+  features = { https: !!saved.https, big: !!saved.big };
   stormy = !!saved.storm;
+  slow = !!saved.slow;
 } catch {
   // Nothing remembered; start plain.
 }
 function remember(): void {
   try {
-    localStorage.setItem('net.features', JSON.stringify({ ...features, storm: stormy }));
+    localStorage.setItem('net.features', JSON.stringify({ ...features, storm: stormy, slow }));
   } catch {
     // Not remembered; fine.
   }
@@ -36,17 +46,27 @@ function remember(): void {
 /** Packets the viewer knocked off, and how far along their cable they were (only for drawing the fall). */
 const faults: ManualFault[] = [];
 const knocks = new Map<string, number>();
-/** Each run gets its own weather; knocking a packet off or flipping the storm re-runs with the same weather. */
+/** Each run gets its own weather; knocking a packet off or moving the cloud re-runs with the same weather. */
 let stormSeed = 1;
 /** When (sim time) the storm was on during this run, and what the viewer has already seen happen. */
 let stormWindows: LossWindow[] = [];
 let decided: Record<string, boolean> = {};
 let story: Story;
 let tl: Timeline;
+type Client = 'laptop' | 'phone';
 /** Which device the card was dropped on: the laptop (Ethernet cable) or the phone (Wi-Fi). */
-let client: 'laptop' | 'phone' = 'laptop';
+let client: Client = 'laptop';
+/** What each device still remembers from an earlier visit, until the DNS record's real TTL runs out. */
+const known = new Map<string, { site: string; ip: string; until: number }>();
+/** This run is a second visit: the address is remembered, so there is nothing to look up. */
+let revisit = false;
+const siteName = (): 'info.cern.ch' | 'example.com' => (features.big ? 'info.cern.ch' : 'example.com');
+function remembers(): boolean {
+  const k = known.get(client);
+  return !!k && k.site === siteName() && performance.now() < k.until;
+}
 function simulate(): void {
-  const scenario = fetchWebPage({ site: features.big ? 'info.cern.ch' : 'example.com', revisit: features.again, slow: features.slow, https: features.https, from: client });
+  const scenario = fetchWebPage({ site: siteName(), revisit, slow, https: features.https, from: client });
   const plan = { randomLoss: STORM_LOSS, lossyLinks: STORM_LINKS, lossWindows: stormWindows, decided, manual: faults };
   story = buildStory(runScenario(scenario, { seed: stormSeed, faults: plan }));
   tl = buildTimeline(story, knocks);
@@ -56,6 +76,7 @@ simulate();
 const root = document.querySelector<HTMLElement>('#app')!;
 root.className = 'net';
 const scene = new NetworkScene(root, story!, tl!);
+scene.setRemembered(known);
 const svg = scene.svg;
 const sound = new Sound();
 try {
@@ -64,8 +85,11 @@ try {
   // Storage can be blocked; sound simply starts on.
 }
 
-// The site card you drag onto the laptop.
-const home = iso(-4.6, 0.4, 3.0);
+type Mode = 'idle' | 'drag' | 'spring' | 'drop' | 'play' | 'return';
+let mode: Mode = 'idle';
+
+// The site card rests on the table between the laptop and the phone.
+const home = iso(1, 6, 0.5);
 const card = el('g', { class: 'site-card' }, svg);
 const cardBody = el('g', {}, card);
 el('rect', { x: -88, y: -22, width: 176, height: 44, rx: 10, class: 'site-card-bg' }, cardBody);
@@ -73,33 +97,114 @@ el('circle', { cx: -66, cy: 0, r: 9, class: 'site-card-globe' }, cardBody);
 el('ellipse', { cx: -66, cy: 0, rx: 4, ry: 9, class: 'site-card-globe' }, cardBody);
 const cardText = el('text', { x: 12, y: 0, dy: '0.35em', 'text-anchor': 'middle' }, cardBody);
 cardText.textContent = 'example.com';
-const hint = el('text', { class: 'hint', 'text-anchor': 'middle', x: 0, y: 44 }, card);
+const hint = el('text', { class: 'hint', 'text-anchor': 'middle', x: 0, y: 40 }, card);
 hint.textContent = 'drag me onto the laptop or the phone';
 let cardPop = 9;
 
-// The sticker sheet above the card: switch features on by sticking them onto the card.
-const stickers = new Stickers(svg, features, (f) => {
-  features = f;
+/** A setting changed on the table before a run: show the network it will use, with a clean screen. */
+function preview(): void {
   remember();
-  // Show the network this run will use (a satellite hop for the slow line) before it starts.
+  idleV = -1;
+  revisit = remembers();
   simulate();
   scene.setStory(story, tl);
   showFeatures();
+}
+
+// Stickers lie beside the card: stick one on to switch that feature on.
+const stickers = new Stickers(svg, features, (f) => {
+  features = f;
+  preview();
   sound.play('snap');
 });
+
 function showFeatures(): void {
-  const site = `${features.https ? '🔒 ' : ''}${features.big ? 'info.cern.ch' : 'example.com'}`;
+  const site = siteName();
   if (cardText.textContent !== site) {
     cardText.textContent = site;
     cardPop = 0;
   }
   scene.setStorm(stormy ? STORM_LINKS : []);
 }
-showFeatures();
-cardPop = 9;
+
+/** Distance from a point to a cable on screen. */
+function toCable(p: { sx: number; sy: number }, link: string): number {
+  const ends = scene.cableEnds(link);
+  if (!ends) return Infinity;
+  const [a, b] = ends;
+  const dx = b.sx - a.sx;
+  const dy = b.sy - a.sy;
+  const t = clamp01(((p.sx - a.sx) * dx + (p.sy - a.sy) * dy) / (dx * dx + dy * dy));
+  return Math.hypot(p.sx - (a.sx + dx * t), p.sy - (a.sy + dy * t));
+}
+const near = (a: { sx: number; sy: number }, b: { sx: number; sy: number }, r: number): boolean => Math.hypot(a.sx - b.sx, a.sy - b.sy) < r;
+const canSetUp = (): boolean => mode === 'idle' || mode === 'spring';
+
+const running = (): boolean => mode === 'play' || mode === 'drop';
+const cloudCorner = (): { sx: number; sy: number } => scene.viewCorner(cam, 70, 60);
+
+// The cloud: put it over the internet cables and the storm starts, even in the middle of a run.
+const cloudSpot = iso(15, -1.5, 5);
+const cloud = new Prop(
+  svg,
+  {
+    label: 'Storm',
+    cls: 'cloud-prop',
+    draw: drawCloud,
+    animate: rain,
+    parked: () => (running() ? cloudCorner() : iso(-3, -5, 3)),
+    active: () => (running() ? cloudCorner() : cloudSpot),
+    hits: (p) => near(p, cloudSpot, 120) || STORM_LINKS.some((l) => toCable(p, l) < 80),
+    canMove: () => true,
+    // During a run the camera follows the packet, so the cloud stays in the corner of the view: tap it any time.
+    pinned: () => (running() ? { scale: 0.75 / cam.scale } : null),
+    onChange: (on) => {
+      stormy = on;
+      remember();
+      if (mode === 'play') {
+        // Mid-run the simulation re-runs from this moment on: everything already seen stays.
+        const seen = seenSoFar(tl, v);
+        decided = { ...decided, ...seen.decided };
+        if (stormy) stormWindows = [...stormWindows, { from: seen.now }];
+        else stormWindows = stormWindows.map((w) => (w.to === undefined ? { ...w, to: seen.now } : w));
+        simulate();
+        scene.setStory(story, tl);
+      }
+      showFeatures();
+      sound.play(on ? 'zap' : 'snap');
+    },
+  },
+  stormy,
+);
+
+// The satellite: put it on the line to the ISP and that line goes through space. Only before a run.
+const skySpot = (): { sx: number; sy: number } => {
+  const ends = scene.cableEnds('wan');
+  return ends ? { sx: (ends[0].sx + ends[1].sx) / 2, sy: (ends[0].sy + ends[1].sy) / 2 - SKY_HEIGHT * 28 } : home;
+};
+const satellite = new Prop(
+  svg,
+  {
+    label: 'Satellite',
+    cls: 'sat-prop',
+    draw: drawSatellite,
+    parked: () => iso(-6, -3, 3),
+    active: skySpot,
+    hits: (p) => near(p, skySpot(), 120) || toCable(p, 'wan') < 80,
+    canMove: canSetUp,
+    hidden: () => !slow && running(),
+    onChange: (on) => {
+      slow = on;
+      preview();
+      sound.play('snap');
+    },
+  },
+  slow,
+);
+scene.setOnTable([home, { sx: home.sx - 110, sy: home.sy + 50 }, { sx: home.sx - 170, sy: home.sy - 110 }, iso(-3, -5, 4.6), iso(-6, -3, 4.6), { sx: iso(-6, -3, 3).sx - 60, sy: iso(-6, -3, 3).sy }]);
 
 const CHAPTERS: Record<Chapter, string> = { dns: 'Find the address', hello: 'Say hello', secret: 'Agree on a secret', page: 'Get the page' };
-/** Chapter number in this run (a revisit skips the address, HTTPS adds the secret). */
+/** Chapter number in this run (a second visit skips the address, HTTPS adds the secret). */
 function chapterNumber(ch: Chapter): number {
   const order: Chapter[] = [];
   for (const s of tl.segs) if (!order.includes(s.trip.chapter)) order.push(s.trip.chapter);
@@ -128,14 +233,13 @@ chapter.addEventListener('click', () => {
     const ch = s.trip.chapter;
     if (seen.has(ch)) continue;
     seen.add(ch);
-    const n = chapterNumber(ch);
-    const name = CHAPTERS[ch];
     const item = document.createElement('button');
-    item.innerHTML = `<span class="chapter-num">${n}</span><span>${name}</span>`;
+    item.innerHTML = `<span class="chapter-num">${chapterNumber(ch)}</span><span>${CHAPTERS[ch]}</span>`;
     item.classList.toggle('current', ch === shownChapter);
     item.addEventListener('click', () => {
       v = s.t0;
       cueDone = v;
+      seekTo = null;
       paused = false;
       peek = peekTarget = 0;
       camFree = false;
@@ -148,18 +252,18 @@ chapter.addEventListener('click', () => {
 
 const controls = document.createElement('div');
 controls.className = 'net-controls';
-const button = (text: string, onClick: () => void): HTMLButtonElement => {
+const button = (text: string, label: string, onClick: () => void): HTMLButtonElement => {
   const b = document.createElement('button');
   b.textContent = text;
+  b.setAttribute('aria-label', label);
   b.addEventListener('click', onClick);
   controls.appendChild(b);
   return b;
 };
-const pauseBtn = button('', togglePause);
-const speedBtn = button('1×', () => {
-  speed = speed === 1 ? 2 : 1;
-});
-const soundBtn = button('♪', () => {
+const backBtn = button('⏮', 'Step back', () => step(-1));
+const pauseBtn = button('', 'Pause or play', togglePause);
+const nextBtn = button('⏭', 'Step forward', () => step(1));
+const soundBtn = button('♪', 'Sound', () => {
   sound.muted = !sound.muted;
   try {
     localStorage.setItem('net.muted', sound.muted ? '1' : '0');
@@ -167,35 +271,19 @@ const soundBtn = button('♪', () => {
     // Not remembered; fine.
   }
 });
-// The storm switch works any time. Mid-run it re-simulates from this moment on: everything already seen stays.
-const stormBtn = button('⚡ Storm', toggleStorm);
-function toggleStorm(): void {
-  stormy = !stormy;
-  remember();
-  if (mode === 'play') {
-    const seen = seenSoFar(tl, v);
-    decided = { ...decided, ...seen.decided };
-    if (stormy) stormWindows = [...stormWindows, { from: seen.now }];
-    else stormWindows = stormWindows.map((w) => (w.to === undefined ? { ...w, to: seen.now } : w));
-    simulate();
-    scene.setStory(story, tl);
-  }
-  showFeatures();
-  sound.play(stormy ? 'zap' : 'snap');
-}
-const followBtn = button('◎ Follow packet', () => {
+const followBtn = button('◎ Follow packet', 'Follow the packet', () => {
   camFree = false;
 });
-const againBtn = button('↺ Again', reset);
-// At the end: go round once more, now with the address remembered.
-const visitBtn = button('↻ Visit again', visitAgain);
 root.appendChild(controls);
 
-type Mode = 'idle' | 'drag' | 'spring' | 'drop' | 'play';
-let mode: Mode = 'idle';
 let v = 0;
-let speed = 1;
+/** What the table shows between runs: the end of the last run, or a clean table (-1). */
+let idleV = -1;
 let paused = false;
+/** Where a step button is racing to while playing. */
+let seekTo: number | null = null;
+/** Seconds since the run reached its end. */
+let doneFor = 0;
 let peek = 0;
 let peekTarget = 0;
 let cardPos = { ...home };
@@ -207,6 +295,9 @@ let snapCamera = false;
 let camFree = false;
 /** Sounds already played up to this visual time (so a knock doesn't bonk twice). */
 let cueDone = 0;
+revisit = remembers();
+showFeatures();
+cardPop = 9;
 
 function toSvg(e: PointerEvent): { sx: number; sy: number } {
   const m = svg.getScreenCTM();
@@ -233,7 +324,7 @@ card.addEventListener('pointermove', (e) => {
 /** The laptop or phone the card is over, if any. */
 function dropTarget(): { id: string; sx: number; sy: number } | null {
   let best: { id: string; sx: number; sy: number } | null = null;
-  let bestD = 130;
+  let bestD = 85;
   for (const d of scene.dropPoints()) {
     const dist = Math.hypot(cardPos.sx - d.sx, cardPos.sy - d.sy);
     if (dist < bestD) {
@@ -259,7 +350,7 @@ card.addEventListener('pointerup', () => {
 // Tap a packet out on a cable to knock it off; anywhere else, tap it to pop it open.
 scene.packet.addEventListener('pointerdown', () => {
   if (mode !== 'play' || v >= tl.total) return;
-  const target = !paused && !peekTarget ? scene.knockable(v) : null;
+  const target = !paused && !peekTarget && seekTo === null ? scene.knockable(v) : null;
   if (target) knock(target);
   else if (scene.peekable(v)) peekTarget = peekTarget ? 0 : 1;
 });
@@ -277,6 +368,8 @@ function knock(target: NonNullable<ReturnType<NetworkScene['knockable']>>): void
 
 // Pan and zoom by hand: drag the stage, pinch, or use the wheel. Any of these lets go of the follow camera.
 const pointers = new Map<number, { x: number; y: number }>();
+/** A press on a device's screen between runs, which is a "forget" if it does not turn into a drag. */
+let screenPress: { device: string; x: number; y: number } | null = null;
 
 function zoomAt(clientX: number, clientY: number, factor: number): void {
   const r = svg.getBoundingClientRect();
@@ -296,15 +389,23 @@ function spread(): { d: number; x: number; y: number } {
 }
 
 svg.addEventListener('pointerdown', (e) => {
-  if ((e.target as Element).closest('.site-card, .packet')) return;
+  const target = e.target as Element;
+  if (target.closest('.site-card, .packet, .prop')) return;
+  const device = target.closest('[data-device]')?.getAttribute('data-device');
+  screenPress = device && mode === 'idle' && known.has(device) ? { device, x: e.clientX, y: e.clientY } : null;
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   svg.setPointerCapture(e.pointerId);
-  camFree = true;
+  if (!screenPress) camFree = true;
   svg.classList.add('panning');
 });
 svg.addEventListener('pointermove', (e) => {
   const prev = pointers.get(e.pointerId);
   if (!prev) return;
+  if (screenPress) {
+    if (Math.hypot(e.clientX - screenPress.x, e.clientY - screenPress.y) < 6) return;
+    screenPress = null;
+    camFree = true;
+  }
   if (pointers.size === 1) {
     cam = { ...cam, cx: cam.cx - (e.clientX - prev.x) / cam.scale, cy: cam.cy - (e.clientY - prev.y) / cam.scale };
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -319,6 +420,10 @@ svg.addEventListener('pointermove', (e) => {
 const release = (e: PointerEvent): void => {
   pointers.delete(e.pointerId);
   if (!pointers.size) svg.classList.remove('panning');
+  if (screenPress) {
+    forget(screenPress.device);
+    screenPress = null;
+  }
 };
 svg.addEventListener('pointerup', release);
 svg.addEventListener('pointercancel', release);
@@ -332,52 +437,73 @@ svg.addEventListener(
   { passive: false },
 );
 
+/** Tap a screen between runs: the device forgets what it remembers, and the next visit starts from scratch. */
+function forget(device: string): void {
+  known.delete(device);
+  if (device === client) {
+    idleV = -1;
+    revisit = false;
+  }
+  sound.play('thud');
+}
+
 function togglePause(): void {
   if (mode !== 'play') return;
   if (peekTarget) peekTarget = 0;
   else paused = !paused;
 }
+
+/** One action on or back. Paused it teleports; playing it races there and carries on. */
+function step(dir: 1 | -1): void {
+  if (mode !== 'play') return;
+  peek = peekTarget = 0;
+  const target = stepTarget(tl, seekTo ?? v, dir);
+  if (paused) {
+    v = target;
+    cueDone = v;
+    seekTo = null;
+    snapCamera = !camFree;
+  } else {
+    seekTo = target;
+  }
+}
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
     e.preventDefault();
     togglePause();
-  }
+  } else if (e.code === 'ArrowRight') step(1);
+  else if (e.code === 'ArrowLeft') step(-1);
 });
 
-function reset(): void {
-  mode = 'idle';
-  v = 0;
-  cueDone = 0;
-  paused = false;
-  peek = peekTarget = 0;
-  cardPos = { ...home };
-  camFree = false;
-}
-
-/** The card has gone into the laptop: run the simulation with the chosen stickers, fresh weather and no knocks. */
+/** The card has gone into the device: run the simulation with what is on the table, fresh weather and no knocks. */
 function beginRun(): void {
   faults.length = 0;
   knocks.clear();
   stormSeed = 1 + Math.floor(Math.random() * 1e6);
   decided = {};
   stormWindows = stormy ? [{ from: 0 }] : [];
+  revisit = remembers();
   simulate();
   scene.setStory(story, tl);
   showFeatures();
   mode = 'play';
   v = 0;
   cueDone = 0;
+  seekTo = null;
+  doneFor = 0;
   paused = false;
   peek = peekTarget = 0;
 }
 
-/** Back to the start with the "Visit again" sticker on, and the card flies straight into the same device. */
-function visitAgain(): void {
-  reset();
-  stickers.set('again', true);
-  const to = scene.dropPoints().find((d) => d.id === client) ?? home;
-  anim = { from: { ...home }, to, t: -0.5, dur: 0.6 };
-  mode = 'drop';
+/** The run is over: the device remembers the address until its TTL runs out, and the card floats back. */
+function endRun(): void {
+  const ip = story.remembered ?? story.dnsAnswer;
+  if (ip && !revisit) known.set(client, { site: story.site, ip, until: performance.now() + (story.dnsTtl ?? 0) * 1000 });
+  idleV = tl.total;
+  const from = scene.dropPoints().find((d) => d.id === client) ?? home;
+  anim = { from, to: { ...home }, t: 0, dur: 0.8 };
+  mode = 'return';
+  camFree = false;
 }
 
 let last = performance.now();
@@ -387,48 +513,68 @@ function frame(now: number): void {
   last = now;
   clock += dt;
 
-  if (mode === 'spring' || mode === 'drop') {
+  for (const [device, k] of known) if (now >= k.until) known.delete(device);
+
+  if (mode === 'spring' || mode === 'drop' || mode === 'return') {
     anim.t += dt;
     const k = clamp01(anim.t / anim.dur);
-    const e = mode === 'spring' ? easeOutBack(k) : easeInOut(k);
+    const e = mode === 'drop' ? easeInOut(k) : easeOutBack(k);
     cardPos = { sx: lerp(anim.from.sx, anim.to.sx, e), sy: lerp(anim.from.sy, anim.to.sy, e) };
     if (k >= 1) {
       if (mode === 'drop') beginRun();
       else mode = 'idle';
     }
   }
-  if (mode === 'play' && !paused && !peekTarget) {
-    const next = Math.min(tl.total, v + dt * speed);
-    for (const c of tl.cues) if (c.t > Math.max(v, cueDone) && c.t <= next) sound.play(c.sound);
-    v = next;
+  if (mode === 'play') {
+    if (seekTo !== null) {
+      // A step button racing to its target; no sounds on the way.
+      const dir = Math.sign(seekTo - v);
+      v += dir * SEEK_SPEED * dt;
+      if (dir === 0 || Math.sign(seekTo - v) !== dir) {
+        v = seekTo;
+        seekTo = null;
+      }
+      cueDone = v;
+    } else if (!paused && !peekTarget) {
+      const next = Math.min(tl.total, v + dt);
+      for (const c of tl.cues) if (c.t > Math.max(v, cueDone) && c.t <= next) sound.play(c.sound);
+      v = next;
+    }
+    doneFor = v >= tl.total && !paused && seekTo === null ? doneFor + dt : 0;
+    if (doneFor > LINGER) endRun();
   }
   peek += (peekTarget - peek) * Math.min(1, dt * 10);
 
   const bob = mode === 'idle' ? Math.sin(clock * 2.4) * 4 : 0;
   const dropK = mode === 'drop' ? clamp01(anim.t / anim.dur) : 0;
+  const riseK = mode === 'return' ? clamp01(anim.t / anim.dur) : 1;
   cardPop += dt;
   const pop = cardPop < 0.4 ? 1 + 0.12 * Math.sin((cardPop / 0.4) * Math.PI) : 1;
-  const scale = (mode === 'drop' ? 1 - 0.8 * dropK : mode === 'drag' ? 1.06 : 1) * pop;
+  const scale = (mode === 'drop' ? 1 - 0.8 * dropK : mode === 'drag' ? 1.06 : 0.2 + 0.8 * riseK) * pop;
+  const cardOp = (1 - dropK) * riseK;
   card.style.display = mode === 'play' ? 'none' : '';
   card.setAttribute('transform', `translate(${cardPos.sx.toFixed(1)} ${(cardPos.sy + bob).toFixed(1)}) scale(${scale.toFixed(3)})`);
-  card.setAttribute('opacity', (1 - dropK).toFixed(3));
+  card.setAttribute('opacity', cardOp.toFixed(3));
   hint.style.display = mode === 'idle' ? '' : 'none';
-  stickers.update(dt, home, { sx: cardPos.sx, sy: cardPos.sy + bob }, scale, 1 - dropK, mode !== 'play');
+  stickers.update(dt, home, { sx: cardPos.sx, sy: cardPos.sy + bob }, scale, cardOp, mode !== 'play');
+  cloud.update(dt, clock);
+  satellite.update(dt, clock);
   scene.renderStorm(clock);
 
-  // The camera eases between the whole network (before the start) and a close follow of the packet,
+  // The camera eases between the whole network (between runs) and a close follow of the packet,
   // unless the viewer has taken it over.
   if (!camFree) {
     const target = mode === 'play' ? scene.followCamera(v) : scene.overviewCamera();
-    const ease = snapCamera ? 1 : Math.min(1, dt * 3.5);
+    const ease = snapCamera ? 1 : Math.min(1, dt * (seekTo === null ? 3.5 : 8));
     cam = { cx: lerp(cam.cx, target.cx, ease), cy: lerp(cam.cy, target.cy, ease), scale: lerp(cam.scale, target.scale, ease) };
   }
   snapCamera = false;
   scene.applyCamera(cam);
 
-  scene.render(mode === 'play' ? v : -1);
-  scene.drawPacket(mode === 'play' ? v : -1, peek);
-  scene.packet.classList.toggle('knockable', mode === 'play' && !paused && !peekTarget && !!scene.knockable(v));
+  const shown = mode === 'play' ? v : idleV;
+  scene.render(shown);
+  scene.drawPacket(shown, peek);
+  scene.packet.classList.toggle('knockable', mode === 'play' && !paused && !peekTarget && seekTo === null && !!scene.knockable(v));
 
   const ch = mode === 'play' ? chapterAt(tl, v) : null;
   if (ch !== shownChapter) {
@@ -436,30 +582,18 @@ function frame(now: number): void {
     chapter.hidden = !ch;
     if (!ch) chapterMenu.hidden = true;
     if (ch) {
-      const n = chapterNumber(ch);
-    const name = CHAPTERS[ch];
-      chapter.innerHTML = `<span class="chapter-num">${n}</span><span>${name}</span>`;
+      chapter.innerHTML = `<span class="chapter-num">${chapterNumber(ch)}</span><span>${CHAPTERS[ch]}</span>`;
       chapter.classList.remove('enter');
       void chapter.offsetWidth;
       chapter.classList.add('enter');
     }
   }
 
-  const done = mode === 'play' && v >= tl.total;
-  pauseBtn.textContent = paused || peekTarget ? '▶ Play' : '⏸ Pause';
-  pauseBtn.disabled = done;
-  speedBtn.textContent = speed === 1 ? '1×' : '2×';
+  pauseBtn.textContent = paused || peekTarget ? '▶' : '⏸';
   soundBtn.classList.toggle('off', sound.muted);
-  soundBtn.setAttribute('aria-label', sound.muted ? 'Sound off' : 'Sound on');
-  againBtn.classList.toggle('big', done);
-  visitBtn.hidden = !done;
-  visitBtn.classList.toggle('big', done);
   followBtn.hidden = !camFree;
   followBtn.textContent = mode === 'play' ? '◎ Follow packet' : '◎ Show all';
-  // Before the start only the follow button can show (after the viewer moved the view).
-  pauseBtn.hidden = speedBtn.hidden = againBtn.hidden = mode !== 'play';
-  stormBtn.classList.toggle('on', stormy);
-  stormBtn.setAttribute('aria-pressed', String(stormy));
+  backBtn.hidden = pauseBtn.hidden = nextBtn.hidden = mode !== 'play';
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
@@ -470,6 +604,15 @@ if (import.meta.env.DEV) {
       get total() {
         return tl.total;
       },
+      get v() {
+        return v;
+      },
+      get mode() {
+        return mode;
+      },
+      get revisit() {
+        return revisit;
+      },
       get segs() {
         return tl.segs.map((s) => ({ kind: s.step.kind, t0: s.t0, t1: s.t1, chapter: s.trip.chapter, device: 'device' in s.step ? s.step.device : `${s.step.from}→${s.step.to}` }));
       },
@@ -477,6 +620,7 @@ if (import.meta.env.DEV) {
         mode = 'play';
         v = t;
         paused = true;
+        seekTo = null;
         peek = peekTarget = open;
         snapCamera = true;
         camFree = false;
@@ -489,15 +633,17 @@ if (import.meta.env.DEV) {
         if (target) knock(target);
         return !!target;
       },
-      reset,
       get reactions() {
         return tl.reactions;
       },
-      /** Start a run straight away with these stickers (for screenshots). */
-      start(f: Partial<Features> & { storm?: boolean; from?: 'laptop' | 'phone' }): void {
+      /** Start a run straight away with these things on the table (for screenshots). */
+      start(f: Partial<Features> & { storm?: boolean; slow?: boolean; again?: boolean; from?: Client }): void {
         client = f.from ?? 'laptop';
-        for (const k of ['https', 'big', 'again', 'slow'] as const) stickers.set(k, !!f[k]);
-        if (!!f.storm !== stormy) toggleStorm();
+        for (const k of ['https', 'big'] as const) stickers.set(k, !!f[k]);
+        satellite.set(!!f.slow);
+        cloud.set(!!f.storm);
+        if (f.again) known.set(client, { site: siteName(), ip: '', until: Infinity });
+        else known.delete(client);
         beginRun();
         stormSeed = 1;
         simulate();

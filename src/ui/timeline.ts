@@ -1,4 +1,4 @@
-import { clamp01, easeInOut, lerpV, v3, type Vec3 } from './project';
+import { clamp01, easeIn, easeInOut, easeOutBounce, lerpV, v3, type Vec3 } from './project';
 import type { Frame, Step, Story, Trip, Wrap } from './story';
 
 /**
@@ -48,12 +48,14 @@ export interface Seg {
 
 export interface Cue {
   t: number;
-  sound: 'snap' | 'sleeve' | 'thud' | 'flip' | 'bonk' | 'zap' | 'surprise' | 'pop' | 'chime' | 'lock' | 'unlock';
+  sound: 'snap' | 'sleeve' | 'thud' | 'flip' | 'bonk' | 'zap' | 'surprise' | 'pop' | 'chime' | 'lock' | 'unlock' | 'key';
 }
 
 export interface Timeline {
   segs: Seg[];
   reactions: Reaction[];
+  /** HTTPS: when each end has worked out the session key (it can lock and open cards from then on). */
+  keys: Map<string, number>;
   cues: Cue[];
   total: number;
   pos: Map<string, { x: number; y: number }>;
@@ -87,7 +89,7 @@ const LEVEL_GAP = 1.15;
 /** How far from a device's centre the cable port sits. */
 const PORT = 2.4;
 /** Seconds of visual time per step, the first time it happens. */
-const DUR: Record<TStep['kind'], number> = { appear: 0.9, wrap: 0.85, unwrap: 0.85, nat: 1.6, travel: 1.9, read: 1.2, lost: 0, wait: 2.8 };
+const DUR: Record<TStep['kind'], number> = { appear: 0.9, lock: 1.5, unlock: 1.3, wrap: 0.85, unwrap: 0.85, nat: 1.6, travel: 1.9, read: 1.2, lost: 0, wait: 2.8 };
 /** A link this slow (one-way seconds) is drawn as a radio hop up to a satellite. */
 export const SLOW_DELAY = 0.1;
 export const SKY_HEIGHT = 9;
@@ -130,6 +132,8 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
       const seg: Seg = { step, trip, t0: t, t1: t, p0: p, p1: p };
       let d = DUR[step.kind] * pace(step, trip);
       switch (step.kind) {
+        case 'lock':
+        case 'unlock':
         case 'appear':
         case 'read':
           seg.p1 = at(step.device, LEVEL.app);
@@ -188,7 +192,12 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   });
 
   const isRouter = (device: string): boolean => (kind.get(device) ?? '').includes('router');
-  return { segs, reactions, cues, total: t, pos, kind, trayZ, isRouter, sky, air, client: story.client };
+  // Each end has the session key once it has read the other side's last open "hello": from the two hellos both
+  // compute the same secret, so the two keys are the same.
+  const keys = new Map<string, number>();
+  for (const s of segs) if (s.step.kind === 'read' && s.trip.chapter === 'secret' && !s.trip.locked) keys.set(s.step.device, s.t1);
+  for (const t of keys.values()) cues.push({ t, sound: 'key' });
+  return { segs, reactions, keys, cues, total: t, pos, kind, trayZ, isRouter, sky, air, client: story.client };
 }
 
 /**
@@ -220,8 +229,8 @@ function addCues(cues: Cue[], seg: Seg, story: Story): void {
   if (s.kind === 'unwrap' && s.layer === 'eth') cues.push({ t: at(0.35 + 0.65 * 0.62), sound: 'thud' });
   if (s.kind === 'nat') cues.push({ t: at(0.5), sound: 'flip' });
   if (s.kind === 'lost' && seg.knock) cues.push({ t: seg.t0 + seg.knock.k * seg.knock.travel, sound: seg.knock.byYou ? 'bonk' : 'zap' });
-  if (seg.trip.locked && s.kind === 'appear') cues.push({ t: at(0.62), sound: 'lock' });
-  if (seg.trip.locked && s.kind === 'read') cues.push({ t: at(0.12), sound: 'unlock' });
+  if (s.kind === 'lock') cues.push({ t: at(0.62), sound: 'lock' });
+  if (s.kind === 'unlock') cues.push({ t: at(0.4), sound: 'unlock' });
   if (s.kind === 'read') {
     const last = story.trips[story.trips.length - 1];
     cues.push({ t: at(0.6), sound: seg.trip === last && seg.trip.chapter === 'page' ? 'chime' : 'pop' });
@@ -410,4 +419,63 @@ export function frameAt(seg: Seg): Frame | undefined {
     if (x.kind === 'wrap' && x.frame) f = x.frame;
   }
   return f ?? seg.trip.steps.find((x): x is Extract<Step, { kind: 'wrap' }> => x.kind === 'wrap' && !!x.frame)?.frame;
+}
+
+/** The padlock on a card and the key working it, at progress k of a segment. */
+export interface LockPose {
+  show: boolean;
+  /** 1 = high above the card, 0 = sitting on it, negative = lifting off. */
+  drop: number;
+  /** Shackle: 0 shut, 1 open. */
+  open: number;
+  op: number;
+  /** How dark (encrypted) the card is. */
+  dark: number;
+  /** The key while it is out: `to` 0 at its resting place, 1 in the keyhole; `turn` 0..1 of a quarter turn. */
+  key: { to: number; turn: number } | null;
+}
+
+const NO_LOCK: LockPose = { show: false, drop: 0, open: 0, op: 1, dark: 0, key: null };
+const SHUT: LockPose = { show: true, drop: 0, open: 0, op: 1, dark: 1, key: null };
+
+export function lockPose(seg: Seg, k: number): LockPose {
+  const { trip, step } = seg;
+  if (!trip.locked) return NO_LOCK;
+  if (step.kind === 'lock') {
+    // Drops on open, the key flies in and turns, the shackle snaps shut, the key goes home.
+    const flyIn = clamp01((k - 0.25) / 0.3);
+    const flyOut = clamp01((k - 0.78) / 0.22);
+    return {
+      show: true,
+      drop: 1 - easeOutBounce(clamp01(k / 0.25)),
+      open: 1 - clamp01((k - 0.62) / 0.08),
+      op: 1,
+      dark: clamp01((k - 0.62) / 0.14),
+      key: k > 0.25 && k < 1 ? { to: easeInOut(flyIn) * (1 - easeInOut(flyOut)), turn: clamp01((k - 0.55) / 0.13) * (1 - clamp01((k - 0.7) / 0.08)) } : null,
+    };
+  }
+  if (step.kind === 'unlock') {
+    // The key flies in and turns, the shackle springs open, the key goes home, the padlock lifts away.
+    const lift = clamp01((k - 0.55) / 0.4);
+    return {
+      show: k < 0.95,
+      drop: -easeIn(lift),
+      open: clamp01((k - 0.42) / 0.08),
+      op: 1 - clamp01((k - 0.7) / 0.25),
+      dark: 1 - clamp01((k - 0.42) / 0.14),
+      key: k < 0.9 ? { to: easeInOut(clamp01(k / 0.28)) * (1 - easeInOut(clamp01((k - 0.58) / 0.3))), turn: clamp01((k - 0.28) / 0.14) * (1 - clamp01((k - 0.48) / 0.1)) } : null,
+    };
+  }
+  const i = trip.steps.indexOf(step as Step);
+  const locked = trip.steps.findIndex((s) => s.kind === 'lock');
+  const opened = trip.steps.findIndex((s) => s.kind === 'unlock');
+  if (i < 0 || i < locked || (opened >= 0 && i > opened)) return NO_LOCK;
+  return SHUT;
+}
+
+/** Where a step button goes from visual time `from`: the next action, or back to the start of this or the last one. */
+export function stepTarget(tl: Timeline, from: number, dir: 1 | -1): number {
+  const marks = [...new Set(tl.segs.map((s) => s.t0)), tl.total].sort((a, b) => a - b);
+  if (dir > 0) return marks.find((m) => m > from + 0.01) ?? tl.total;
+  return [...marks].reverse().find((m) => m < from - 0.2) ?? 0;
 }

@@ -1,13 +1,13 @@
 import { el } from './svg';
 import { box, cylinder, line, rbox, tile } from './prims';
-import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, iso, lerp, U, v3, type Vec3 } from './project';
+import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, easeOutBounce, iso, lerp, U, v3, type Vec3 } from './project';
 import { shade } from './shade';
 import type { Story, Trip, Wrap } from './story';
-import { addressBefore, DEVICE_TOP, FACE_EMOJI, frameAt, LEVEL, packetPos, packetPose, segAt, trayOpacity, wrapsBefore, type Seg, type Timeline } from './timeline';
+import { addressBefore, DEVICE_TOP, FACE_EMOJI, frameAt, LEVEL, lockPose, packetPos, packetPose, segAt, trayOpacity, wrapsBefore, type LockPose, type Seg, type Timeline } from './timeline';
 
 export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', eth: '#e08b33', wifi: '#2a9d8f' } as const;
 const DEVICE = '#d9d0c2';
-/** A locked (encrypted) card: dark, with a padlock instead of what it says. */
+/** A locked (encrypted) card: dark, under a padlock. */
 const LOCKED = '#3d4654';
 
 /** Mix two #rrggbb colours. */
@@ -17,22 +17,9 @@ function mix(a: string, b: string, t: number): string {
   return `#${c.join('')}`;
 }
 
-/** Lock state of a card: closes at the end of `appear` at the sender, opens at the start of `read` at the receiver. */
-function lockAt(seg: Seg, k: number): number {
-  if (!seg.trip.locked) return 0;
-  if (seg.step.kind === 'appear') return clamp01((k - 0.55) / 0.2);
-  if (seg.step.kind === 'read') return 1 - clamp01((k - 0.05) / 0.2);
-  return 1;
-}
-
-/** 0..1 while the lock is clicking shut or springing open, else 0. */
-function lockClick(seg: Seg, k: number): number {
-  if (!seg.trip.locked) return 0;
-  const q = seg.step.kind === 'appear' ? (k - 0.6) / 0.25 : seg.step.kind === 'read' ? (k - 0.1) / 0.25 : -1;
-  return q > 0 && q < 1 ? q : 0;
-}
 const BURST = '#ffd84a';
 const WAIT = '#c2562f';
+const NO_KEY: LockPose = { show: false, drop: 0, open: 0, op: 1, dark: 0, key: null };
 
 /** Header bytes → tiles along the packet. The data card is not to scale (it would dwarf the headers). */
 const TILES_PER_BYTE = 0.04;
@@ -46,23 +33,13 @@ const layerName = (layer: Layer, trip: Trip, l2: L2 = 'ethernet'): string =>
   ({ app: 'App', l4: trip.l4 === 'udp' ? 'UDP' : 'TCP', ip: 'IP', eth: l2 === 'wifi' ? 'Wi-Fi' : 'Ethernet' })[layer];
 const cardFont = (label: string): number => (label.length <= 7 ? 13 : label.length <= 14 ? 10.5 : 9);
 const cardLen = (trip: Trip): number => {
-  // Room for the label as it shows (locked cards show only a padlock and maybe a number).
-  const label = trip.locked ? (trip.card?.match(/\d+\/\d+$/)?.[0] ?? '') + '🔒 ' : (trip.card ?? '');
+  const label = trip.card ?? '';
   return Math.max(1.3 + 0.42 * Math.log2(Math.max(trip.dataBytes, 64) / 64), (label.length * cardFont(label) * 0.62 + 18) / U);
 };
 
 /** Text printed on a box face: `+y` faces run along +x on screen, `+x` faces along −y. */
 const faceTf = (p: { sx: number; sy: number }, face: '+y' | '+x'): string =>
   `matrix(1 ${face === '+y' ? 0.5 : -0.5} 0 1 ${p.sx.toFixed(1)} ${p.sy.toFixed(1)})`;
-
-const easeOutBounce = (t: number): number => {
-  const n = 7.5625;
-  const d = 2.75;
-  if (t < 1 / d) return n * t * t;
-  if (t < 2 / d) return n * (t -= 1.5 / d) * t + 0.75;
-  if (t < 2.5 / d) return n * (t -= 2.25 / d) * t + 0.9375;
-  return n * (t -= 2.625 / d) * t + 0.984375;
-};
 
 type PartKey = 'ethH' | 'ip' | 'l4' | 'card' | 'ethT';
 
@@ -107,6 +84,7 @@ interface DeviceView {
 }
 
 interface Screen {
+  face: SVGGElement;
   page: SVGGElement;
   title: SVGTextElement;
   dns: SVGGElement;
@@ -131,6 +109,8 @@ export class NetworkScene {
   /** Emoji statuses over devices; on top of everything. */
   private readonly moods: SVGGElement;
   private readonly fx: SVGGElement;
+  /** The session keys beside each end, and the one at work. */
+  private readonly keys: SVGGElement;
   /** What the laptop and the phone show on their screens. */
   private readonly screens = new Map<string, Screen>();
   /** Cables that crackle in stormy weather, and the layer they crackle on. */
@@ -139,13 +119,19 @@ export class NetworkScene {
   /** Where a page that comes in several parts is put back together, beside the laptop. */
   private readonly rack: SVGGElement;
   private overview = { x: 0, y: 0, w: 1, h: 1 };
+  private onTable: { sx: number; sy: number }[] = [];
+  private remembered: ReadonlyMap<string, { site: string; ip: string }> = new Map();
   /** The kind of frame around the packet being drawn. */
   private l2: L2 = 'ethernet';
   /** How locked the card being drawn is (0 open, 1 locked): HTTPS cards lock at the sender and open at the receiver. */
   private lock = 0;
 
+  /** Where the keyhole of the padlock on the packet is on screen this frame. */
+  private keyhole: { sx: number; sy: number } | null = null;
+
+  /** What the card says: nothing readable while locked, only which part it is. */
   private cardText(trip: Trip): string {
-    return this.lock > 0.5 ? (trip.card?.match(/\d+\/\d+$/) ? `🔒 ${trip.card.match(/\d+\/\d+$/)![0]}` : '🔒') : (trip.card ?? '');
+    return this.lock > 0.5 ? (trip.card?.match(/\d+\/\d+$/)?.[0] ?? '') : (trip.card ?? '');
   }
   private readonly cables: SVGGElement;
   /** Each drawn cable (or satellite hop) and the devices at its ends, to grey out the unused ones. */
@@ -169,6 +155,7 @@ export class NetworkScene {
     this.fx = el('g', { class: 'fx' }, world);
     this.packet = el('g', { class: 'packet' }, world);
     this.tags = el('g', { class: 'tags' }, world);
+    this.keys = el('g', { class: 'keys' }, world);
     this.moods = el('g', { class: 'moods' }, world);
 
     // Draw far devices first: a larger x + y is nearer the viewer.
@@ -178,7 +165,10 @@ export class NetworkScene {
       const trays = el('g', { class: 'trays', opacity: 0 }, devs);
       const g = el('g', { class: 'device' }, devs);
       const screen = this.buildDevice(g, d.kind, p.x, p.y);
-      if (screen) this.screens.set(d.id, screen);
+      if (screen) {
+        this.screens.set(d.id, screen);
+        screen.face.setAttribute('data-device', d.id);
+      }
       const { l4Name, l2Tray, l2Name } = this.buildTrays(trays, d.id, p.x, p.y);
       const s = iso(p.x, p.y + 1.9, 0);
       const name = el('text', { class: 'device-name', 'text-anchor': 'middle', x: s.sx.toFixed(1), y: (s.sy + 26).toFixed(1) }, g);
@@ -246,9 +236,6 @@ export class NetworkScene {
           line(g, foot, top, { class: 'beam' });
           cylinder(g, { x: foot.x, y: foot.y, z: 0, r: 0.35, h: 0.3, color: DEVICE });
         }
-        // The satellite: a small body with a solar panel either side.
-        rbox(g, { cx: top.x, cy: top.y, z: top.z - 0.35, len: 0.7, wid: 0.7, h: 0.7, angle: 0, color: '#cfc6b8' });
-        for (const s of [-1, 1]) tile(g, top.x - 0.45 + s * 1.15, top.y - 0.35, 0.9, 0.7, top.z, { class: 'panel' });
       } else {
         line(g, v3(a.x, a.y, 0), v3(b.x, b.y, 0), { class: 'cable' });
       }
@@ -389,13 +376,29 @@ export class NetworkScene {
     });
   }
 
+  /** Everything else lying on the table, which the whole-network view must keep in frame. */
+  setOnTable(points: { sx: number; sy: number }[]): void {
+    this.onTable = points;
+    this.fit();
+  }
+
+  /** The two screen ends of a cable. */
+  cableEnds(link: string): [{ sx: number; sy: number }, { sx: number; sy: number }] | null {
+    const l = this.story.links.find((x) => x.id === link);
+    const a = l && this.tl.pos.get(l.a);
+    const b = l && this.tl.pos.get(l.b);
+    return a && b ? [iso(a.x, a.y, 0), iso(b.x, b.y, 0)] : null;
+  }
+
+  /** The remembered address on each device's screen (only the one running shows anything else). */
+  setRemembered(known: ReadonlyMap<string, { site: string; ip: string }>): void {
+    this.remembered = known;
+  }
+
   private fit(): void {
     const pts: { sx: number; sy: number }[] = [];
     for (const p of this.tl.pos.values()) for (const [dx, dy] of [[-2, -2], [2, 2.4], [-2, 2.4], [2, -2]] as const) for (const z of [0, 3.2]) pts.push(iso(p.x + dx, p.y + dy, z));
-    // Room for the site card waiting left of the laptop.
-    pts.push(iso(-8.6, 0.4, 3.6));
-    // And for the sticker sheet above it.
-    pts.push(iso(-4.6, 0.4, 8.2), iso(-9.4, -2.4, 6.5));
+    pts.push(...this.onTable);
     const minX = Math.min(...pts.map((p) => p.sx)) - 20;
     const maxX = Math.max(...pts.map((p) => p.sx)) + 20;
     const minY = Math.min(...pts.map((p) => p.sy)) - 10;
@@ -426,8 +429,7 @@ export class NetworkScene {
     const cw = this.svg.clientWidth || 1;
     const ch = this.svg.clientHeight || 1;
     if (ch > cw * 1.2) {
-      const c = iso(-3.0, 0.2, 3.4);
-      return { cx: c.sx, cy: c.sy, scale: Math.max(this.baseScale(), cw / 400) };
+      return { cx: -20, cy: 60, scale: Math.max(this.baseScale(), cw / 560) };
     }
     return { cx: o.x + o.w / 2, cy: o.y + o.h / 2, scale: this.baseScale() };
   }
@@ -456,6 +458,11 @@ export class NetworkScene {
     return { cx: s.sx, cy: s.sy, scale: this.followScale() };
   }
 
+  /** The point `right` and `down` screen pixels in from the top-right corner of the view, in SVG units. */
+  viewCorner(c: Camera, right: number, down: number): { sx: number; sy: number } {
+    return { sx: c.cx + ((this.svg.clientWidth || 1) / 2 - right) / c.scale, sy: c.cy + (-(this.svg.clientHeight || 1) / 2 + down) / c.scale };
+  }
+
   /** Sets the viewBox so it matches the element's aspect ratio. */
   applyCamera(c: Camera): void {
     const w = (this.svg.clientWidth || 1) / c.scale;
@@ -468,7 +475,7 @@ export class NetworkScene {
    * Content is laid out for the laptop's 66 × 37 px screen and scaled to fit.
    */
   private buildScreen(g: SVGGElement, a: { sx: number; sy: number }, w: number, h: number): Screen {
-    const face = el('g', { transform: faceTf(a, '+y') }, g);
+    const face = el('g', { class: 'dev-screen', transform: faceTf(a, '+y') }, g);
     el('rect', { x: 0, y: 0, width: w, height: h, fill: '#3b4049' }, face);
     const W = 2.36 * U;
     const H = 1.32 * U;
@@ -488,7 +495,7 @@ export class NetworkScene {
     }
     const fail = el('text', { x: w / 2, y: h / 2, dy: '0.35em', class: 'screen-fail', 'text-anchor': 'middle', opacity: 0 }, face);
     fail.textContent = '✗';
-    return { page, title, dns, dnsName: name, dnsAddr, fail };
+    return { face, page, title, dns, dnsName: name, dnsAddr, fail };
   }
 
   private buildDevice(g: SVGGElement, kind: string, x: number, y: number): Screen | null {
@@ -579,9 +586,19 @@ export class NetworkScene {
     }
     this.renderRack(v);
     this.renderMoods(v);
-    for (const [id, screen] of this.screens) if (id !== tl.client) this.blank(screen);
+    for (const [id, screen] of this.screens) {
+      if (id === tl.client && v >= 0) continue;
+      this.blank(screen);
+      const known = this.remembered.get(id);
+      screen.face.classList.toggle('remembers', !!known);
+      if (!known) continue;
+      screen.dnsName.textContent = known.site;
+      screen.dnsAddr.textContent = known.ip;
+      screen.dns.setAttribute('opacity', '1');
+    }
     const screen = this.screens.get(tl.client);
-    if (!screen) return;
+    if (!screen || v < 0) return;
+    screen.face.classList.toggle('remembers', this.remembered.has(tl.client));
     // A page in several parts shows once the last missing part has slotted into the rack.
     const parts = this.partArrivals();
     const whole = parts && parts.filled.size === parts.of ? Math.max(...parts.filled.values()) : Infinity;
@@ -665,21 +682,22 @@ export class NetworkScene {
     this.packet.replaceChildren();
     this.tags.replaceChildren();
     this.fx.replaceChildren();
+    this.keys.replaceChildren();
+    this.keyhole = null;
     const hit = segAt(this.tl, v);
     if (!hit) return;
     const { seg, k } = hit;
     const step = seg.step;
     if (step.kind === 'wait') {
       this.drawWait(seg, k);
+      this.drawKeys(v, seg, NO_KEY);
       return;
     }
     const trip = seg.trip;
     this.l2 = frameAt(seg)?.l2 ?? 'ethernet';
-    this.lock = lockAt(seg, k);
+    const lock = lockPose(seg, k);
+    this.lock = lock.dark;
     const parts = this.parts(seg, k);
-    // The lock clicks shut (or springs open) with a little bounce.
-    const click = lockClick(seg, k);
-    if (click > 0) for (const p of parts) if (p.key === 'card') p.scale *= 1 + 0.18 * Math.sin(Math.PI * click);
     const at = packetPose(this.tl, seg, k);
     const pose: Pose = { pos: at.pos, angle: at.angle, gap: peek * 0.7, spin: 0, squash: 0, op: 1, sleeve: 1 - peek, tag: peek < 0.5, chips: peek };
 
@@ -721,7 +739,8 @@ export class NetworkScene {
         p.op *= 1 - sink;
       }
     }
-    this.drawPose(seg, k, trip, parts, pose, wiggle);
+    this.drawPose(seg, k, trip, parts, pose, wiggle, lock);
+    this.drawKeys(v, seg, lock);
   }
 
   private tumble(pose: Pose, tau: number): void {
@@ -821,7 +840,7 @@ export class NetworkScene {
     }
   }
 
-  private drawPose(seg: Seg, k: number, trip: Trip, parts: Part[], pose: Pose, wiggle: number): void {
+  private drawPose(seg: Seg, k: number, trip: Trip, parts: Part[], pose: Pose, wiggle: number, lock: LockPose): void {
     const visible = parts.filter((p) => p.op > 0.01);
     const lengths = visible.map((p) => p.len * p.f * p.scale);
     const total = lengths.reduce((a, b) => a + b, 0) + pose.gap * Math.max(0, visible.length - 1);
@@ -897,6 +916,13 @@ export class NetworkScene {
       }
     }
 
+    const card = placed.find((x) => x.p.key === 'card');
+    if (lock.show && card) {
+      const c = at((card.u0 + card.u1) / 2 + card.p.slide);
+      const h = SECTION.app.h * card.p.scale;
+      this.padlock(g0, iso(c.x, c.y, pos.z + h / 2 + card.p.lift + wiggle), lock);
+    }
+
     // The Ethernet sleeve: a see-through wrap from the header cap to the trailer cap.
     const sleeve = parts.find((p) => p.key === 'ethH');
     const front = placed.find((x) => x.p.key === 'ethH');
@@ -915,6 +941,58 @@ export class NetworkScene {
     if (pose.chips > 0.02) {
       const items = placed.map(({ p, u0, u1 }) => ({ p, top: v3(at((u0 + u1) / 2).x, at((u0 + u1) / 2).y, pos.z + SECTION[p.layer].h / 2) }));
       this.sizeChips(items, trip, pose.chips);
+    }
+  }
+
+  /** A padlock standing on the card. `base` is the middle of the card's top. */
+  private padlock(parent: SVGGElement, base: { sx: number; sy: number }, l: LockPose): void {
+    const y = base.sy - 2 - l.drop * 110;
+    const g = el('g', { class: 'padlock', opacity: l.op.toFixed(3), transform: `translate(${base.sx.toFixed(1)} ${y.toFixed(1)})` }, parent);
+    // The shackle lifts and swings out on its left leg when open.
+    const shackle = `translate(0 ${(-11 * l.open).toFixed(1)}) rotate(${(26 * l.open).toFixed(1)} -9 -24)`;
+    el('path', { d: 'M-9 -22 V-33 A9 9 0 0 1 9 -33 V-22', class: 'padlock-shackle', transform: shackle }, g);
+    el('rect', { x: -15, y: -24, width: 30, height: 24, rx: 5, class: 'padlock-body' }, g);
+    el('circle', { cx: 0, cy: -14, r: 3.4, class: 'padlock-hole' }, g);
+    el('rect', { x: -1.4, y: -14, width: 2.8, height: 7, class: 'padlock-hole' }, g);
+    this.keyhole = { sx: base.sx, sy: y - 14 };
+  }
+
+  /** The session key resting beside a device. */
+  private keyRest(device: string): { sx: number; sy: number } {
+    const d = this.tl.pos.get(device) ?? { x: 0, y: 0 };
+    return iso(d.x + 1.7, d.y - 1.3, (DEVICE_TOP[this.tl.kind.get(device) ?? ''] ?? 1) + 0.5);
+  }
+
+  /** One key: the same shape at both ends, because both ends worked out the same secret. Tip at the origin. */
+  private keyShape(c: { sx: number; sy: number }, scale: number, turn: number): SVGGElement {
+    const squeeze = Math.max(0.12, Math.cos((turn * Math.PI) / 2));
+    const g = el('g', { class: 'key', transform: `translate(${c.sx.toFixed(1)} ${c.sy.toFixed(1)}) scale(${scale.toFixed(3)} ${(scale * squeeze).toFixed(3)})` }, this.keys);
+    el('path', { d: 'M0 -2.2 H30 V2.2 H16 V8 H12 V2.2 H8 V6 H4 V2.2 H0 Z', class: 'key-metal' }, g);
+    el('circle', { cx: 38, cy: 0, r: 10, class: 'key-metal' }, g);
+    el('circle', { cx: 40, cy: 0, r: 3.5, class: 'key-hole' }, g);
+    return g;
+  }
+
+  /** Each end's key from the moment it has worked it out, popping up with a sparkle; the one at work flies to the lock. */
+  private drawKeys(v: number, seg: Seg, lock: LockPose): void {
+    const working = lock.key && 'device' in seg.step ? seg.step.device : null;
+    for (const [device, t] of this.tl.keys) {
+      const dt = v - t;
+      if (dt < 0) continue;
+      const rest = this.keyRest(device);
+      if (device === working && lock.key) {
+        const hole = this.keyhole ?? rest;
+        this.keyShape({ sx: lerp(rest.sx, hole.sx, lock.key.to), sy: lerp(rest.sy, hole.sy, lock.key.to) }, 1, lock.key.turn);
+        continue;
+      }
+      const g = this.keyShape(rest, easeOutBack(clamp01(dt / 0.35)), 0);
+      if (dt < 0.7) {
+        const r = 20 + 34 * easeOut(dt / 0.7);
+        for (let i = 0; i < 6; i++) {
+          const a = (i / 6) * Math.PI * 2;
+          el('line', { x1: 20 + Math.cos(a) * r * 0.7, y1: Math.sin(a) * r * 0.7, x2: 20 + Math.cos(a) * r, y2: Math.sin(a) * r, class: 'key-spark', opacity: (1 - dt / 0.7).toFixed(2) }, g);
+        }
+      }
     }
   }
 
@@ -973,7 +1051,7 @@ export class NetworkScene {
   private sizeChips(items: { p: Part; top: Vec3 }[], trip: Trip, op: number): void {
     const chips = items
       .map(({ p, top }) => {
-        const name = p.key === 'card' ? this.cardText(trip) : p.key === 'ethT' ? '' : p.key === 'l4' ? trip.l4Label : layerName(p.layer, trip, this.l2);
+        const name = p.key === 'card' ? (this.lock > 0.5 ? `🔒 ${this.cardText(trip)}`.trim() : this.cardText(trip)) : p.key === 'ethT' ? '' : p.key === 'l4' ? trip.l4Label : layerName(p.layer, trip, this.l2);
         const text = name ? `${name} · ${p.bytes} B` : `${p.bytes} B`;
         return { p, a: iso(top.x, top.y, top.z), text, w: text.length * 6.6 + 14, x: 0 };
       })

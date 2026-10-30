@@ -49,6 +49,14 @@ export const lerp = (a: number, b: number, t: number): number => a + (b - a) * t
 export const easeInOut = (t: number): number => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 export const easeOut = (t: number): number => 1 - (1 - t) ** 3;
 export const easeIn = (t: number): number => t * t * t;
+export const easeOutBounce = (t: number): number => {
+  const n = 7.5625;
+  const d = 2.75;
+  if (t < 1 / d) return n * t * t;
+  if (t < 2 / d) return n * (t -= 1.5 / d) * t + 0.75;
+  if (t < 2.5 / d) return n * (t -= 2.25 / d) * t + 0.9375;
+  return n * (t -= 2.625 / d) * t + 0.984375;
+};
 /** Overshoots to ~1.1 then settles; the "click" of a part snapping home. */
 export const easeOutBack = (t: number): number => {
   const c1 = 1.70158;

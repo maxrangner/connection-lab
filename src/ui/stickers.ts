@@ -6,14 +6,12 @@ import { lerp } from './project';
  * it) to switch that feature on; drag it off the card (or tap it there) to switch it off again.
  */
 
-export type Feature = 'https' | 'big' | 'again' | 'slow';
+export type Feature = 'https' | 'big';
 export type Features = Record<Feature, boolean>;
 
 const DEFS: { id: Feature; label: string; color: string }[] = [
   { id: 'https', label: 'Secure', color: '#3d4654' },
   { id: 'big', label: 'Bigger page', color: '#3d7ea6' },
-  { id: 'again', label: 'Visit again', color: '#5f8a2e' },
-  { id: 'slow', label: 'Satellite', color: '#7a5aa6' },
 ];
 
 interface Sticker {
@@ -34,20 +32,11 @@ function icon(g: SVGGElement, id: Feature, color: string): void {
     el('rect', { x: -8, y: -2, width: 16, height: 13, rx: 2.5, fill: color }, g);
     el('circle', { cx: 0, cy: 3.5, r: 1.8, fill: '#fff' }, g);
     el('rect', { x: -0.8, y: 4, width: 1.6, height: 4, fill: '#fff' }, g);
-  } else if (id === 'big') {
+  } else {
     // A tall page with a folded corner and lines of text.
     el('path', { d: 'M-8 -12 H4 L9 -7 V12 H-8 Z', fill: '#fff', stroke: color, 'stroke-width': 2, 'stroke-linejoin': 'round' }, g);
     el('path', { d: 'M4 -12 V-7 H9', fill: 'none', stroke: color, 'stroke-width': 2, 'stroke-linejoin': 'round' }, g);
     for (let i = 0; i < 4; i++) el('line', { x1: -5, x2: i % 2 ? 3 : 6, y1: -3 + i * 4, y2: -3 + i * 4, stroke: color, 'stroke-width': 1.8, 'stroke-linecap': 'round' }, g);
-  } else if (id === 'slow') {
-    // A little satellite: a body with a solar panel either side.
-    el('rect', { x: -4, y: -4, width: 8, height: 8, rx: 1.5, fill: '#fff', stroke: color, 'stroke-width': 2 }, g);
-    for (const s of [-1, 1]) el('rect', { x: s < 0 ? -13 : 6, y: -3.5, width: 7, height: 7, fill: color, stroke: color, 'stroke-width': 1 }, g);
-    el('path', { d: 'M3 -6 Q8 -11 12 -8', fill: 'none', stroke: color, 'stroke-width': 1.8, 'stroke-linecap': 'round' }, g);
-  } else {
-    // A circular arrow: around once more.
-    el('path', { d: 'M9 -3 A9.5 9.5 0 1 0 6 7', fill: 'none', stroke: color, 'stroke-width': 3, 'stroke-linecap': 'round' }, g);
-    el('path', { d: 'M3 -6 L10 -4 L10 -11 Z', fill: color, stroke: color, 'stroke-width': 1.5, 'stroke-linejoin': 'round' }, g);
   }
 }
 
@@ -61,7 +50,7 @@ export class Stickers {
     initial: Partial<Features>,
     private readonly onChange: (f: Features) => void,
   ) {
-    this.features = { https: false, big: false, again: false, slow: false, ...initial };
+    this.features = { https: false, big: false, ...initial };
     this.root = el('g', { class: 'stickers' }, svg);
     for (const d of DEFS) {
       const g = el('g', { class: 'sticker' }, this.root);
@@ -139,7 +128,8 @@ export class Stickers {
         scale = 0.6 * cardScale;
         onCard++;
       } else {
-        target = { sx: home.sx + (i - (DEFS.length - 1) / 2) * 76, sy: home.sy - 96 };
+        // The sheet lies just above the card.
+        target = { sx: home.sx - 40 - i * 76, sy: home.sy - 86 };
         scale = 1;
       }
       if (!s.drag) {

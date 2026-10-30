@@ -46,7 +46,10 @@ export type Step =
   | { kind: 'travel'; from: string; to: string; link: string; /** Sim time the frame was sent. */ at: number }
   /** Knocked off the cable on the way from `from` to `to`. */
   | { kind: 'lost'; from: string; to: string; link: string; at: number }
-  | { kind: 'read'; device: string };
+  | { kind: 'read'; device: string }
+  /** HTTPS: the sender puts a padlock on the card with its session key, the receiver opens it with the same key. */
+  | { kind: 'lock'; device: string }
+  | { kind: 'unlock'; device: string };
 
 export interface Trip {
   packetId: string;
@@ -93,6 +96,8 @@ export interface Story {
   pageTitle: string | null;
   /** The address the DNS answer gave, if it arrived. */
   dnsAnswer: string | null;
+  /** How long (seconds) the DNS answer may be remembered, from the record's real TTL. */
+  dnsTtl: number | null;
   /** On a second visit: the address the laptop still remembered, so it asked nobody. */
   remembered: string | null;
 }
@@ -283,6 +288,11 @@ export function buildStory(r: SimResult): Story {
     trips,
     pageTitle: pageTitle(r),
     dnsAnswer: dnsAnswer(r),
+    dnsTtl: (() => {
+      const e = r.events.find((x) => x.type === 'app' && x.action === 'dns-answer');
+      const ttl = e?.type === 'app' ? Number(e.info?.ttl) : NaN;
+      return Number.isFinite(ttl) ? ttl : null;
+    })(),
     remembered: dnsAnswer(r, 'dns-cache-hit'),
   };
 }
@@ -360,6 +370,14 @@ function labelTls(trips: Trip[], r: SimResult, session: TlsSession): void {
     if (!main) continue;
     t.card = recordLabel(main);
     t.locked = main.inner === TLS_APPLICATION_DATA || !main.handshakes.some((h) => /Hello/.test(h));
+    if (t.locked) {
+      // The padlock goes on right after the card appears and comes off just before it is read.
+      const appear = t.steps.findIndex((x) => x.kind === 'appear');
+      if (appear >= 0) t.steps.splice(appear + 1, 0, { kind: 'lock', device: t.origin });
+      const read = t.steps.findIndex((x) => x.kind === 'read');
+      const reader = t.steps[read];
+      if (reader?.kind === 'read') t.steps.splice(read, 0, { kind: 'unlock', device: reader.device });
+    }
     t.chapter = touching.some((x) => x.inner === TLS_APPLICATION_DATA || x.inner === TLS_ALERT || x.handshakes.includes('NewSessionTicket')) ? 'page' : 'secret';
     if (t.chapter === 'secret') {
       const key = `${side}|${flightOf(side, from)}`;
