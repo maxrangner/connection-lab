@@ -105,6 +105,8 @@ export interface Story {
   client: string;
   /** All traffic goes through the VPN server. */
   vpn: boolean;
+  /** Which device each address belongs to. */
+  names: Record<string, string>;
   devices: { id: string; label: string; kind: string }[];
   /** Cables, with their one-way delay in seconds. */
   links: { id: string; a: string; b: string; delay: number; medium: 'cable' | 'wifi' }[];
@@ -352,6 +354,7 @@ export function buildStory(r: SimResult): Story {
     site: url ? new URL(url).hostname : '',
     client,
     vpn: r.scenario.devices.some((d) => d.tunnel),
+    names: Object.fromEntries(r.scenario.devices.flatMap((d) => [...d.ifaces.map((i) => [i.ip, d.label]), ...(d.tunnel ? [[d.tunnel.ip, d.label]] : [])])),
     trips,
     pageTitle: pageTitle(r),
     dnsAnswer: dnsAnswer(r),

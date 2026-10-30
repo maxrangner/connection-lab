@@ -93,7 +93,7 @@ export class Prop {
       this.g.classList.remove('held', 'over');
       if (spec.dropped) {
         // A tap with nowhere to go: it wants to be put somewhere.
-        if (tapped && !this.on) this.refuse = 0.4;
+        if (tapped && !this.on && spec.ghost) this.refuse = 0.4;
         spec.dropped(tapped ? null : this.pos);
       } else this.set(tapped ? !this.on : spec.hits(this.pos));
     });

@@ -1,6 +1,7 @@
 import { el } from './svg';
 import { box, cylinder, line, rbox, tile } from './prims';
 import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, easeOutBounce, iso, lerp, U, v3, type Vec3 } from './project';
+import { drawCloud, drawScissors, drawShield, rain } from './props';
 import { shade } from './shade';
 import type { Seen, Story, Trip, Wrap } from './story';
 import { addressBefore, DEVICE_TOP, FACE_EMOJI, frameAt, LEVEL, lockPose, packetPos, packetPose, segAt, trayOpacity, wrapsBefore, type LockPose, type Seg, type Timeline } from './timeline';
@@ -138,7 +139,7 @@ export class NetworkScene {
   /** What the laptop and the phone show on their screens. */
   private readonly screens = new Map<string, Screen>();
   /** The paths of the links that crackle in stormy weather. */
-  private stormy: Vec3[][] = [];
+  private stormy: { id: string; path: Vec3[] }[] = [];
   private readonly storm: SVGGElement;
   /** Where a page that comes in several parts is put back together, beside the laptop. */
   private readonly rack: SVGGElement;
@@ -158,7 +159,9 @@ export class NetworkScene {
     return this.lock > 0.5 ? (trip.card?.match(/\d+\/\d+$/)?.[0] ?? '') : (trip.card ?? '');
   }
   private readonly cables: SVGGElement;
-  private cut: string | null = null;
+  private cut = new Set<string>();
+  /** The line a tool would work on, highlighted. */
+  private readonly hover: SVGGElement;
   /** Each drawn cable (or satellite hop) and the devices at its ends, to grey out the unused ones. */
   private cableViews: { g: SVGGElement; a: string; b: string }[] = [];
   /** Devices that take part in this run; the rest are greyed out once it starts. */
@@ -173,6 +176,7 @@ export class NetworkScene {
     host.appendChild(this.svg);
     const world = el('g', {}, this.svg);
     this.cables = el('g', { class: 'cables' }, world);
+    this.hover = el('g', { class: 'hover' }, world);
     this.storm = el('g', { class: 'storm' }, world);
     const devs = el('g', {}, world);
     this.rack = el('g', { class: 'rack' }, world);
@@ -322,7 +326,7 @@ export class NetworkScene {
           line(g, foot, top, { class: 'beam' });
           cylinder(g, { x: foot.x, y: foot.y, z: 0, r: 0.35, h: 0.3, color: DEVICE });
         }
-      } else if (this.cut === l.id) {
+      } else if (this.cut.has(l.id)) {
         // Two loose ends with a gap between them.
         const [a, b] = path as [Vec3, Vec3];
         const mid = (s: number): Vec3 => v3(lerp(a.x, b.x, 0.5 + s), lerp(a.y, b.y, 0.5 + s), 0);
@@ -335,11 +339,28 @@ export class NetworkScene {
             el('line', { x1: c.sx, y1: c.sy, x2: c.sx - k * dx, y2: c.sy + dy, class: 'fray' }, g);
           }
         }
+        const c = iso(mid(0).x, mid(0).y, 0);
+        drawScissors(el('g', { transform: `translate(${c.sx.toFixed(1)} ${(c.sy - 8).toFixed(1)}) scale(0.5)` }, g));
       } else {
         line(g, path[0]!, path[1]!, { class: 'cable' });
       }
       this.cableViews.push({ g, a: l.a, b: l.b });
     }
+    if (this.story.vpn) this.buildTunnel();
+  }
+
+  /** A tube along the whole way from the device to the VPN server: inside it, nobody sees what is going on. */
+  private buildTunnel(): void {
+    const first = this.story.links.find((l) => l.a === this.tl.client);
+    if (!first) return;
+    const pts = [first.id, 'wan', 'bb3'].flatMap((id) => this.linkPath(id));
+    const points = pts.map((p) => `${p.sx.toFixed(1)},${(p.sy - 10).toFixed(1)}`).join(' ');
+    const g = el('g', { class: 'tunnel' }, this.cables);
+    el('polyline', { points, class: 'tunnel-tube' }, g);
+    el('polyline', { points, class: 'tunnel-flow' }, g);
+    const c = this.linkSpot('wan', 0.5, -34);
+    const name = el('text', { x: c.sx, y: c.sy, 'text-anchor': 'middle', class: 'tunnel-name' }, g);
+    name.textContent = 'VPN tunnel';
   }
 
   private linkShown(device: string): boolean {
@@ -358,15 +379,22 @@ export class NetworkScene {
     return iso(d.x, d.y, (DEVICE_TOP[this.tl.kind.get(id) ?? ''] ?? 1) + 0.9);
   }
 
-  /** Which cable is cut, if any. */
-  setCut(line: string | null): void {
-    this.cut = line;
+  /** Which cables are cut. */
+  setCut(lines: readonly string[]): void {
+    this.cut = new Set(lines);
     this.buildCables();
+  }
+
+  /** Highlight the line a tool would work on. */
+  setHover(id: string | null): void {
+    this.hover.replaceChildren();
+    if (!id) return;
+    el('polyline', { points: this.linkPath(id).map((p) => `${p.sx.toFixed(1)},${p.sy.toFixed(1)}`).join(' '), class: 'line-hover' }, this.hover);
   }
 
   /** Which links crackle, by id; empty for calm weather. */
   setStorm(links: readonly string[]): void {
-    this.stormy = links.map((id) => this.linkWorld(id)).filter((p) => p.length > 1);
+    this.stormy = links.map((id) => ({ id, path: this.linkWorld(id) })).filter((l) => l.path.length > 1);
   }
 
   /**
@@ -381,7 +409,7 @@ export class NetworkScene {
       const x = Math.sin(n * 12.9898 + tick * 78.233) * 43758.5453;
       return x - Math.floor(x);
     };
-    this.stormy.forEach((path, li) => {
+    this.stormy.forEach(({ id, path }, li) => {
       const length = path.slice(1).reduce((s, p, i) => s + Math.hypot(p.x - path[i]!.x, p.y - path[i]!.y, p.z - path[i]!.z), 0);
       const steps = Math.max(4, Math.round(length / 0.45));
       const pts: string[] = [];
@@ -411,6 +439,12 @@ export class NetworkScene {
         });
         el('polygon', { points: spikes.join(' '), class: 'spark' }, this.storm);
       }
+      // A rain cloud over every stormy line.
+      const c = this.linkSpot(id, 0.5, 62);
+      const cloud = el('g', { class: 'storm-cloud', transform: `translate(${c.sx.toFixed(1)} ${c.sy.toFixed(1)}) scale(0.8)` }, this.storm);
+      drawCloud(cloud);
+      const drops = el('g', {}, cloud);
+      rain(drops, time, true);
     });
   }
 
@@ -986,8 +1020,10 @@ export class NetworkScene {
     });
 
     const { pos } = pose;
-    const tunnelCase = parts.find((p) => p.key === 'vpn');
-    const tunnelDark = tunnelCase ? tunnelCase.f * tunnelCase.op : 0;
+    // The VPN box closes over the whole packet: address, transport and card all go inside.
+    const boxFront = placed.find((x) => x.p.key === 'vpn');
+    const boxBack = boxFront && [...placed].reverse().find((x) => sealedInside(x.p.key));
+    const boxShut = !!boxFront && boxFront.p.f > 0.95 && Math.abs(boxFront.p.lift) < 0.05;
     const dir = { x: Math.cos(pose.angle), y: Math.sin(pose.angle) };
     const across = { x: -dir.y, y: dir.x };
     const at = (uu: number): Vec3 => v3(pos.x + dir.x * uu, pos.y + dir.y * uu, pos.z);
@@ -1020,7 +1056,14 @@ export class NetworkScene {
     const frontFaces = dir.x + dir.y > 0.05;
     const backFaces = dir.x + dir.y < -0.05;
 
-    for (const { p, u0, u1 } of [...placed].sort((m, n) => mid(m) - mid(n))) {
+    // What goes in the box is drawn first, so that the box comes down over it.
+    const boxDepth = boxFront && boxBack ? mid({ u0: boxBack.u0, u1: boxFront.u1 }) : 0;
+    const depth = (x: { p: Part; u0: number; u1: number }): number =>
+      x.p.key === 'vpn' && boxBack ? boxDepth : boxFront && sealedInside(x.p.key) ? boxDepth - 0.01 : mid(x);
+    for (const { p, u0: start, u1 } of [...placed].sort((m, n) => depth(m) - depth(n))) {
+      if (boxShut && sealedInside(p.key)) continue;
+      const isBox = p.key === 'vpn' && !!boxBack;
+      const u0 = isBox ? boxBack.u0 : start;
       const sec = SECTION[p.layer];
       const d = sec.d * p.scale;
       const h = sec.h * p.scale;
@@ -1028,14 +1071,15 @@ export class NetworkScene {
       if (along < 0.005) continue;
       const centre = at((u0 + u1) / 2 + p.slide);
       const z = pos.z - h / 2 + p.lift + (p.key === 'card' ? wiggle : 0);
-      const base = p.key === 'card' && this.lock > 0 ? mix(COLOR.app, LOCKED, this.lock) : colorOf(p.layer, trip, this.l2);
-      // Everything inside the VPN case is sealed, its addresses too.
-      const sealed = sealedInside(p.key) ? tunnelDark : 0;
-      const color = sealed > 0 ? mix(base, LOCKED, sealed) : base;
+      const color = p.key === 'card' && this.lock > 0 ? mix(COLOR.app, LOCKED, this.lock) : colorOf(p.layer, trip, this.l2);
       const g = el('g', { opacity: p.op.toFixed(3), class: `part part-${p.layer}` }, g0);
       rbox(g, { cx: centre.x, cy: centre.y, z, len: along, wid: d, h, angle: pose.angle, color });
       // Name printed on the long side facing the viewer, if there is room for it.
-      const label = sealed > 0.5 ? '' : p.key === 'card' ? this.cardText(trip) : p.key === 'ip' ? 'IP' : p.key === 'l4' ? trip.l4Label : p.key === 'vpn' ? 'VPN' : '';
+      if (isBox) {
+        const top = iso(centre.x, centre.y, z + h);
+        drawShield(el('g', { transform: `translate(${top.sx.toFixed(1)} ${(top.sy - 8).toFixed(1)}) scale(0.62)` }, g));
+      }
+      const label = p.key === 'card' ? this.cardText(trip) : p.key === 'ip' ? 'IP' : p.key === 'l4' ? trip.l4Label : p.key === 'vpn' ? 'VPN' : '';
       const font = p.key === 'card' ? cardFont(label) : 10;
       const onSide = label && p.f > 0.6 ? faceText(dir, v3(centre.x + side.x * (d / 2), centre.y + side.y * (d / 2), z + h / 2)) : null;
       if (label && onSide && along * U * onSide.ex > label.length * font * 0.62 + 4) {
@@ -1055,7 +1099,7 @@ export class NetworkScene {
     }
 
     const card = placed.find((x) => x.p.key === 'card');
-    if (lock.show && card) {
+    if (lock.show && card && !boxShut) {
       const c = at((card.u0 + card.u1) / 2 + card.p.slide);
       const h = SECTION.app.h * card.p.scale;
       this.padlock(g0, iso(c.x, c.y, pos.z + h / 2 + card.p.lift + wiggle), lock);
@@ -1219,11 +1263,17 @@ export class NetworkScene {
   private addressTag(seg: Seg, k: number, p: Vec3, op: number): void {
     const a = addressBefore(seg);
     let flipScale = 1;
-    let changed: 'from' | 'to' | null = null;
+    let changed: 'from' | 'to' | 'both' | null = null;
     if (seg.step.kind === 'nat') {
       changed = seg.step.which;
       const w = clamp01((k - 0.3) / 0.4);
       if (w >= 0.5) a[seg.step.which] = seg.step.after;
+      flipScale = Math.abs(1 - 2 * w);
+    } else if ((seg.step.kind === 'wrap' || seg.step.kind === 'unwrap') && seg.step.addr) {
+      // Going into the VPN box the packet gets a whole new address label, and coming out it has its old one again.
+      changed = 'both';
+      const w = clamp01((k - 0.45) / 0.3);
+      if (w >= 0.5) Object.assign(a, seg.step.addr);
       flipScale = Math.abs(1 - 2 * w);
     }
     const s = iso(p.x, p.y, p.z);
@@ -1231,8 +1281,12 @@ export class NetworkScene {
     // The arrow says which way we're going: out from the asker, or back to it.
     const back = !seg.trip.outward;
     const g = el('g', { class: `addr ${back ? 'addr-back' : 'addr-out'}`, opacity: op.toFixed(3), transform: `translate(${s.sx.toFixed(1)} ${s.sy.toFixed(1)}) scale(${pop})` }, this.tags);
-    const fromW = a.from.length * 7.2;
-    const toW = a.to.length * 7.2;
+    // With a VPN the numbers alone don't say much: name who they belong to.
+    const caption = (word: string, ip: string): string => (this.story.vpn && this.story.names[ip] ? `${word} ${this.story.names[ip]}` : word);
+    const fromCap = caption('from', a.from);
+    const toCap = caption('to', a.to);
+    const fromW = Math.max(a.from.length * 7.2, fromCap.length * 6.6);
+    const toW = Math.max(a.to.length * 7.2, toCap.length * 6.6);
     const width = fromW + toW + 44;
     // Small "from" / "to" captions sit above the addresses; the numbers sit on the lower line.
     const NUM_Y = 7;
@@ -1245,10 +1299,10 @@ export class NetworkScene {
       const t = el('text', { 'text-anchor': 'middle', dy: '0.35em', class: hot ? 'addr-text hot' : 'addr-text' }, pg);
       t.textContent = text;
     };
-    part('from', a.from, -width / 2 + 10, fromW, changed === 'from');
+    part(fromCap, a.from, -width / 2 + 10, fromW, changed === 'from' || changed === 'both');
     const arrow = el('text', { x: -width / 2 + 22 + fromW, y: NUM_Y, 'text-anchor': 'middle', dy: '0.35em', class: 'addr-arrow' }, g);
     arrow.textContent = '→';
-    part('to', a.to, -width / 2 + 34 + fromW, toW, changed === 'to');
+    part(toCap, a.to, -width / 2 + 34 + fromW, toW, changed === 'to' || changed === 'both');
   }
 }
 

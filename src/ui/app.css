@@ -777,3 +777,76 @@ body {
 .link.absent {
   display: none;
 }
+
+/* Tools in hand */
+.prop.on.cloud-prop,
+.prop.on.cut-prop {
+  filter: drop-shadow(0 0 7px #e6b93a) drop-shadow(0 0 2px #e6b93a);
+}
+
+.net-stage.tool-storm {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='36' height='28'%3E%3Cpath d='M9 22a6 6 0 0 1 0-12 8 8 0 0 1 15-2 7 7 0 0 1 2 14z' fill='%237d8590' stroke='%233d352c' stroke-width='1.5'/%3E%3C/svg%3E") 18 14, crosshair;
+}
+
+.net-stage.tool-cut {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Cg fill='none' stroke-width='2.5'%3E%3Cpath d='M9 22 22 3M23 22 10 3' stroke='%233d352c'/%3E%3Ccircle cx='8' cy='25' r='4' stroke='%23c2562f'/%3E%3Ccircle cx='24' cy='25' r='4' stroke='%23c2562f'/%3E%3C/g%3E%3C/svg%3E") 16 8, crosshair;
+}
+
+.line-hover {
+  fill: none;
+  stroke: #e6b93a;
+  stroke-width: 12;
+  stroke-opacity: 0.55;
+  stroke-linecap: round;
+}
+
+.hover,
+.storm {
+  pointer-events: none;
+}
+
+.storm-cloud .cloud-puff {
+  fill: #7d8590;
+}
+
+/* The VPN tunnel: a tube along the way from the device to the VPN server */
+.tunnel {
+  pointer-events: none;
+}
+
+.tunnel-tube {
+  fill: none;
+  stroke: #2e5e6e;
+  stroke-width: 46;
+  stroke-opacity: 0.16;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tunnel-flow {
+  fill: none;
+  stroke: #2e5e6e;
+  stroke-width: 3;
+  stroke-opacity: 0.45;
+  stroke-dasharray: 3 14;
+  stroke-linecap: round;
+  animation: tunnel-flow 1.2s linear infinite;
+}
+
+@keyframes tunnel-flow {
+  to {
+    stroke-dashoffset: -17;
+  }
+}
+
+.tunnel-name {
+  font-size: 13px;
+  font-weight: 700;
+  fill: #2e5e6e;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tunnel-flow {
+    animation: none;
+  }
+}

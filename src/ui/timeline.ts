@@ -95,6 +95,8 @@ const DUR: Record<TStep['kind'], number> = { appear: 0.9, lock: 1.5, unlock: 1.3
 /** A link this slow (one-way seconds) is drawn as a radio hop up to a satellite. */
 export const SLOW_DELAY = 0.1;
 export const SKY_HEIGHT = 9;
+/** Seconds the VPN box takes to close or open, the first time. */
+const VPN_BOX = 2.6;
 /** Seconds a knocked packet tumbles before it is gone. */
 export const TUMBLE = 1.8;
 
@@ -124,6 +126,12 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   const pace = (s: TStep, trip: Trip): number => {
     const tired = Math.max(0.35, 0.8 ** streak);
     if (s.kind === 'appear' || s.kind === 'read' || s.kind === 'wait' || s.kind === 'nat') return tired;
+    // The VPN box going on or coming off is a moment to watch, the first few times.
+    if ((s.kind === 'wrap' || s.kind === 'unwrap') && s.layer === 'vpn') {
+      const m = seen.get('vpn') ?? 0;
+      seen.set('vpn', m + 1);
+      return ((0.5 + 0.5 * 0.7 ** m) * tired * VPN_BOX) / DUR.wrap;
+    }
     const key = s.kind;
     const n = seen.get(key) ?? 0;
     seen.set(key, n + 1);

@@ -448,3 +448,13 @@ describe('a VPN in the story', () => {
     expect(dns?.kind === 'travel' && dns.seen?.kind).toBe('scrambled');
   });
 });
+
+describe('naming addresses', () => {
+  it('knows who each address belongs to, inside the tunnel too', () => {
+    const s = buildStory(runScenario(fetchWebPage({ vpn: true }), { seed: 1, faults: { randomLoss: 0, manual: [] } }));
+    expect(s.names['198.51.100.10']).toBe('VPN server');
+    expect(s.names['10.8.0.2']).toBe('Laptop');
+    expect(s.names['203.0.113.7']).toBe('Home router');
+    expect(s.names['104.20.23.154']).toBe('Web server');
+  });
+});

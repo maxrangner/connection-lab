@@ -253,3 +253,12 @@ describe('VPN (a WireGuard tunnel)', () => {
     expect(of(lost, 'app').some((e) => e.action === 'done')).toBe(true);
   });
 });
+
+describe('several lines at once', () => {
+  it('cuts and storms each keep to their own lines and times', () => {
+    const r = runScenario(fetchWebPage({ revisit: true }), { seed: 1, faults: { randomLoss: 0, manual: [], cuts: [{ link: 'bb1', from: 0 }, { link: 'bb2', from: 0, to: 2 }] }, maxTime: 1000 });
+    expect(of(r, 'drop').length).toBeGreaterThan(0);
+    expect(of(r, 'drop').every((d) => d.linkId === 'bb2')).toBe(true);
+    expect(of(r, 'app').some((e) => e.action === 'done')).toBe(true);
+  });
+});
