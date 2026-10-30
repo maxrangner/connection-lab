@@ -6,13 +6,12 @@ import { lerp } from './project';
  * it) to switch that feature on; drag it off the card (or tap it there) to switch it off again.
  */
 
-export type Feature = 'big' | 'again' | 'storm';
+export type Feature = 'big' | 'again';
 export type Features = Record<Feature, boolean>;
 
 const DEFS: { id: Feature; label: string; color: string }[] = [
   { id: 'big', label: 'Bigger page', color: '#3d7ea6' },
   { id: 'again', label: 'Visit again', color: '#5f8a2e' },
-  { id: 'storm', label: 'Stormy', color: '#c08a10' },
 ];
 
 interface Sticker {
@@ -32,13 +31,10 @@ function icon(g: SVGGElement, id: Feature, color: string): void {
     el('path', { d: 'M-8 -12 H4 L9 -7 V12 H-8 Z', fill: '#fff', stroke: color, 'stroke-width': 2, 'stroke-linejoin': 'round' }, g);
     el('path', { d: 'M4 -12 V-7 H9', fill: 'none', stroke: color, 'stroke-width': 2, 'stroke-linejoin': 'round' }, g);
     for (let i = 0; i < 4; i++) el('line', { x1: -5, x2: i % 2 ? 3 : 6, y1: -3 + i * 4, y2: -3 + i * 4, stroke: color, 'stroke-width': 1.8, 'stroke-linecap': 'round' }, g);
-  } else if (id === 'again') {
+  } else {
     // A circular arrow: around once more.
     el('path', { d: 'M9 -3 A9.5 9.5 0 1 0 6 7', fill: 'none', stroke: color, 'stroke-width': 3, 'stroke-linecap': 'round' }, g);
     el('path', { d: 'M3 -6 L10 -4 L10 -11 Z', fill: color, stroke: color, 'stroke-width': 1.5, 'stroke-linejoin': 'round' }, g);
-  } else {
-    // A lightning bolt.
-    el('polygon', { points: '3,-13 -8,2 -1,2 -4,13 8,-3 1,-3', fill: '#ffe14d', stroke: color, 'stroke-width': 1.8, 'stroke-linejoin': 'round' }, g);
   }
 }
 
@@ -52,7 +48,7 @@ export class Stickers {
     initial: Partial<Features>,
     private readonly onChange: (f: Features) => void,
   ) {
-    this.features = { big: false, again: false, storm: false, ...initial };
+    this.features = { big: false, again: false, ...initial };
     this.root = el('g', { class: 'stickers' }, svg);
     for (const d of DEFS) {
       const g = el('g', { class: 'sticker' }, this.root);
@@ -130,7 +126,7 @@ export class Stickers {
         scale = 0.6 * cardScale;
         onCard++;
       } else {
-        target = { sx: home.sx + (i - 1) * 76, sy: home.sy - 96 };
+        target = { sx: home.sx + (i - (DEFS.length - 1) / 2) * 76, sy: home.sy - 96 };
         scale = 1;
       }
       if (!s.drag) {

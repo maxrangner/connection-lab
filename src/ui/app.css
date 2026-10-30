@@ -472,3 +472,8 @@ body {
   font-size: 24px;
   font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
 }
+
+.net-controls button.on {
+  background: #ffe14d;
+  border-color: #c08a10;
+}

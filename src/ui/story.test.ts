@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fetchWebPage, runScenario, type ManualFault } from '../sim';
 import { buildStory, cardLabel, dnsCardLabel, type Trip } from './story';
-import { buildTimeline, packetPose, trayAngle } from './timeline';
+import { buildTimeline, packetPose, seenSoFar, trayAngle } from './timeline';
 
 const run = (manual: ManualFault[] = []) => buildStory(runScenario(fetchWebPage(), { seed: 1, faults: { randomLoss: 0, manual } }));
 const story = run();
@@ -187,5 +187,37 @@ describe('emoji statuses', () => {
       runScenario(fetchWebPage(), { seed: 1, faults: { randomLoss: 0, manual: [{ packetId: get.packetId, linkId: 'wan' }, { packetId: get2.packetId, linkId: 'wan' }] } }),
     );
     expect(buildTimeline(s2).segs.flatMap((x) => (x.step.kind === 'wait' ? [x.step.mood] : []))).toEqual(['surprise', 'angry']);
+  });
+});
+
+describe('switching the storm on and off mid-run', () => {
+  const STORM = ['wan', 'bb1', 'bb2'];
+  const run = (seed: number, windows: { from: number; to?: number }[], decided: Record<string, boolean>) =>
+    buildTimeline(buildStory(runScenario(fetchWebPage(), { seed, faults: { randomLoss: 0.3, lossyLinks: STORM, lossWindows: windows, decided, manual: [] } })));
+  const same = (a: ReturnType<typeof run>, b: ReturnType<typeof run>, v: number) => {
+    const pick = (tl: ReturnType<typeof run>) => tl.segs.filter((s) => s.t0 <= v).map((s) => [s.step.kind, s.trip.packetId, s.t0, s.t1]);
+    expect(pick(b)).toEqual(pick(a));
+  };
+
+  it('never changes what was already seen, turning it on or off', () => {
+    let changed = 0;
+    for (let seed = 1; seed <= 10; seed++) {
+      const calm = run(seed, [], {});
+      const stormy = run(seed, [{ from: 0 }], {});
+      for (const frac of [0.15, 0.4, 0.7]) {
+        // Calm → stormy at v.
+        const v = calm.total * frac;
+        const a = seenSoFar(calm, v);
+        const on = run(seed, [{ from: a.now }], a.decided);
+        same(calm, on, v);
+        if (on.segs.some((s) => s.step.kind === 'lost')) changed++;
+        // Stormy → calm at v.
+        const w = stormy.total * frac;
+        const b = seenSoFar(stormy, w);
+        same(stormy, run(seed, [{ from: 0, to: b.now }], b.decided), w);
+      }
+    }
+    // And the storm really does something after it starts.
+    expect(changed).toBeGreaterThan(0);
   });
 });

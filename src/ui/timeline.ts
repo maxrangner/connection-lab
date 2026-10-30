@@ -347,3 +347,21 @@ export function chapterAt(tl: Timeline, v: number): Trip['chapter'] | null {
   if (v < 0 || !tl.segs.length) return null;
   return (segAt(tl, v)?.seg ?? tl.segs[tl.segs.length - 1]!).trip.chapter;
 }
+
+/**
+ * Everything already seen at visual time v: every frame that has set off on a cable (and whether it was lost),
+ * and the latest sim time among them. Changing the weather mid-run keeps these as they were and only affects
+ * frames sent from that sim time on, so the picture so far never changes.
+ */
+export function seenSoFar(tl: Timeline, v: number): { decided: Record<string, boolean>; now: number } {
+  const decided: Record<string, boolean> = {};
+  let now = 0;
+  for (const s of tl.segs) {
+    if (s.t0 > v) continue;
+    const st = s.step;
+    if (st.kind !== 'travel' && st.kind !== 'lost') continue;
+    decided[`${s.trip.packetId}@${st.link}`] = st.kind === 'lost';
+    now = Math.max(now, st.at);
+  }
+  return { decided, now };
+}

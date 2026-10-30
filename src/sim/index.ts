@@ -1,7 +1,7 @@
 export { runScenario, type RunOptions, type SimResult } from './run';
 export type { PacketInfo, PacketKind, PduSnapshot } from './core/Simulator';
 export type * from './events/SimEvent';
-export { NO_FAULTS, type FaultPlan, type ManualFault } from './faults';
+export { NO_FAULTS, type FaultPlan, type LossWindow, type ManualFault } from './faults';
 export type * from './model';
 export { fetchWebPage, ADDR } from './scenarios/fetchWebPage';
 export { CAPTURED_AT } from './scenarios/exampleComCapture';

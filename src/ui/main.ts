@@ -1,12 +1,12 @@
 import './app.css';
-import { fetchWebPage, runScenario, type ManualFault } from '../sim';
+import { fetchWebPage, runScenario, type LossWindow, type ManualFault } from '../sim';
 import { el } from './svg';
 import { clamp01, easeInOut, easeOutBack, iso, lerp } from './project';
 import { NetworkScene, type Camera } from './NetworkScene';
 import { Sound } from './sound';
 import { Stickers, type Features } from './stickers';
 import { buildStory, type Chapter, type Story } from './story';
-import { buildTimeline, chapterAt, type Timeline } from './timeline';
+import { buildTimeline, chapterAt, seenSoFar, type Timeline } from './timeline';
 
 /**
  * "Get example.com": drag the site card onto the laptop and watch it find the address, say hello and fetch
@@ -16,23 +16,37 @@ import { buildTimeline, chapterAt, type Timeline } from './timeline';
 /** Stormy weather happens on the internet side; the home cable stays calm. */
 const STORM_LINKS = ['wan', 'bb1', 'bb2'];
 const STORM_LOSS = 0.15;
-let features: Features = { big: false, again: false, storm: false };
+let features: Features = { big: false, again: false };
+/** Stormy weather is a switch you can flip any time, before or during a run. */
+let stormy = false;
 try {
-  features = { ...features, ...(JSON.parse(localStorage.getItem('net.features') ?? '{}') as Partial<Features>) };
+  const saved = JSON.parse(localStorage.getItem('net.features') ?? '{}') as Partial<Features> & { storm?: boolean };
+  features = { big: !!saved.big, again: !!saved.again };
+  stormy = !!saved.storm;
 } catch {
   // Nothing remembered; start plain.
+}
+function remember(): void {
+  try {
+    localStorage.setItem('net.features', JSON.stringify({ ...features, storm: stormy }));
+  } catch {
+    // Not remembered; fine.
+  }
 }
 /** Packets the viewer knocked off, and how far along their cable they were (only for drawing the fall). */
 const faults: ManualFault[] = [];
 const knocks = new Map<string, number>();
-/** Each stormy run gets its own weather; knocking a packet off re-runs with the same weather. */
+/** Each run gets its own weather; knocking a packet off or flipping the storm re-runs with the same weather. */
 let stormSeed = 1;
+/** When (sim time) the storm was on during this run, and what the viewer has already seen happen. */
+let stormWindows: LossWindow[] = [];
+let decided: Record<string, boolean> = {};
 let story: Story;
 let tl: Timeline;
 function simulate(): void {
   const scenario = fetchWebPage({ site: features.big ? 'info.cern.ch' : 'example.com', revisit: features.again });
-  const loss = features.storm ? STORM_LOSS : 0;
-  story = buildStory(runScenario(scenario, { seed: features.storm ? stormSeed : 1, faults: { randomLoss: loss, lossyLinks: STORM_LINKS, manual: faults } }));
+  const plan = { randomLoss: STORM_LOSS, lossyLinks: STORM_LINKS, lossWindows: stormWindows, decided, manual: faults };
+  story = buildStory(runScenario(scenario, { seed: stormSeed, faults: plan }));
   tl = buildTimeline(story, knocks);
 }
 simulate();
@@ -64,11 +78,7 @@ let cardPop = 9;
 // The sticker sheet above the card: switch features on by sticking them onto the card.
 const stickers = new Stickers(svg, features, (f) => {
   features = f;
-  try {
-    localStorage.setItem('net.features', JSON.stringify(f));
-  } catch {
-    // Not remembered; fine.
-  }
+  remember();
   showFeatures();
   sound.play('snap');
 });
@@ -78,7 +88,7 @@ function showFeatures(): void {
     cardText.textContent = site;
     cardPop = 0;
   }
-  scene.setStorm(features.storm ? STORM_LINKS : []);
+  scene.setStorm(stormy ? STORM_LINKS : []);
 }
 showFeatures();
 cardPop = 9;
@@ -111,6 +121,22 @@ const soundBtn = button('♪', () => {
     // Not remembered; fine.
   }
 });
+// The storm switch works any time. Mid-run it re-simulates from this moment on: everything already seen stays.
+const stormBtn = button('⚡ Storm', toggleStorm);
+function toggleStorm(): void {
+  stormy = !stormy;
+  remember();
+  if (mode === 'play') {
+    const seen = seenSoFar(tl, v);
+    decided = { ...decided, ...seen.decided };
+    if (stormy) stormWindows = [...stormWindows, { from: seen.now }];
+    else stormWindows = stormWindows.map((w) => (w.to === undefined ? { ...w, to: seen.now } : w));
+    simulate();
+    scene.setStory(story, tl);
+  }
+  showFeatures();
+  sound.play(stormy ? 'zap' : 'snap');
+}
 const followBtn = button('◎ Follow packet', () => {
   camFree = false;
 });
@@ -274,6 +300,8 @@ function beginRun(): void {
   faults.length = 0;
   knocks.clear();
   stormSeed = 1 + Math.floor(Math.random() * 1e6);
+  decided = {};
+  stormWindows = stormy ? [{ from: 0 }] : [];
   simulate();
   scene.setStory(story, tl);
   showFeatures();
@@ -368,7 +396,8 @@ function frame(now: number): void {
   followBtn.textContent = mode === 'play' ? '◎ Follow packet' : '◎ Show all';
   // Before the start only the follow button can show (after the viewer moved the view).
   pauseBtn.hidden = speedBtn.hidden = againBtn.hidden = mode !== 'play';
-  controls.style.visibility = mode === 'play' || camFree ? '' : 'hidden';
+  stormBtn.classList.toggle('on', stormy);
+  stormBtn.setAttribute('aria-pressed', String(stormy));
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
@@ -403,8 +432,9 @@ if (import.meta.env.DEV) {
         return tl.reactions;
       },
       /** Start a run straight away with these stickers (for screenshots). */
-      start(f: Partial<Features>): void {
-        for (const k of ['big', 'again', 'storm'] as const) stickers.set(k, !!f[k]);
+      start(f: Partial<Features> & { storm?: boolean }): void {
+        for (const k of ['big', 'again'] as const) stickers.set(k, !!f[k]);
+        if (!!f.storm !== stormy) toggleStorm();
         beginRun();
         stormSeed = 1;
         simulate();

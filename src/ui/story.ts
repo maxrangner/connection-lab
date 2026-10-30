@@ -21,9 +21,9 @@ export type Step =
   | { kind: 'wrap'; device: string; layer: Wrap }
   | { kind: 'unwrap'; device: string; layer: Wrap }
   | { kind: 'nat'; device: string; which: 'from' | 'to'; before: string; after: string }
-  | { kind: 'travel'; from: string; to: string; link: string }
+  | { kind: 'travel'; from: string; to: string; link: string; /** Sim time the frame was sent. */ at: number }
   /** Knocked off the cable on the way from `from` to `to`. */
-  | { kind: 'lost'; from: string; to: string; link: string }
+  | { kind: 'lost'; from: string; to: string; link: string; at: number }
   | { kind: 'read'; device: string };
 
 export interface Trip {
@@ -152,7 +152,7 @@ function trip(r: SimResult, p: PacketInfo, retried: Set<string>): Trip | null {
         });
         break;
       case 'tx':
-        steps.push({ kind: 'travel', from: e.fromDevice, to: e.toDevice, link: e.linkId });
+        steps.push({ kind: 'travel', from: e.fromDevice, to: e.toDevice, link: e.linkId, at: e.start });
         break;
       case 'drop': {
         const last = steps[steps.length - 1];

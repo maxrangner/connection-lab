@@ -70,7 +70,7 @@ export class Link {
         arrive,
         wireBytes,
       });
-      if (shouldDrop(this.world.faults, this.world.seed, this.spec.id, packetId)) {
+      if (shouldDrop(this.world.faults, this.world.seed, this.spec.id, packetId, start)) {
         sim.at(start + (arrive - start) / 2, () =>
           sim.emit({ type: 'drop', packetId, reason: 'fault', linkId: this.spec.id, frameId }),
         );
