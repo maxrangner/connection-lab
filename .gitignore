@@ -5,4 +5,4 @@ dist/
 .vite/
 coverage/
 screenshots/
-dist-network/
+dist-bundle/

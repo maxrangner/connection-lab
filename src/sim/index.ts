@@ -8,4 +8,4 @@ export { CAPTURED_AT } from './scenarios/exampleComCapture';
 export { PROTOCOL_LAYER, type Field, type LayerNum, type LayerPdu, type Protocol } from './proto/types';
 export { hexBytes, preview } from './bytes/bytes';
 export { ETH_PREAMBLE } from './proto/ethernet';
-export { flagNames } from './proto/tcp';
+export { flagNames, TCP_ACK, TCP_FIN, TCP_SYN } from './proto/tcp';

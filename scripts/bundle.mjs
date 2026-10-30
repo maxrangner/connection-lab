@@ -1,19 +1,19 @@
-// Builds network.html into one self-contained page (inline JS and CSS) that can be opened anywhere,
+// Builds index.html into one self-contained page (inline JS and CSS) that can be opened anywhere,
 // e.g. published as a claude.ai artifact to try on a phone.
-// Usage: node scripts/bundle-network.mjs [outFile]
+// Usage: node scripts/bundle.mjs [outFile]
 import { build } from 'vite';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const outFile = process.argv[2] ?? 'dist-network/get-example-com.html';
+const outFile = process.argv[2] ?? 'dist-bundle/get-example-com.html';
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'net-'));
 await build({
   logLevel: 'warn',
-  build: { outDir: tmp, emptyOutDir: true, modulePreload: false, assetsInlineLimit: 1e9, rollupOptions: { input: 'network.html' } },
+  build: { outDir: tmp, emptyOutDir: true, modulePreload: false, assetsInlineLimit: 1e9, rollupOptions: { input: 'index.html' } },
 });
 
-const html = fs.readFileSync(path.join(tmp, 'network.html'), 'utf8');
+const html = fs.readFileSync(path.join(tmp, 'index.html'), 'utf8');
 const read = (href) => fs.readFileSync(path.join(tmp, href.replace(/^\.?\//, '')), 'utf8');
 const css = [...html.matchAll(/<link rel="stylesheet"[^>]*href="([^"]+)"/g)].map((m) => read(m[1])).join('\n');
 const js = [...html.matchAll(/<script type="module"[^>]*src="([^"]+)"/g)].map((m) => read(m[1])).join('\n');

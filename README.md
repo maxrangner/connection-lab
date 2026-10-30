@@ -2,9 +2,9 @@
 
 An interactive, protocol-accurate visualization of what happens when a computer fetches a web page.
 
-Drag the `http://example.com/` card into the laptop factory and watch the stations on each floor build the request into a gizmo of parts: a TCP chassis, an IP plate and an Ethernet shell, each as long as its real bytes. The same object rides the cable, its parts spread out in byte order, through a home router (with NAT), an ISP router and the internet, and the response comes back the same way. Stations light up as they work; speech bubbles appear only for results and trouble. Pause at any moment, click a packet and inspect every header field, lose a frame and watch TCP recover, or switch on operator mode and work the stations yourself.
+Drag the `example.com` card onto the laptop and follow the packets: a DNS question to the resolver and back, a three-packet "hello" to the web server, then `GET /` and the page. Each packet is packed at its sender (transport and IP collars, an Ethernet sleeve), gets a new sleeve at every router (the home router's NAT swaps the address), and is unpacked at the other end. Tap a packet on a cable to knock it off and watch the sender's timer run out and send it again; tap it anywhere else to pop it open.
 
-Everything shown is real: header layouts, field values, checksums, timers, and the actual bytes example.com returns.
+Everything shown is real: header sizes, addresses, timers, and the actual bytes example.com returns.
 
 ## Run
 
@@ -16,7 +16,7 @@ npm run dev
 ## Develop
 
 ```sh
-npm test          # simulation + codec tests
+npm test          # simulation, codec and story tests
 npm run lint
 npm run typecheck
 npm run build     # static site in dist/

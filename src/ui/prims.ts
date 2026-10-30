@@ -1,4 +1,4 @@
-import { el } from '../scene/svg';
+import { el } from './svg';
 import { iso, U, type Vec3 } from './project';
 import { FACE, shade } from './shade';
 

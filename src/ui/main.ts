@@ -1,23 +1,39 @@
-import './network.css';
-import { fetchWebPage, runScenario } from '../sim';
-import { el } from '../ui/scene/svg';
-import { clamp01, easeInOut, easeOutBack, iso, lerp } from '../ui/iso/project';
+import './app.css';
+import { fetchWebPage, runScenario, type ManualFault } from '../sim';
+import { el } from './svg';
+import { clamp01, easeInOut, easeOutBack, iso, lerp } from './project';
 import { NetworkScene, type Camera } from './NetworkScene';
-import { buildStory } from './story';
-import { buildTimeline } from './timeline';
+import { Sound } from './sound';
+import { buildStory, type Chapter, type Story } from './story';
+import { buildTimeline, chapterAt, type Timeline } from './timeline';
 
 /**
- * "Get example.com", the simple version: drag the site card onto the laptop, watch one request go
- * out and the page come back. Click the packet to pop it open.
+ * "Get example.com": drag the site card onto the laptop and watch it find the address, say hello and fetch
+ * the page. Tap a packet on a cable to knock it off; tap it anywhere else to pop it open.
  */
 
-const story = buildStory(runScenario(fetchWebPage(), { seed: 1 }));
-const tl = buildTimeline(story);
+const scenario = fetchWebPage();
+/** Packets the viewer knocked off, and how far along their cable they were (only for drawing the fall). */
+const faults: ManualFault[] = [];
+const knocks = new Map<string, number>();
+let story: Story;
+let tl: Timeline;
+function simulate(): void {
+  story = buildStory(runScenario(scenario, { seed: 1, faults: { randomLoss: 0, manual: faults } }));
+  tl = buildTimeline(story, knocks);
+}
+simulate();
 
 const root = document.querySelector<HTMLElement>('#app')!;
 root.className = 'net';
-const scene = new NetworkScene(root, story, tl);
+const scene = new NetworkScene(root, story!, tl!);
 const svg = scene.svg;
+const sound = new Sound();
+try {
+  sound.muted = localStorage.getItem('net.muted') === '1';
+} catch {
+  // Storage can be blocked; sound simply starts on.
+}
 
 // The site card you drag onto the laptop.
 const home = iso(-4.6, 0.4, 3.0);
@@ -31,19 +47,44 @@ cardText.textContent = 'example.com';
 const hint = el('text', { class: 'hint', 'text-anchor': 'middle', x: 0, y: 44 }, card);
 hint.textContent = 'drag me onto the laptop';
 
+const CHAPTERS: Record<Chapter, [string, string]> = { dns: ['1', 'Find the address'], hello: ['2', 'Say hello'], page: ['3', 'Get the page'] };
+const chapter = document.createElement('div');
+chapter.className = 'chapter';
+chapter.hidden = true;
+root.appendChild(chapter);
+let shownChapter: Chapter | null = null;
+
 const controls = document.createElement('div');
 controls.className = 'net-controls';
-const pauseBtn = document.createElement('button');
-const followBtn = document.createElement('button');
-followBtn.textContent = '◎ Follow packet';
-const againBtn = document.createElement('button');
-againBtn.textContent = '↺ Again';
-controls.append(pauseBtn, followBtn, againBtn);
+const button = (text: string, onClick: () => void): HTMLButtonElement => {
+  const b = document.createElement('button');
+  b.textContent = text;
+  b.addEventListener('click', onClick);
+  controls.appendChild(b);
+  return b;
+};
+const pauseBtn = button('', togglePause);
+const speedBtn = button('1×', () => {
+  speed = speed === 1 ? 2 : 1;
+});
+const soundBtn = button('♪', () => {
+  sound.muted = !sound.muted;
+  try {
+    localStorage.setItem('net.muted', sound.muted ? '1' : '0');
+  } catch {
+    // Not remembered; fine.
+  }
+});
+const followBtn = button('◎ Follow packet', () => {
+  camFree = false;
+});
+const againBtn = button('↺ Again', reset);
 root.appendChild(controls);
 
 type Mode = 'idle' | 'drag' | 'spring' | 'drop' | 'play';
 let mode: Mode = 'idle';
 let v = 0;
+let speed = 1;
 let paused = false;
 let peek = 0;
 let peekTarget = 0;
@@ -54,6 +95,8 @@ let cam: Camera = scene.overviewCamera();
 let snapCamera = false;
 /** Set once the viewer pans or zooms by hand; the camera stops following until they ask again. */
 let camFree = false;
+/** Sounds already played up to this visual time (so a knock doesn't bonk twice). */
+let cueDone = 0;
 
 function toSvg(e: PointerEvent): { sx: number; sy: number } {
   const m = svg.getScreenCTM();
@@ -84,8 +127,30 @@ card.addEventListener('pointerup', () => {
   const onLaptop = Math.hypot(cardPos.sx - drop.sx, cardPos.sy - drop.sy) < 130;
   anim = { from: { ...cardPos }, to: onLaptop ? drop : { ...home }, t: 0, dur: onLaptop ? 0.35 : 0.5 };
   mode = onLaptop ? 'drop' : 'spring';
-  if (onLaptop) camFree = false;
+  if (onLaptop) {
+    camFree = false;
+    sound.play('pop');
+  }
 });
+
+// Tap a packet out on a cable to knock it off; anywhere else, tap it to pop it open.
+scene.packet.addEventListener('pointerdown', () => {
+  if (mode !== 'play' || v >= tl.total) return;
+  const target = !paused && !peekTarget ? scene.knockable(v) : null;
+  if (target) knock(target);
+  else if (scene.peekable(v)) peekTarget = peekTarget ? 0 : 1;
+});
+
+function knock(target: NonNullable<ReturnType<NetworkScene['knockable']>>): void {
+  faults.push({ packetId: target.trip.packetId, linkId: target.link });
+  knocks.set(`${target.trip.packetId}@${target.link}`, target.k);
+  // Re-run the simulation with this frame lost. Everything before this moment comes out the same,
+  // so the picture continues seamlessly from here.
+  simulate();
+  scene.setStory(story, tl);
+  sound.play('bonk');
+  cueDone = v + 0.05;
+}
 
 // Pan and zoom by hand: drag the stage, pinch, or use the wheel. Any of these lets go of the follow camera.
 const pointers = new Map<number, { x: number; y: number }>();
@@ -144,20 +209,11 @@ svg.addEventListener(
   { passive: false },
 );
 
-scene.packet.addEventListener('pointerdown', () => {
-  if (mode === 'play' && v < tl.total) peekTarget = peekTarget ? 0 : 1;
-});
-
 function togglePause(): void {
   if (mode !== 'play') return;
   if (peekTarget) peekTarget = 0;
   else paused = !paused;
 }
-pauseBtn.addEventListener('click', togglePause);
-followBtn.addEventListener('click', () => {
-  camFree = false;
-});
-againBtn.addEventListener('click', reset);
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
     e.preventDefault();
@@ -168,10 +224,17 @@ window.addEventListener('keydown', (e) => {
 function reset(): void {
   mode = 'idle';
   v = 0;
+  cueDone = 0;
   paused = false;
   peek = peekTarget = 0;
   cardPos = { ...home };
   camFree = false;
+  if (faults.length) {
+    faults.length = 0;
+    knocks.clear();
+    simulate();
+    scene.setStory(story, tl);
+  }
 }
 
 let last = performance.now();
@@ -188,7 +251,11 @@ function frame(now: number): void {
     cardPos = { sx: lerp(anim.from.sx, anim.to.sx, e), sy: lerp(anim.from.sy, anim.to.sy, e) };
     if (k >= 1) mode = mode === 'drop' ? 'play' : 'idle';
   }
-  if (mode === 'play' && !paused && !peekTarget) v = Math.min(tl.total, v + dt);
+  if (mode === 'play' && !paused && !peekTarget) {
+    const next = Math.min(tl.total, v + dt * speed);
+    for (const c of tl.cues) if (c.t > Math.max(v, cueDone) && c.t <= next) sound.play(c.sound);
+    v = next;
+  }
   peek += (peekTarget - peek) * Math.min(1, dt * 10);
 
   const bob = mode === 'idle' ? Math.sin(clock * 2.4) * 4 : 0;
@@ -211,15 +278,32 @@ function frame(now: number): void {
 
   scene.render(mode === 'play' ? v : -1);
   scene.drawPacket(mode === 'play' ? v : -1, peek);
-  scene.packet.classList.toggle('peeking', peekTarget > 0);
+  scene.packet.classList.toggle('knockable', mode === 'play' && !paused && !peekTarget && !!scene.knockable(v));
 
+  const ch = mode === 'play' ? chapterAt(tl, v) : null;
+  if (ch !== shownChapter) {
+    shownChapter = ch;
+    chapter.hidden = !ch;
+    if (ch) {
+      const [n, name] = CHAPTERS[ch];
+      chapter.innerHTML = `<span class="chapter-num">${n}</span><span>${name}</span>`;
+      chapter.classList.remove('enter');
+      void chapter.offsetWidth;
+      chapter.classList.add('enter');
+    }
+  }
+
+  const done = mode === 'play' && v >= tl.total;
   pauseBtn.textContent = paused || peekTarget ? '▶ Play' : '⏸ Pause';
-  pauseBtn.disabled = mode !== 'play' || v >= tl.total;
-  againBtn.classList.toggle('big', mode === 'play' && v >= tl.total);
+  pauseBtn.disabled = done;
+  speedBtn.textContent = speed === 1 ? '1×' : '2×';
+  soundBtn.classList.toggle('off', sound.muted);
+  soundBtn.setAttribute('aria-label', sound.muted ? 'Sound off' : 'Sound on');
+  againBtn.classList.toggle('big', done);
   followBtn.hidden = !camFree;
   followBtn.textContent = mode === 'play' ? '◎ Follow packet' : '◎ Show all';
   // Before the start only the follow button can show (after the viewer moved the view).
-  pauseBtn.hidden = againBtn.hidden = mode !== 'play';
+  pauseBtn.hidden = speedBtn.hidden = againBtn.hidden = mode !== 'play';
   controls.style.visibility = mode === 'play' || camFree ? '' : 'hidden';
   requestAnimationFrame(frame);
 }
@@ -228,8 +312,12 @@ requestAnimationFrame(frame);
 if (import.meta.env.DEV) {
   Object.assign(window, {
     __net: {
-      total: tl.total,
-      segs: tl.segs.map((s) => ({ kind: s.step.kind, t0: s.t0, t1: s.t1, device: 'device' in s.step ? s.step.device : `${s.step.from}→${s.step.to}` })),
+      get total() {
+        return tl.total;
+      },
+      get segs() {
+        return tl.segs.map((s) => ({ kind: s.step.kind, t0: s.t0, t1: s.t1, chapter: s.trip.chapter, device: 'device' in s.step ? s.step.device : `${s.step.from}→${s.step.to}` }));
+      },
       seek(t: number, open = 0): void {
         mode = 'play';
         v = t;
@@ -238,6 +326,15 @@ if (import.meta.env.DEV) {
         snapCamera = true;
         camFree = false;
       },
+      /** Knock off whatever packet is on a cable at visual time t. */
+      knock(t: number): boolean {
+        mode = 'play';
+        v = t;
+        const target = scene.knockable(v);
+        if (target) knock(target);
+        return !!target;
+      },
+      reset,
     },
   });
 }
