@@ -74,8 +74,8 @@ export class SettingsPanel {
       segmented<'on' | 'off'>(name, [{ value: 'off', label: 'Off' }, { value: 'on', label: 'On' }], value ? 'on' : 'off', (v) => set(v === 'on'));
     this.el.replaceChildren(
       h('div', { class: 'set-head' }, h('b', { text: 'Settings' }), button('✕', () => this.close(), 'icon-btn')),
-      row('You operate', 'The factory waits for you: press the megaphone, drag the data into the TCP chassis, pull the lever.', onOff('Operator', s.operator, (operator) => this.host.change({ operator }))),
-      row('Step through bubbles', 'Every speech bubble pauses playback until you click it away.', onOff('Step', s.stepBubbles, (stepBubbles) => this.host.change({ stepBubbles }))),
+      row('You operate', 'The factory waits for you: click the link station to ask the LAN, drag the data down to the transport station, click the port to send.', onOff('Operator', s.operator, (operator) => this.host.change({ operator }))),
+      row('Step through bubbles', 'Results and trouble pause playback until you click the bubble away.', onOff('Step', s.stepBubbles, (stepBubbles) => this.host.change({ stepBubbles }))),
       row('Layer model', 'Same packets, different textbook names.', segmented<LayerModel>('Layer model', [
         { value: 'tcpip', label: 'TCP/IP (5)' },
         { value: 'osi', label: 'OSI (7)' },

@@ -20,7 +20,8 @@ async function open(width, height, settings) {
   if (settings) await page.evaluate((s) => window.__ie.settings(s), settings);
   await page.waitForTimeout(800);
   await page.evaluate(() => window.__ie.start());
-  await page.waitForTimeout(1500);
+  await page.waitForFunction(() => window.__ie.info().started, null, { timeout: 10000 });
+  await page.waitForTimeout(300);
   return page;
 }
 const ie = (page, fn, arg) => page.evaluate(fn, arg);
@@ -85,8 +86,11 @@ const mid = (f) => (f.v0 + f.v1) / 2;
 // ── step-through bubbles ──
 {
   const page = await open(1440, 900, { stepBubbles: true });
+  // Only results and trouble are bubbles now: jump to just before the first one and play into it.
+  const first = (await ie(page, () => window.__ie.info())).bubbles.find((b) => b.shown);
+  await ie(page, (v) => window.__ie.seek(v), first.v - 0.5);
   await ie(page, () => window.__ie.play());
-  await page.waitForTimeout(2500);
+  await page.waitForTimeout(2000);
   const blocked = await ie(page, () => window.__ie.info().blockedAt);
   console.log(`step-through: blockedAt=${blocked?.toFixed?.(2)}`);
   await shot(page, '09-step-bubble');

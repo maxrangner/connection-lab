@@ -1,6 +1,6 @@
 import type { LayerNum, NatEntry, SimEvent, SimResult, TcpState, TimerKind } from '../../sim';
 import { PROTO_ROW } from '../content/layers';
-import { SpeechWriter, type Tone } from '../content/speech';
+import { SpeechWriter, type Category, type Tone } from '../content/speech';
 import { machineFor, type MachineKind } from '../iso/machines/Machine';
 
 /**
@@ -66,6 +66,9 @@ export interface Bubble {
   text: string;
   tone: Tone;
   important: boolean;
+  category: Category;
+  /** Shown on stage as a bubble (trouble and results); every bubble is listed in the receipt. */
+  shown: boolean;
 }
 
 /** A machine doing something: drives its pose. */
@@ -106,7 +109,7 @@ export interface TcpSpan {
   retxV?: number;
 }
 
-export type GateAction = 'press-arp' | 'drag-cell' | 'pull-lever';
+export type GateAction = 'press-arp' | 'drag-cell' | 'send';
 
 export interface Gate {
   id: string;
@@ -309,10 +312,17 @@ export function buildSchedule(result: SimResult): Schedule {
       if (m) acts.push({ seq: e.seq, v0, v1, deviceId, machine: m, iface, event: e });
       const s = writer.speak(e);
       if (s) {
-        const hold = Math.max(dur, 1.3 + 0.045 * s.text.length);
-        const prev = bubbles[bubbles.length - 1];
-        if (prev && prev.deviceId === deviceId && prev.v1 > v0) prev.v1 = v0; // superseded
-        bubbles.push({ seq: e.seq, v0, v1: v0 + hold, deviceId, machine: s.machine, iface: s.iface ?? iface, text: s.text, tone: s.tone, important: s.important });
+        const shown = s.category !== 'info';
+        const hold = shown ? Math.max(dur, 2.2 + 0.045 * s.text.length) : dur;
+        // A newer shown bubble on the same device replaces an older one still on screen.
+        if (shown) {
+          for (let i = bubbles.length - 1; i >= 0; i--) {
+            const prev = bubbles[i]!;
+            if (prev.shown && prev.deviceId === deviceId && prev.v1 > v0) prev.v1 = v0;
+            if (prev.v1 < v0 - 10) break;
+          }
+        }
+        bubbles.push({ seq: e.seq, v0, v1: v0 + hold, deviceId, machine: s.machine, iface: s.iface ?? iface, text: s.text, tone: s.tone, important: s.important, category: s.category, shown });
       }
     }
 
@@ -345,7 +355,7 @@ export function buildSchedule(result: SimResult): Schedule {
             }
             if (e.deviceId === sc.startDevice && !operatorDone.has('drag-cell')) {
               operatorDone.add('drag-cell');
-              gates.push({ id: `g${e.seq}`, v: v0, kind: 'operator', seq: e.seq, deviceId: e.deviceId, machine: 'tcpClerk', action: 'drag-cell', hint: 'Drag the data cell into the TCP chassis' });
+              gates.push({ id: `g${e.seq}`, v: v0, kind: 'operator', seq: e.seq, deviceId: e.deviceId, machine: 'tcpClerk', action: 'drag-cell', hint: 'Drag the green data cell down to the transport station' });
             }
           }
         } else {
@@ -364,7 +374,7 @@ export function buildSchedule(result: SimResult): Schedule {
         }
         if (e.protocol === 'arp' && e.deviceId === sc.startDevice && !operatorDone.has('press-arp')) {
           operatorDone.add('press-arp');
-          gates.push({ id: `g${e.seq}`, v: v0, kind: 'operator', seq: e.seq, deviceId: e.deviceId, machine: 'linkStation', action: 'press-arp', hint: 'Press the megaphone to ask the LAN' });
+          gates.push({ id: `g${e.seq}`, v: v0, kind: 'operator', seq: e.seq, deviceId: e.deviceId, machine: 'linkStation', action: 'press-arp', hint: 'Click the link station (⇔) to ask the whole LAN: who has the gateway address?' });
         }
         break;
       }
@@ -379,9 +389,9 @@ export function buildSchedule(result: SimResult): Schedule {
         flightCount++;
         flights.push(f);
         pendingFlights.set(e.frameId, f);
-        if (e.fromDevice === sc.startDevice && !operatorDone.has('pull-lever')) {
-          operatorDone.add('pull-lever');
-          gates.push({ id: `g${e.seq}`, v: v0, kind: 'operator', seq: e.seq, deviceId: e.fromDevice, machine: 'port', iface: e.fromIface, action: 'pull-lever', hint: 'Pull the lever to send the bits' });
+        if (e.fromDevice === sc.startDevice && !operatorDone.has('send')) {
+          operatorDone.add('send');
+          gates.push({ id: `g${e.seq}`, v: v0, kind: 'operator', seq: e.seq, deviceId: e.fromDevice, machine: 'port', iface: e.fromIface, action: 'send', hint: 'Click the port (∿) to send the frame onto the cable' });
         }
         break;
       }
@@ -500,8 +510,8 @@ export function buildSchedule(result: SimResult): Schedule {
   for (const s of timers) if (s.v1 === Infinity) s.v1 = duration;
   for (const s of tcpSpans) if (s.ackedV === Infinity) s.ackedV = duration;
 
-  // Bubble gates (one per bubble) + operator gates, sorted.
-  for (const b of bubbles) gates.push({ id: `b${b.seq}`, v: b.v0 + 0.3, kind: 'bubble', seq: b.seq, deviceId: b.deviceId, machine: b.machine, iface: b.iface, hint: '' });
+  // Bubble gates (one per bubble shown on stage) + operator gates, sorted.
+  for (const b of bubbles) if (b.shown) gates.push({ id: `b${b.seq}`, v: b.v0 + 0.3, kind: 'bubble', seq: b.seq, deviceId: b.deviceId, machine: b.machine, iface: b.iface, hint: '' });
   gates.sort((a, b) => a.v - b.v || a.seq - b.seq);
 
   const busySpans = new Map<string, [number, number][]>();

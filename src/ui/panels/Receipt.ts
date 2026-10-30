@@ -43,7 +43,7 @@ export class Receipt {
     // Append newly reached bubbles; remove ones we scrubbed back past.
     while (this.rendered < s.bubbles.length && s.bubbles[this.rendered]!.v0 <= v) {
       const b = s.bubbles[this.rendered]!;
-      const li = h('li', { class: `receipt-line tone-${b.tone}${b.important ? ' important' : ''}`, attrs: { 'data-seq': String(b.seq) } }, h('span', { class: 'receipt-who', text: `${dev(b.deviceId)} · ${MACHINE_NAME[b.machine]}` }), h('span', { class: 'receipt-text', text: b.text }));
+      const li = h('li', { class: `receipt-line tone-${b.tone} cat-${b.category}`, attrs: { 'data-seq': String(b.seq) } }, h('span', { class: 'receipt-who', text: `${dev(b.deviceId)} · ${MACHINE_NAME[b.machine]}` }), h('span', { class: 'receipt-text', text: b.text }));
       li.addEventListener('click', () => this.onSeek(b));
       this.list.appendChild(li);
       this.rendered++;

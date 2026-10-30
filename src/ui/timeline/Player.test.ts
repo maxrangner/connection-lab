@@ -63,6 +63,23 @@ describe('Player gates', () => {
     expect(p.playing).toBe(false);
   });
 
+  it('still stops when a frame lands a hair below the gate', () => {
+    const p = new Player(() => {}, false);
+    p.duration = 10;
+    p.gates = [6.500000000000001];
+    p.seek(6.3);
+    p.setPlaying(true);
+    // Frames of exactly 50 ms at 1x: 6.3 → 6.35 → … → 6.5 (floating point lands just below the gate).
+    let t = 1000;
+    p.tick(t);
+    for (let i = 0; i < 4; i++) p.tick((t += 50));
+    expect(p.v).toBeLessThan(6.500000000000001);
+    expect(p.blockedAt).toBeUndefined();
+    p.tick(t + 50);
+    expect(p.blockedAt).toBe(6.500000000000001);
+    expect(p.v).toBe(6.500000000000001);
+  });
+
   it('pressing play while blocked releases the gate', () => {
     const { p, frames } = make();
     p.duration = 10;

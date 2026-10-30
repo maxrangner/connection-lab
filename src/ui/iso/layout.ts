@@ -11,8 +11,8 @@ export const ROOF_T = 0.25;
 export const PART_D = 1.1;
 /** The slot where a gizmo rests on a floor, relative to the tower origin. */
 export const SLOT = { x: 1.3, y: FD - 1.3 };
-/** Where the floor's machine stands (centre), relative to the tower origin. */
-export const MACHINE = { x: 3.5, y: 0.9 };
+/** Where the floor's station stands (centre), relative to the tower origin: at the back, behind the slot. */
+export const MACHINE = { x: 3.5, y: 0.8 };
 /** Socket offset: cables run along this y line in front of the pads. */
 export const CABLE_Y = FD + 0.6;
 
@@ -105,8 +105,9 @@ export function towerFor(spec: DeviceSpec, scenarioId: string): TowerGeom {
     const side = PORT_SIDE[scenarioId]?.[i.id] ?? (k === 0 ? 'left' : 'right');
     const left = side === 'left' || side === 'left2';
     const outer = side === 'left2' || side === 'right2';
-    // Ports stand at the front corners (outer row: one step further back along the side), clear of the gizmo slot.
-    const stand = v3(left ? o.x + 0.4 : o.x + FW - 0.4, o.y + FD - (outer ? 2.2 : 0.8), SLAB_T);
+    // Port stations stand at the back corners (a second port on the same side sits one step inward), so the
+    // front edge stays free for the packet sliding out to the cable.
+    const stand = v3(left ? o.x + (outer ? 2.3 : 0.9) : o.x + FW - (outer ? 2.3 : 0.9), o.y + MACHINE.y, SLAB_T);
     const socket = v3(left ? o.x - 0.5 : o.x + FW + 0.5, o.y + (outer ? CABLE_Y2 : CABLE_Y), 0);
     return { ifaceId: i.id, socket, stand, side };
   });
@@ -129,7 +130,8 @@ export interface CableGeom {
 }
 
 /**
- * Cables run along the front of the pads (y = CABLE_Y, or CABLE_Y2 for second links), axis-aligned.
+ * Cables run along the front of the pads (y = CABLE_Y, or CABLE_Y2 for a second link that must pass in front
+ * of a tower), as single straight segments along x.
  */
 export function cableFor(link: LinkSpec, towers: Map<string, TowerGeom>): CableGeom {
   const find = (ifaceId: string): { t: TowerGeom; p: PortGeom } => {
@@ -141,11 +143,9 @@ export function cableFor(link: LinkSpec, towers: Map<string, TowerGeom>): CableG
   };
   const A = find(link.a);
   const B = find(link.b);
-  // Run along the outer of the two sockets' rows, so a cable always passes in front of towers in between.
-  const yLine = Math.max(A.p.socket.y, B.p.socket.y);
-  const pts: Vec3[] = [A.p.socket, v3(A.p.socket.x, yLine, 0), v3(B.p.socket.x, yLine, 0), B.p.socket];
-  // Drop zero-length segments (e.g. both sockets already on the same line).
-  const points = pts.filter((p, i) => i === 0 || Math.abs(p.x - pts[i - 1]!.x) + Math.abs(p.y - pts[i - 1]!.y) > 1e-9);
+  // Every cable is one straight run along x: both sockets of a link sit on the same cable row.
+  if (Math.abs(A.p.socket.y - B.p.socket.y) > 1e-9) throw new Error(`cable ${link.id}: sockets on different rows`);
+  const points: Vec3[] = [A.p.socket, B.p.socket];
   const segLen = points.slice(1).map((p, i) => Math.abs(p.x - points[i]!.x) + Math.abs(p.y - points[i]!.y));
   return { id: link.id, spec: link, a: A.t.id, b: B.t.id, points, segLen, length: segLen.reduce((a, b) => a + b, 0) };
 }

@@ -31,7 +31,9 @@ export class Player {
     this.last = t;
     if (this.playing) {
       let next = this.v + dt * this.speed;
-      const g = this.gates.find((x) => x > this.v + 1e-9 && x <= next);
+      // A gate counts as ahead until v has moved past it: a frame can land v a hair below a gate (6.5 vs
+      // 6.500000000000001), and that gate must still stop the next frame. release() steps 1 ms past the gate.
+      const g = this.gates.find((x) => x >= this.v - 1e-9 && x <= next);
       if (g !== undefined) {
         // Stop at the gate but keep any step target, so a release continues the step.
         next = g;

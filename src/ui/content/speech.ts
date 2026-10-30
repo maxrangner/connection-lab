@@ -4,6 +4,9 @@ import { fmtRate, fmtTime } from './format';
 
 export type Tone = 'info' | 'good' | 'warn' | 'bad';
 
+/** Trouble and results get a speech bubble; everything else is told by the animation (and the receipt). */
+export type Category = 'trouble' | 'result' | 'info';
+
 export interface Speech {
   machine: MachineKind;
   /** For port machines: which interface. */
@@ -12,6 +15,31 @@ export interface Speech {
   tone: Tone;
   /** First-time explanations and recovery events. */
   important: boolean;
+  category: Category;
+}
+
+/** Which events deserve a bubble on stage. */
+export function categoryOf(e: SimEvent, startDevice: string): Category {
+  switch (e.type) {
+    case 'drop':
+    case 'tcp:retransmit':
+    case 'tcp:ooo':
+    case 'tcp:duplicate':
+      return 'trouble';
+    case 'timer:fire':
+      return e.kind === 'tcp-timewait' ? 'info' : 'trouble';
+    case 'tcp:dup-ack':
+      return e.count === 1 ? 'trouble' : 'info';
+    case 'tcp:state':
+      return e.to === 'ESTABLISHED' && e.deviceId === startDevice ? 'result' : 'info';
+    case 'app':
+      if (e.action === 'error') return 'trouble';
+      if (e.action === 'dns-lookup' && Number(e.info?.attempt) > 1) return 'trouble';
+      if (e.action === 'dns-answer' || e.action === 'http-response-received' || e.action === 'done') return 'result';
+      return 'info';
+    default:
+      return 'info';
+  }
 }
 
 const STATE_MEANING: Record<string, string> = {
@@ -63,13 +91,19 @@ export class SpeechWriter {
   }
 
   speak(e: SimEvent): Speech | undefined {
+    const s = this.speakRaw(e);
+    if (s) s.category = categoryOf(e, this.r.scenario.startDevice);
+    return s;
+  }
+
+  private speakRaw(e: SimEvent): Speech | undefined {
     const deviceId = 'deviceId' in e ? e.deviceId : e.type === 'tx' ? e.fromDevice : undefined;
     if (!deviceId) return undefined;
     const kind = this.kindOf(deviceId);
     const machine = machineFor(e, kind);
     if (!machine) return undefined;
     const say = (text: string | undefined, tone: Tone = 'info', important = false, iface?: string): Speech | undefined =>
-      text ? { machine, text, tone, important, iface } : undefined;
+      text ? { machine, text, tone, important, iface, category: 'info' } : undefined;
     const r = this.r;
     switch (e.type) {
       case 'app':
@@ -179,7 +213,7 @@ export class SpeechWriter {
   private app(e: Extract<SimEvent, { type: 'app' }>, machine: MachineKind): Speech | undefined {
     const i = e.info ?? {};
     const n = e.pduId ? (this.r.pdus.get(e.pduId)?.bytes.length ?? 0) : 0;
-    const say = (text: string, tone: Tone = 'info', important = true): Speech => ({ machine, text, tone, important });
+    const say = (text: string, tone: Tone = 'info', important = true): Speech => ({ machine, text, tone, important, category: 'info' });
     switch (e.action) {
       case 'start':
         return say(`${i.url}? First I need the IP address of example.com.`);
@@ -214,7 +248,7 @@ export class SpeechWriter {
     const L = this.layers(e.pduId);
     const top = L[0];
     if (!top) return undefined;
-    const say = (text: string | undefined, tone: Tone = 'info', important = false): Speech | undefined => (text ? { machine, text, tone, important } : undefined);
+    const say = (text: string | undefined, tone: Tone = 'info', important = false): Speech | undefined => (text ? { machine, text, tone, important, category: 'info' } : undefined);
     const retx = pk?.retransmitOf ? 'Again: ' : '';
     switch (e.protocol) {
       case 'dns':
@@ -254,7 +288,7 @@ export class SpeechWriter {
 
   private decapsulate(e: Extract<SimEvent, { type: 'decapsulate' }>, machine: MachineKind): Speech | undefined {
     const L = this.layers(e.pduId);
-    const say = (text: string | undefined, tone: Tone = 'info', important = false): Speech | undefined => (text ? { machine, text, tone, important } : undefined);
+    const say = (text: string | undefined, tone: Tone = 'info', important = false): Speech | undefined => (text ? { machine, text, tone, important, category: 'info' } : undefined);
     switch (e.layer) {
       case 2: {
         const inner = L[0]?.protocol === 'arp' ? 'ARP' : 'IPv4';

@@ -29,11 +29,35 @@ export const MACHINE_NAME: Record<MachineKind, string> = {
   browser: 'Browser',
   dnsDesk: 'Resolver desk',
   httpShelf: 'Web server',
-  tcpClerk: 'TCP clerk',
-  netStation: 'IP station',
-  natDesk: 'NAT desk',
-  linkStation: 'Ethernet station',
+  tcpClerk: 'Transport',
+  netStation: 'Network',
+  natDesk: 'NAT',
+  linkStation: 'Link',
   port: 'Port',
+};
+
+/** The one symbol on top of each station. */
+export const GLYPH: Record<MachineKind, string> = {
+  browser: '▤',
+  dnsDesk: '?',
+  httpShelf: '▤',
+  tcpClerk: '#',
+  netStation: '⌖',
+  natDesk: '⇄',
+  linkStation: '⇔',
+  port: '∿',
+};
+
+/** Hover text: what the station does, in one line. */
+export const DESCRIPTION: Record<MachineKind, string> = {
+  browser: 'Browser: turns the URL into a DNS question and an HTTP request, and renders the page that comes back.',
+  dnsDesk: 'DNS resolver: looks up names in its cache (or the DNS hierarchy) and answers with addresses.',
+  httpShelf: 'Web server: parses HTTP requests and sends the page.',
+  tcpClerk: 'Transport (TCP/UDP): ports, sequence numbers and ACKs; keeps copies until acknowledged and resends after a timeout.',
+  netStation: 'Network (IP): source and destination addresses, TTL, and the routing table that picks the next hop.',
+  natDesk: "NAT: swaps private addresses and ports for the router's public ones, and back.",
+  linkStation: 'Link (Ethernet): MAC addresses for this one hop, ARP to find them, and a CRC to detect damage.',
+  port: 'Physical port: turns the frame into bits on the cable, and bits back into a frame.',
 };
 
 export function machinesFor(kind: DeviceKind): MachineKind[] {

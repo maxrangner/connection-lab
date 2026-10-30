@@ -151,7 +151,7 @@ export class Camera {
   private zoomAt(p: { x: number; y: number }, f: number): void {
     const B = this.bounds;
     const full = B.x1 - B.x0;
-    const w = Math.max(full / 8, Math.min(full * 1.4, this.free.w * f));
+    const w = Math.max(full / 8, Math.min(full * 3, this.free.w * f));
     const real = w / this.free.w;
     this.free.x = p.x + (this.free.x - p.x) * real;
     this.free.y = p.y + (this.free.y - p.y) * real;

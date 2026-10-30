@@ -61,14 +61,15 @@ src/ui/                      presentation (vanilla DOM + SVG, no framework, no a
   content/speech.ts          what each machine says per event (SpeechWriter); content/format.ts time/rate formatting
   content/layers.ts          layer colors and names (TCP/IP vs OSI)
   iso/project.ts, prims.ts   2:1 isometric projection; extruded boxes, cylinders, plates, screen-aligned billboards; shading
-  iso/layout.ts              world geometry: towers (floors, slots, ports, sockets), cables (axis-aligned polylines), bounds
-  iso/IsoScene.ts            the scene: factories, gizmo poses from track keyframes, trains, bubbles, hints, operator input
-  iso/machines/Machine.ts    MachineKind tables: machinesFor(deviceKind), machineFor(event) (shared by speech, scene, tests)
-  iso/machines/build.ts      one builder per machine (browser, dnsDesk, httpShelf, tcpClerk, netStation, natDesk, linkStation, port)
-  iso/Train.ts               a frame on a cable: cars in byte order (preamble pilot first) with real-bit pulses; loss fizzle
-  iso/Bubbles.ts, Camera.ts  HTML speech bubbles anchored to machines; viewBox camera (follow / overview / free)
-  gizmo/Gizmo.ts             PduSnapshot → parts (core, module, bracket, plate, shellFront/Back, frame, filler), byte-true lengths
-  gizmo/GizmoView.ts         SVG for one gizmo, posed per frame (grow = bolt on/off, scatter = to/from the port, diff = changed bytes)
+  iso/layout.ts              world geometry: towers (floors, slots, port stands, sockets), straight cables along x, bounds
+  iso/IsoScene.ts            the scene: glass towers, stations, gizmo poses (floors and cables), tags, lost marks, bubbles, operator input
+  iso/stations.ts            one builder for every station: a box in the layer colour with one glyph; glow/press when acting; timer ring
+  iso/machines/Machine.ts    MachineKind tables: machinesFor(deviceKind), machineFor(event), GLYPH, DESCRIPTION, MACHINE_FLOOR
+  iso/Bubbles.ts, Camera.ts  HTML speech bubbles anchored to stations; viewBox camera (follow / overview / free, zoom out to 3×)
+  gizmo/Gizmo.ts             PduSnapshot → parts (core, module, bracket, plate, shellFront/Back, frame, filler), byte-true lengths;
+                             placeParts(): byte 0 at the leading face, later parts behind it, optional gap for the wire
+  gizmo/GizmoView.ts         SVG for one gizmo, posed per frame: grow (outer layer bolts on/off), spread (gaps on the wire),
+                             assemble (byte cubes snap into the data core), diff, consumed, lost; one label stack per layer
   scene/UrlCard.ts, svg.ts   draggable URL card (real ASCII bits, inertia, spring snap); SVG helpers
   panels/                    Inspector (clean/full/hex, device tables), Controls (transport, scrubber), Receipt, SettingsPanel
 src/styles/app.css           all styling; layer colors as CSS vars mirror content/layers.ts
@@ -79,13 +80,13 @@ tests/fixtures/              raw captured bytes
 ## UI model (how the animation works)
 
 1. `runScenario` produces the event log. `buildSchedule` walks it once and assigns each event a visual start time `v` with a duration from `BASE_COST` (shortened as the same kind of event repeats). Frames in flight get a minimum travel time; idle sim gaps with nothing on the wire become short fast-forwards (`skips`) with a clock overlay.
-2. **Factories.** Each device is an isometric tower, one floor per layer (hosts 5, routers 3), one machine per floor (plus the NAT desk on the home router's network floor, and one port per interface on the physical floor). Machines are plain SVG shapes with one motion each, driven by their current **act** (the event they perform) and the **device state** at v (ARP cache, NAT table, TCP state, outstanding segments, timers) from `deviceStateAt`.
-3. **Gizmos.** A packet is a gizmo of parts whose lengths are proportional to their real bytes (`BYTE_PX` per byte; app payload > 64 B collapses with a label). A **track** is one packet inside one device; its keyframes (`appear`, `encap`, `decap`, `change`, `rx`, `tx`) move the gizmo between floors and set its pose (outer layer bolting on/off, parts scattering to/from the port, changed-byte highlight). Gizmos sit on the front edge of every floor and machines stand behind them, so painter's order holds without sorting. Floors are tall (`FLOOR_H`) and shallow (`FD`) on purpose: a slab hides everything on the floor below with `y < FD − (FLOOR_H − height)`.
-4. **Trains.** A **flight** is one frame on one cable: the gizmo unbolted into cars in byte order (grey preamble pilot first), each with a pulse of its own bits. Lost frames tip off the cable at `lostAt`.
-5. **Words.** No narrator: **bubbles** come from the acting machine (`speech.ts`), other factories dim, and the **receipt** lists everything said so far. **Gates** are visual times playback will not cross by itself: one per bubble (setting "step through bubbles") and three operator gates after the URL drop (press the megaphone, drag the cell into the TCP chassis, pull the lever; setting "You operate"). The Player stops at a gate (`blockedAt`) until `release()`; seeking and scrubbing never block.
+2. **Towers and stations.** Each device is a tower of thin glass floors, one per layer (hosts 5, routers 3), with one **station** per floor: the same box in the layer colour with one glyph on top (plus NAT beside the network station on the home router, and one port per interface on the physical floor). Keep it this calm: no furniture, levers or extra props. A station glows and dips while it performs its current **act**; a ring on top shows its running timer (from `deviceStateAt`). Hovering a station shows `DESCRIPTION`.
+3. **One packet, one object.** A packet is a gizmo of parts whose lengths are proportional to their real bytes (`BYTE_PX` per byte; app payload > 64 B collapses with a label). Byte 0 always leads in the packet's direction of travel (requests +x, replies −x; `placeParts`). Gizmo views are cached **by PDU id**: the frame PDU of a hop is the sender's last keyframe, the flight and the receiver's first keyframe, so the same object leaves the port, rides the cable with its parts spread apart in byte order, and closes up at the next tower. A **track** (one packet inside one device) moves it between floors and sets its pose; `appear` and application-layer `encap` assemble the data core from byte cubes. All gizmos draw in one group after the towers (towers never overlap on screen).
+4. **Tags and labels.** While a layer acts, a short tag rises from its station ("+IP 20 B", "−Ethernet", "TTL 64 → 63", "source → ip:port"). Each gizmo has one label stack on the floor in front of it, one line per layer in its colour; labels hide on the wire.
+5. **Words.** No narrator. Speech for every event goes to the **receipt**; only **trouble** (loss, timeouts, retransmission, out-of-order or duplicate data, errors) and **results** (DNS answer, connection established, page loaded, done) appear as bubbles on stage (`categoryOf` in `speech.ts`, `Bubble.shown`). **Gates** are visual times playback will not cross by itself: one per shown bubble (setting "step through bubbles") and three operator gates after the URL drop (click the link station to ARP, drag the data cell down to transport, click the port to `send`; setting "You operate"). The Player stops at a gate (`blockedAt`) until `release()`; seeking and scrubbing never block. Gate comparison tolerates float error (a frame can land a hair below a gate).
 6. The scene is a pure function of v. The follow camera frames the speaking device or both ends of the active cable, inside the part of the stage not covered by the inspector.
 
-To check visuals, run `npm run dev`, then `node scripts/screenshot.mjs` (sampled bubbles; `SHOTS=12.5,40` for specific `v`, `SETTINGS='{"mss":536,"loss":0.15,"seed":4}'`) and `node scripts/screenshot-flows.mjs` (inspector, device panel, packet loss, receipt, OSI, operator gates, step-through, tablet). Screenshots go to `screenshots/` (git-ignored). The dev hook `window.__ie` (seek, play, start, release, info, pickFlight, pickDevice, settings, lose, receipt, v) exists only in dev builds.
+To check visuals, run `npm run dev`, then `node scripts/screenshot.mjs` (sampled bubbles; `SHOTS=12.5,40` for specific `v`, `SETTINGS='{"mss":536,"loss":0.15,"seed":4}'`) and `node scripts/screenshot-flows.mjs` (inspector, device panel, packet loss, receipt, OSI, operator gates, step-through, tablet). Screenshots go to `screenshots/` (git-ignored). The dev hook `window.__ie` (seek, play, start, release, info, pickFlight, pickDevice, settings, lose, receipt, v, player) exists only in dev builds.
 
 ## Key concepts
 
@@ -100,7 +101,7 @@ To check visuals, run `npm run dev`, then `node scripts/screenshot.mjs` (sampled
 - **A new scenario:** add `src/sim/scenarios/<name>.ts` returning a `Scenario` (devices with ifaces/routes/ARP seeds/apps/layout, links with real-ish speeds, delays, a map `label` and a prose `name`). Add app behaviour in `stack/apps.ts` if needed. Give new events speech in `content/speech.ts` and a machine in `iso/machines/Machine.ts#machineFor` (the speech test enforces both), and world positions and port sides in `iso/layout.ts`. Add a test in the style of `src/sim/run.test.ts`; `src/ui/timeline/schedule.test.ts` shows how to fuzz the schedule over seeds and loss. A scenario picker in the header does not exist yet (only one scenario).
 - **A new event type:** add it to `SimEventPayload`, emit it from the sim, give it a cost in `BASE_COST` (schedule.ts), map it to a machine in `machineFor`, give it speech, and animate the machine's `render` for it if it should move something.
 - **A new device kind:** `DeviceKind` in `model.ts`, floors in `iso/layout.ts#floorsFor`, machines in `machinesFor`, a blurb in the inspector's device view.
-- **A new machine:** a builder in `iso/machines/build.ts` (static shapes built once, one motion in `render`), a kind in the `Machine.ts` tables; the nameplate and bubble anchor come for free.
+- **A new station:** a kind in the `Machine.ts` tables (`machinesFor`, `machineFor`, `MACHINE_FLOOR`, `GLYPH`, `DESCRIPTION`); `buildStation` draws it. Keep the uniform box-and-glyph look.
 
 ## Real-world facts and simplifications (keep honest)
 

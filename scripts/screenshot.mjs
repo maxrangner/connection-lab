@@ -25,7 +25,8 @@ await page.waitForTimeout(2600);
 await page.screenshot({ path: `${out}/00-intro.png` });
 
 await page.evaluate(() => window.__ie.start());
-await page.waitForTimeout(1800);
+await page.waitForFunction(() => window.__ie.info().started, null, { timeout: 10000 });
+await page.waitForTimeout(300);
 const info = await page.evaluate(() => window.__ie.info());
 fs.writeFileSync(`${out}/info.json`, JSON.stringify(info, null, 2));
 

@@ -39,7 +39,10 @@ describe('buildSchedule', () => {
     const ops = s.gates.filter((g) => g.kind === 'operator');
     expect(new Set(ops.map((g) => g.action)).size).toBe(ops.length);
     for (const g of ops) expect(g.deviceId).toBe('laptop');
-    for (const g of s.gates.filter((x) => x.kind === 'bubble')) expect(s.bubbles.some((b) => b.seq === g.seq)).toBe(true);
+    for (const g of s.gates.filter((x) => x.kind === 'bubble')) expect(s.bubbles.some((b) => b.seq === g.seq && b.shown)).toBe(true);
+    expect(s.gates.filter((x) => x.kind === 'bubble')).toHaveLength(s.bubbles.filter((b) => b.shown).length);
+    for (const b of s.bubbles) expect(b.shown).toBe(b.category !== 'info');
+    if (loss === 0) expect(ops.map((g) => g.action).sort()).toEqual(['drag-cell', 'press-arp', 'send']);
     for (const sp of s.tcpSpans) expect(sp.ackedV).toBeGreaterThanOrEqual(sp.sentV);
   });
 

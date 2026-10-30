@@ -305,10 +305,12 @@ export class App {
       },
       info: () => ({
         duration: this.schedule.duration,
-        bubbles: this.schedule.bubbles.map((b) => ({ v: b.v0, v1: b.v1, device: b.deviceId, machine: b.machine, text: b.text.slice(0, 80) })),
+        bubbles: this.schedule.bubbles.map((b) => ({ v: b.v0, v1: b.v1, device: b.deviceId, machine: b.machine, shown: b.shown, text: b.text.slice(0, 80) })),
         gates: this.schedule.gates.filter((g) => g.kind === 'operator').map((g) => ({ id: g.id, v: g.v, action: g.action, device: g.deviceId })),
         flights: this.schedule.flights.map((f) => ({ id: f.id, v0: f.v0, v1: f.v1, lostAt: f.lostAt, link: f.linkId, label: this.result.packets.get(f.packetId)?.label })),
         blockedAt: this.player.blockedAt,
+        started: this.started,
+        playerGates: this.player.gates,
       }),
       pickFlight: (id: string, v: number) => {
         const f = this.schedule.flights.find((x) => x.id === id);
@@ -325,6 +327,7 @@ export class App {
       },
       receipt: () => this.receipt.toggle(),
       v: () => this.player.v,
+      player: this.player,
     };
   }
 }

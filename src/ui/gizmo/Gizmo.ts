@@ -254,6 +254,41 @@ export function layoutGizmo(pdu: PduSnapshot, pk?: PacketInfo): GizmoLayout {
   return { parts, length, byteX, outerIds, outerFrontLen };
 }
 
+export interface PlacedPart {
+  id: string;
+  /** World-x extent of the part relative to the gizmo's leading face (x = 0). */
+  x0: number;
+  x1: number;
+  /** Position in byte order among non-frame parts (0 = first byte). */
+  order: number;
+}
+
+/**
+ * Lays a gizmo out along world x so that byte 0 sits at the leading face and every later part trails behind it,
+ * in the direction of travel: dir +1 means the gizmo moves toward +x (parts extend into −x behind the leading
+ * face), dir −1 the opposite. `spread` opens a gap of that many tiles between consecutive parts (on the wire).
+ * `k` compresses lengths (long gizmos are shortened to fit a floor). The frame part spans the shell.
+ */
+export function placeParts(layout: GizmoLayout, dir: 1 | -1, spread = 0, k = 1): PlacedPart[] {
+  const real = layout.parts.filter((p) => p.kind !== 'frame').sort((a, b) => a.byteStart - b.byteStart);
+  const out: PlacedPart[] = [];
+  let d = 0;
+  real.forEach((p, i) => {
+    const len = p.len * k;
+    const from = d + i * spread;
+    const to = from + len;
+    out.push({ id: p.id, x0: dir > 0 ? -to : from, x1: dir > 0 ? -from : to, order: i });
+    d += len;
+  });
+  const frame = layout.parts.find((p) => p.kind === 'frame');
+  if (frame) {
+    const ends = out.filter((o) => layout.parts.find((p) => p.id === o.id)!.protocol === 'ethernet' || layout.parts.find((p) => p.id === o.id)!.protocol === 'padding');
+    const xs = ends.flatMap((o) => [o.x0, o.x1]);
+    out.push({ id: frame.id, x0: Math.min(...xs), x1: Math.max(...xs), order: -1 });
+  }
+  return out;
+}
+
 /** The preamble "pilot" car that leads every frame on the wire (8 bytes: 7 × 0x55 + 0xD5). */
 export function pilotPart(): Part {
   return { id: 'pilot', kind: 'pilot', protocol: 'preamble', depth: -1, byteStart: -8, byteEnd: 0, x: 0, len: 8 * BYTE_TILE, h: PART_H.pilot, collapsed: false, color: LAYER_COLOR[1], name: 'preamble', labels: [{ key: 'preamble', text: '1010… sync', offset: -8, length: 8 }] };

@@ -49,6 +49,9 @@ describe('world layout', () => {
         }
       }
       expect(c.length).toBeGreaterThan(2);
+      // One straight run along x: two points on the same cable row.
+      expect(c.points).toHaveLength(2);
+      expect(c.points[0]!.y).toBeCloseTo(c.points[1]!.y, 9);
       for (const [i, len] of c.segLen.entries()) {
         expect(len).toBeGreaterThan(0);
         const a = c.points[i]!;

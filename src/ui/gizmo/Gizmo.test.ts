@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fetchWebPage, runScenario } from '../../sim';
-import { BYTE_TILE, layoutGizmo } from './Gizmo';
+import { BYTE_TILE, layoutGizmo, placeParts } from './Gizmo';
 
 describe('layoutGizmo', () => {
   const runs = [
@@ -77,5 +77,31 @@ describe('layoutGizmo', () => {
     expect(texts.some((t) => t.startsWith('seq 0'))).toBe(true);
     expect(texts.some((t) => t.startsWith('TTL 64'))).toBe(true);
     expect(texts).toContain('CRC ✓');
+  });
+
+  it('places byte 0 at the leading face and the rest behind it, in both directions', () => {
+    const r = runs[0]!;
+    let n = 0;
+    for (const pdu of r.pdus.values()) {
+      const L = layoutGizmo(pdu, r.packets.get(pdu.packetId));
+      for (const dir of [1, -1] as const) {
+        for (const spread of [0, 0.3]) {
+          const placed = placeParts(L, dir, spread).filter((p) => p.order >= 0).sort((a, b) => a.order - b.order);
+          // Byte 0 touches the leading face (x = 0).
+          expect(dir > 0 ? placed[0]!.x1 : placed[0]!.x0).toBeCloseTo(0, 9);
+          for (let i = 1; i < placed.length; i++) {
+            const prev = placed[i - 1]!;
+            const cur = placed[i]!;
+            // Each later part lies behind the previous one, separated by exactly the spread gap.
+            if (dir > 0) expect(prev.x0 - cur.x1).toBeCloseTo(spread, 9);
+            else expect(cur.x0 - prev.x1).toBeCloseTo(spread, 9);
+          }
+          const total = placed.reduce((a, p) => a + (p.x1 - p.x0), 0);
+          expect(total).toBeCloseTo(L.length, 9);
+        }
+      }
+      n++;
+    }
+    expect(n).toBeGreaterThan(100);
   });
 });
