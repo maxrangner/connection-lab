@@ -66,6 +66,13 @@ export class Sound {
       case 'pop':
         this.tone(c, t, 'sine', 520, 880, 0.08, 0.1);
         break;
+      case 'flip':
+        // A page turning.
+        this.noise(c, t, 0.09, 0.09, 3500);
+        break;
+      case 'found':
+        [1040, 1560].forEach((f, i) => this.tone(c, t + i * 0.07, 'sine', f, f, 0.16, 0.09));
+        break;
       case 'chime':
         [660, 830, 990].forEach((f, i) => this.tone(c, t + i * 0.09, 'sine', f, f, 0.35, 0.08));
         break;

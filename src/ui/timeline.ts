@@ -1,5 +1,5 @@
 import { clamp01, easeIn, easeInOut, easeOutBack, easeOutBounce, lerpV, v3, type Vec3 } from './project';
-import type { Frame, Step, Story, Trip, Wrap } from './story';
+import type { Details, Frame, Step, Story, Trip, Wrap } from './story';
 
 /**
  * Story → visual timeline. Every trip's steps get a start and end in visual seconds, one packet at a time.
@@ -48,7 +48,7 @@ export interface Seg {
 
 export interface Cue {
   t: number;
-  sound: 'snap' | 'sleeve' | 'thud' | 'swap' | 'bonk' | 'zap' | 'surprise' | 'pop' | 'chime' | 'lock' | 'unlock' | 'key' | 'snip';
+  sound: 'snap' | 'sleeve' | 'thud' | 'swap' | 'bonk' | 'zap' | 'surprise' | 'pop' | 'chime' | 'lock' | 'unlock' | 'key' | 'snip' | 'flip' | 'found';
 }
 
 export interface Timeline {
@@ -91,7 +91,7 @@ const LEVEL_GAP = 1.15;
 /** How far from a device's centre the cable port sits. */
 const PORT = 2.4;
 /** Seconds of visual time per step, the first time it happens. */
-const DUR: Record<TStep['kind'], number> = { appear: 0.9, lock: 1.5, unlock: 1.3, wrap: 0.85, unwrap: 0.85, nat: 2.6, travel: 1.9, read: 1.2, lost: 0, wait: 2.8 };
+const DUR: Record<TStep['kind'], number> = { appear: 0.9, lock: 1.5, unlock: 1.3, wrap: 0.85, unwrap: 0.85, nat: 2.6, travel: 1.9, read: 1.2, lookup: 4.2, lost: 0, wait: 2.8 };
 /** A link this slow (one-way seconds) is drawn as a radio hop up to a satellite. */
 export const SLOW_DELAY = 0.1;
 export const SKY_HEIGHT = 9;
@@ -99,7 +99,7 @@ export const SKY_HEIGHT = 9;
 const VPN_BOX = 2.6;
 /** Where in a wrap step the piece closes onto the packet. */
 const WRAP_SHUT = 0.35 + 0.65 * 0.45;
-/** Address changes in a run that get the full whoosh, stamp and ding. */
+/** Address changes in a run that get the full sound. */
 const SWAP_SOUNDS = 6;
 /** Seconds a knocked packet tumbles before it is gone. */
 export const TUMBLE = 1.8;
@@ -159,6 +159,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
         case 'unlock':
         case 'appear':
         case 'read':
+        case 'lookup':
           seg.p1 = at(step.device, LEVEL.app);
           break;
         case 'wrap':
@@ -256,9 +257,14 @@ function addCues(cues: Cue[], seg: Seg, story: Story): void {
   if (s.kind === 'unwrap' && s.layer === 'eth') cues.push({ t: at(0.35 + 0.65 * 0.62), sound: 'thud' });
   const landing = swapLanding(s);
   if (landing !== null) {
-    // The bang is for the first few. After that the router only ticks, and the VPN box has its lock.
+    // The full sound is for the first few. After that the router only ticks, and the VPN box has its lock.
     if (cues.filter((c) => c.sound === 'swap').length < SWAP_SOUNDS) cues.push({ t: at(landing), sound: 'swap' });
     else if (s.kind === 'nat') cues.push({ t: at(landing), sound: 'snap' });
+  }
+  if (s.kind === 'lookup') {
+    const b = lookupBeats(s.what);
+    for (const f of b.search) cues.push({ t: at(f), sound: s.what === 'dns' ? 'flip' : 'snap' });
+    cues.push({ t: at(b.found), sound: 'found' });
   }
   if (s.kind === 'lost' && seg.knock) cues.push({ t: seg.t0 + seg.knock.k * seg.knock.travel, sound: seg.knock.byYou ? 'bonk' : seg.knock.cut ? 'thud' : 'zap' });
   if (s.kind === 'lock') cues.push({ t: at(0.62), sound: 'lock' });
@@ -404,6 +410,8 @@ export function trayOpacity(tl: Timeline, device: string, v: number): number {
   const fade = 0.3;
   const dt = seg.t1 - seg.t0;
   if (s.kind === 'wait') return 0;
+  // The trays make way for the book, and come back for the reply.
+  if (s.kind === 'lookup') return s.device === device ? clamp01((k - 0.85) / 0.15) : 0;
   if (s.kind === 'travel' || s.kind === 'lost') {
     if (s.from === device) return clamp01(1 - (k * dt) / fade);
     if (s.to === device && s.kind === 'travel') return clamp01(1 - ((1 - k) * dt) / fade);
@@ -506,11 +514,35 @@ export function lockPose(seg: Seg, k: number): LockPose {
   return SHUT;
 }
 
-/** Where a step button goes from visual time `from`: the next action, or back to the start of this or the last one. */
-export function stepTarget(tl: Timeline, from: number, dir: 1 | -1): number {
+/**
+ * Where a step button goes from visual time `from`: the next action, or back to the start of this one. Within `grace`
+ * seconds of that start it goes to the one before, so pressing back again always gets further back.
+ */
+export function stepTarget(tl: Timeline, from: number, dir: 1 | -1, grace = 0.2): number {
   const marks = [...new Set(tl.segs.map((s) => s.t0)), tl.total].sort((a, b) => a - b);
   if (dir > 0) return marks.find((m) => m > from + 0.01) ?? tl.total;
-  return [...marks].reverse().find((m) => m < from - 0.2) ?? 0;
+  const before = marks.filter((m) => m <= from + 0.01);
+  const here = before[before.length - 1] ?? 0;
+  return from - here >= grace ? here : (before[before.length - 2] ?? 0);
+}
+
+/** The fields of the packet at progress k of a segment: as the latest step left them. A translated address counts once it lands. */
+export function detailsAt(seg: Seg, k: number): Details {
+  const steps = seg.trip.steps;
+  const s = seg.step;
+  for (let i = steps.indexOf(s as Step) - (s.kind === 'nat' && k < swapLanding(s)! ? 1 : 0); i >= 0; i--) {
+    const d = steps[i]!.details;
+    if (d) return d;
+  }
+  return {};
+}
+
+/**
+ * When things happen in a lookup, as shares of the step. `open`: the book or the shelf is ready, `search`: each page
+ * turned or slot tried, `found`: the line or the file lights up, `lift`: the answer rises to become the reply.
+ */
+export function lookupBeats(what: 'dns' | 'web'): { open: number; search: number[]; found: number; lift: number } {
+  return what === 'dns' ? { open: 0.14, search: [0.2, 0.32, 0.44], found: 0.62, lift: 0.8 } : { open: 0.08, search: [0.12, 0.24, 0.36], found: 0.48, lift: 0.78 };
 }
 
 /**
@@ -526,7 +558,7 @@ export function swapLanding(s: TStep): number | null {
 
 /**
  * The big moment when an address changes, at progress k of a step: the tag swells (`grow`), the field flips over
- * (`flip`, the new value shows from 0.5) to land at `landing`, then it bangs and the old value falls away (`stamp`).
+ * (`flip`, the new value shows from 0.5) to land at `landing`, then the fresh label settles and the old one peels off (`stamp`).
  */
 export function swapMoment(k: number, landing: number): { grow: number; flip: number; stamp: number } {
   return {

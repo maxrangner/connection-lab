@@ -6,7 +6,7 @@ import { drawBolt, drawPadlock, drawPage, drawSatellite, drawScissors, drawShiel
 import { Menu } from './menus';
 import { NetworkScene, type Camera } from './NetworkScene';
 import { Sound } from './sound';
-import { buildStory, type Chapter, type Story } from './story';
+import { buildStory, type Chapter, type PartKey, type Story } from './story';
 import { buildTimeline, chapterAt, seenSoFar, stepTarget, type Timeline } from './timeline';
 
 /**
@@ -19,6 +19,8 @@ import { buildTimeline, chapterAt, seenSoFar, stepTarget, type Timeline } from '
 const STORM_LOSS = 0.15;
 /** Seconds the finished picture stays before the card comes back. */
 const LINGER = 1.4;
+/** Seconds after the start of a step in which back goes to the step before it. */
+const BACK_GRACE = 1;
 
 /** What the next run is like, set from the Setup menu between runs: changing it mid-run would rewrite what happened. */
 type Setting = 'https' | 'big' | 'slow' | 'vpn';
@@ -371,10 +373,15 @@ const soundBtn = button('♪', 'Sound', () => {
   }
 });
 button('↺', 'Reset', reset);
-const followBtn = button('◎ Follow packet', 'Follow the packet', () => {
+root.appendChild(controls);
+// Outside the bar, so the bar never moves.
+const followBtn = document.createElement('button');
+followBtn.className = 'follow';
+followBtn.setAttribute('aria-label', 'Follow the packet');
+followBtn.addEventListener('click', () => {
   camFree = false;
 });
-root.appendChild(controls);
+root.appendChild(followBtn);
 // A popup only has to move when the bar does.
 new ResizeObserver(placeMenus).observe(controls);
 window.addEventListener('resize', placeMenus);
@@ -390,6 +397,10 @@ let seek: { from: number; to: number; t: number; dur: number } | null = null;
 let doneFor = 0;
 let peek = 0;
 let peekTarget = 0;
+/** The pill opened on a popped-open packet, and how far. */
+let pill: PartKey | null = null;
+let pillOpen = 0;
+let pillTarget = 0;
 let cardPos = { ...home };
 let anim = { from: { ...home }, to: { ...home }, t: 0, dur: 0.4 };
 let grab = { dx: 0, dy: 0 };
@@ -500,6 +511,14 @@ svg.addEventListener('pointerdown', (e) => {
   // Working the stage leaves the Tools menu open while a tool is in hand; the other popups give way to it.
   for (const menu of menus) if (menu !== toolsMenu || !tool) menu.setOpen(false);
   const target = e.target as Element;
+  const chip = target.closest('[data-chip]')?.getAttribute('data-chip') as PartKey | undefined;
+  if (chip) {
+    pillTarget = pill === chip && pillTarget ? 0 : 1;
+    if (pill !== chip) pillOpen = 0;
+    pill = chip;
+    sound.play('snap');
+    return;
+  }
   if (target.closest('.site-card') || (!tool && target.closest('.packet'))) return;
   toolPress = tool ? { x: e.clientX, y: e.clientY } : null;
   const device = target.closest('[data-device]')?.getAttribute('data-device');
@@ -585,7 +604,7 @@ function togglePause(): void {
 function step(dir: 1 | -1): void {
   if (mode !== 'play') return;
   peekTarget = 0;
-  const to = stepTarget(tl, seek?.to ?? v, dir);
+  const to = stepTarget(tl, seek?.to ?? v, dir, BACK_GRACE * speed);
   seek = { from: v, to, t: 0, dur: Math.min(0.5, Math.max(0.22, Math.abs(to - v) / 6)) };
 }
 
@@ -695,10 +714,14 @@ function frame(now: number): void {
       for (const c of tl.cues) if (c.t > Math.max(v, cueDone) && c.t <= next) sound.play(c.sound);
       v = next;
     }
+    // A step can land where there is no packet to hold open (a lookup, a timer): carry on.
+    if (peekTarget && !scene.peekable(v)) peekTarget = 0;
     doneFor = v >= tl.total && !paused && !seek ? doneFor + dt : 0;
     if (doneFor > LINGER) endRun();
   }
   peek += (peekTarget - peek) * Math.min(1, dt * 10);
+  if (!peekTarget) pillTarget = 0;
+  pillOpen += (pillTarget - pillOpen) * Math.min(1, dt * 12);
 
   const bob = mode === 'idle' ? Math.sin(clock * 2.4) * 4 : 0;
   const dropK = mode === 'drop' ? clamp01(anim.t / anim.dur) : 0;
@@ -725,7 +748,7 @@ function frame(now: number): void {
 
   const shown = mode === 'play' ? v : idleV;
   scene.render(shown);
-  scene.drawPacket(shown, peek);
+  scene.drawPacket(shown, peek, pill && pillOpen > 0.02 ? { key: pill, k: pillOpen } : null);
   scene.packet.classList.toggle('knockable', mode === 'play' && !paused && !peekTarget && !seek && !!scene.knockable(v));
 
   const ch = mode === 'play' ? chapterAt(tl, v) : null;
@@ -745,7 +768,7 @@ function frame(now: number): void {
   soundBtn.classList.toggle('off', sound.muted);
   followBtn.hidden = !camFree;
   followBtn.textContent = mode === 'play' ? '◎ Follow packet' : '◎ Show all';
-  backBtn.hidden = pauseBtn.hidden = nextBtn.hidden = mode !== 'play';
+  backBtn.disabled = pauseBtn.disabled = nextBtn.disabled = mode !== 'play';
   // The setup is for the next run: it would rewrite what has already happened.
   setupMenu.button.disabled = !canSetUp();
   if (!canSetUp()) setupMenu.setOpen(false);

@@ -3,8 +3,9 @@ import { box, cylinder, line, rbox, tile } from './prims';
 import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, easeOutBounce, iso, lerp, U, v3, type Vec3 } from './project';
 import { drawBolt, drawSatellite, drawScissors, drawShield, drawSpyglass } from './icons';
 import { shade } from './shade';
-import type { Seen, Story, Trip, Wrap } from './story';
-import { addressBefore, DEVICE_TOP, FACE_EMOJI, frameAt, LEVEL, lockPose, packetPos, packetPose, segAt, swapLanding, swapMoment, trayOpacity, wrapsBefore, type LockPose, type Seg, type Timeline } from './timeline';
+import type { Details, PartKey, Row, Seen, Story, Trip, Wrap } from './story';
+import { drawBook, drawShelf, SERVER } from './stations';
+import { addressBefore, detailsAt, DEVICE_TOP, FACE_EMOJI, frameAt, LEVEL, lockPose, packetPos, packetPose, segAt, swapLanding, swapMoment, trayOpacity, wrapsBefore, type LockPose, type Seg, type Timeline } from './timeline';
 
 export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', vpn: '#2e5e6e', eth: '#e08b33', wifi: '#2a9d8f' } as const;
 const DEVICE = '#d9d0c2';
@@ -19,6 +20,9 @@ function mix(a: string, b: string, t: number): string {
 }
 
 const BURST = '#ffd84a';
+/** A fresh address label as it lands, and once it has settled. */
+const LABEL_FRESH = '#8fe3d0';
+const LABEL_SETTLED = '#d8f5ee';
 const WAIT = '#c2562f';
 const sealedInside = (key: PartKey): boolean => key === 'ip' || key === 'l4' || key === 'card';
 /** How far from a device its satellite dish stands. */
@@ -62,7 +66,6 @@ const cardLen = (trip: Trip): number => {
 const faceTf = (p: { sx: number; sy: number }, face: '+y' | '+x'): string =>
   `matrix(1 ${face === '+y' ? 0.5 : -0.5} 0 1 ${p.sx.toFixed(1)} ${p.sy.toFixed(1)})`;
 
-type PartKey = 'ethH' | 'vpn' | 'ip' | 'l4' | 'card' | 'ethT';
 
 interface Part {
   key: PartKey;
@@ -151,6 +154,8 @@ export class NetworkScene {
   /** How locked the card being drawn is (0 open, 1 locked): HTTPS cards lock at the sender and open at the receiver. */
   private lock = 0;
 
+  /** The pill opened on the packet this frame, and how far. */
+  private pill: { key: PartKey; k: number } | null = null;
   /** Where the keyhole of the padlock on the packet is on screen this frame. */
   private keyhole: { sx: number; sy: number } | null = null;
 
@@ -572,7 +577,7 @@ export class NetworkScene {
       // Between trips: stay on whoever is reacting.
       const d = this.tl.pos.get(mood.device) ?? { x: 0, y: 0 };
       p = v3(d.x, d.y, (DEVICE_TOP[this.tl.kind.get(mood.device) ?? ''] ?? 1) + 1.5);
-    } else if (hit?.seg.step.kind === 'wait') {
+    } else if (hit?.seg.step.kind === 'wait' || hit?.seg.step.kind === 'lookup') {
       const d = this.tl.pos.get(hit.seg.step.device) ?? { x: 0, y: 0 };
       p = v3(d.x, d.y, (DEVICE_TOP[this.tl.kind.get(hit.seg.step.device) ?? ''] ?? 1) + 1.5);
     } else if (hit) {
@@ -667,8 +672,8 @@ export class NetworkScene {
         return null;
       }
       default: {
-        box(g, { x: x - 0.8, y: y - 0.8, z: 0, w: 1.6, d: 1.6, h: 2.6, ...neutral });
-        for (let i = 0; i < 4; i++) line(g, v3(x - 0.55, y + 0.8, 2.25 - i * 0.5), v3(x + 0.55, y + 0.8, 2.25 - i * 0.5), { class: 'slot' });
+        box(g, { x: x - SERVER.half, y: y - SERVER.half, z: 0, w: SERVER.half * 2, d: SERVER.half * 2, h: SERVER.height, ...neutral });
+        for (const z of SERVER.slots) line(g, v3(x - SERVER.slotHalf, y + SERVER.half, z), v3(x + SERVER.slotHalf, y + SERVER.half, z), { class: 'slot' });
         return null;
       }
     }
@@ -819,11 +824,12 @@ export class NetworkScene {
   /** Whether there is a whole packet to pop open (not one tumbling off a cable). */
   peekable(v: number): boolean {
     const kind = segAt(this.tl, v)?.seg.step.kind;
-    return !!kind && kind !== 'lost' && kind !== 'wait';
+    return !!kind && kind !== 'lost' && kind !== 'wait' && kind !== 'lookup';
   }
 
-  /** The packet at visual time v. `peek` (0..1) pulls its pieces apart and shows their sizes. */
-  drawPacket(v: number, peek: number): void {
+  /** The packet at visual time v. `peek` (0..1) pulls its pieces apart and shows their sizes; `pill` is the one opened. */
+  drawPacket(v: number, peek: number, pill: { key: PartKey; k: number } | null = null): void {
+    this.pill = pill;
     this.packet.replaceChildren();
     this.tags.replaceChildren();
     this.fx.replaceChildren();
@@ -837,6 +843,13 @@ export class NetworkScene {
     const step = seg.step;
     if (step.kind === 'wait') {
       this.drawWait(seg, k);
+      this.drawKeys(v, seg, NO_KEY);
+      return;
+    }
+    if (step.kind === 'lookup') {
+      const d = this.tl.pos.get(step.device) ?? { x: 0, y: 0 };
+      const draw = step.what === 'dns' ? drawBook : drawShelf;
+      draw(this.fx, v3(d.x, d.y, DEVICE_TOP[this.tl.kind.get(step.device) ?? ''] ?? 1), seg.p1, step, k);
       this.drawKeys(v, seg, NO_KEY);
       return;
     }
@@ -926,7 +939,20 @@ export class NetworkScene {
     const q = tau / T;
     const c = iso(at.x, at.y, at.z);
     const g = el('g', { class: 'burst', opacity: (1 - easeIn(q)).toFixed(3), transform: `translate(${c.sx.toFixed(1)} ${c.sy.toFixed(1)})` }, this.fx);
-    drawBang(g, 22 + 34 * easeOut(q), 18 + 26 * easeOut(q));
+    const r = 22 + 34 * easeOut(q);
+    const pts: string[] = [];
+    for (let j = 0; j < 20; j++) {
+      const a = (j / 20) * Math.PI * 2 + 0.2;
+      const rr = j % 2 ? r * 0.5 : r * (j % 4 ? 1 : 1.25);
+      pts.push(`${(Math.cos(a) * rr).toFixed(1)},${(Math.sin(a) * rr).toFixed(1)}`);
+    }
+    el('polygon', { points: pts.join(' '), fill: BURST, class: 'burst-star' }, g);
+    for (let j = 0; j < 14; j++) {
+      const a = (j / 14) * Math.PI * 2 + 0.11 * j;
+      const r1 = r * 1.15 + 6;
+      const r2 = r1 + 18 + 26 * easeOut(q) + (j % 3) * 6;
+      el('line', { x1: Math.cos(a) * r1, y1: Math.sin(a) * r1, x2: Math.cos(a) * r2, y2: Math.sin(a) * r2, class: 'speed-line' }, g);
+    }
     // The storm did it: a lightning bolt strikes down onto the cable first.
     if (zap && q < 0.6) {
       const bolt = '0,-150 -14,-96 6,-92 -12,-40 8,-38 -4,0 22,-52 2,-56 18,-104 -2,-108 10,-150';
@@ -1089,7 +1115,7 @@ export class NetworkScene {
     }
     if (pose.chips > 0.02) {
       const items = placed.map(({ p, u0, u1 }) => ({ p, top: v3(at((u0 + u1) / 2).x, at((u0 + u1) / 2).y, pos.z + SECTION[p.layer].h / 2) }));
-      this.sizeChips(items, trip, pose.chips);
+      this.sizeChips(items, trip, pose.chips, detailsAt(seg, k));
     }
   }
 
@@ -1198,13 +1224,15 @@ export class NetworkScene {
     return list;
   }
 
-  private sizeChips(items: { p: Part; top: Vec3 }[], trip: Trip, op: number): void {
+  private sizeChips(items: { p: Part; top: Vec3 }[], trip: Trip, op: number, details: Details): void {
     const chips = items
       .map(({ p, top }) => {
         const hidden = sealedInside(p.key) && !!items.find((x) => x.p.key === 'vpn');
+        const rows = hidden ? [{ name: '🔒', value: 'sealed' }] : (details[p.key] ?? []);
         const name = hidden ? '🔒' : p.key === 'card' ? (this.lock > 0.5 ? `🔒 ${this.cardText(trip)}`.trim() : this.cardText(trip)) : p.key === 'ethT' ? '' : p.key === 'l4' ? trip.l4Label : layerName(p.layer, trip, this.l2);
-        const text = name ? `${name} · ${p.bytes} B` : `${p.bytes} B`;
-        return { p, a: iso(top.x, top.y, top.z), text, w: text.length * 6.6 + 14, x: 0 };
+        const text = `${name ? `${name} · ${p.bytes} B` : `${p.bytes} B`}${rows.length ? ' ▴' : ''}`;
+        const c = p.key === 'card' && this.lock > 0.5 ? LOCKED : colorOf(p.layer, trip, this.l2);
+        return { p, a: iso(top.x, top.y, top.z), text, rows, c, w: text.length * 6.6 + 14, x: 0 };
       })
       .sort((m, n) => m.a.sx - n.a.sx);
     if (!chips.length) return;
@@ -1217,13 +1245,31 @@ export class NetworkScene {
     }
     const y = Math.min(...chips.map((c) => c.a.sy)) - 30 - 20 * op;
     for (const c of chips) {
-      const color = c.p.key === 'card' && this.lock > 0.5 ? LOCKED : colorOf(c.p.layer, trip, this.l2);
-      const g = el('g', { class: 'size-tag', opacity: op.toFixed(3) }, this.tags);
+      const color = c.c;
+      const g = el('g', { class: 'size-tag', opacity: op.toFixed(3), ...(c.rows.length ? { 'data-chip': c.p.key } : {}) }, this.tags);
       el('path', { d: `M${c.a.sx.toFixed(1)} ${c.a.sy.toFixed(1)}L${c.x.toFixed(1)} ${y.toFixed(1)}`, stroke: color, fill: 'none' }, g);
       el('rect', { x: c.x - c.w / 2, y: y - 18, width: c.w, height: 18, rx: 9, fill: color }, g);
       const t = el('text', { x: c.x.toFixed(1), y: (y - 9).toFixed(1), dy: '0.35em', 'text-anchor': 'middle' }, g);
       t.textContent = c.text;
     }
+    const open = this.pill && chips.find((c) => c.p.key === this.pill!.key && c.rows.length);
+    if (open) this.pillPanel(open.x, y - 18, open.w, open.p.key, open.c, open.rows, this.pill!.k);
+  }
+
+  /** A pill's fields, growing upwards out of the pill. */
+  private pillPanel(x: number, bottom: number, pillW: number, key: PartKey, color: string, rows: Row[], k: number): void {
+    const ROW = 19;
+    const h = rows.length * ROW + 12;
+    const w = Math.max(pillW, ...rows.map((r) => r.name.length * 6.1 + r.value.length * 6.7 + 34));
+    const g = el('g', { class: 'pill-panel', 'data-chip': key, opacity: clamp01(k * 2).toFixed(3), transform: `translate(${x.toFixed(1)} ${(bottom - 3).toFixed(1)}) scale(1 ${easeOutBack(k).toFixed(3)})` }, this.tags);
+    el('rect', { x: -w / 2, y: -h, width: w, height: h, rx: 10, stroke: color }, g);
+    rows.forEach((r, i) => {
+      const y = -h + 6 + (i + 0.5) * ROW;
+      const name = el('text', { x: -w / 2 + 11, y, dy: '0.35em', class: 'pill-name' }, g);
+      name.textContent = r.name;
+      const value = el('text', { x: w / 2 - 11, y, dy: '0.35em', 'text-anchor': 'end', class: 'pill-value' }, g);
+      value.textContent = r.value;
+    });
   }
 
   /** "from → to" on the IP piece. When an address changes it is the big moment of the step, see `swapMoment`. */
@@ -1258,7 +1304,6 @@ export class NetworkScene {
     const NUM_Y = 7;
     const swapping = changed && m.grow > 0.01;
     el('rect', { x: -width / 2, y: -19, width, height: 38, rx: 7, class: swapping ? 'addr-bg addr-swap' : 'addr-bg' }, g);
-    const fallen: (() => void)[] = [];
     const part = (word: 'from' | 'to', cap: string, x: number, w: number, hot: boolean): void => {
       const cx = x + w / 2;
       const capText = el('text', { x: cx.toFixed(1), y: -8, 'text-anchor': 'middle', dy: '0.35em', class: hot ? 'addr-cap hot' : 'addr-cap' }, g);
@@ -1266,51 +1311,39 @@ export class NetworkScene {
       const yScale = hot ? Math.max(0.04, Math.abs(1 - 2 * m.flip)) : 1;
       const land = hot && m.flip >= 0.5 ? 1 + 0.6 * (1 - easeOutBack(clamp01(m.stamp / 0.5))) : 1;
       const pg = el('g', { transform: `translate(${cx.toFixed(1)} ${NUM_Y}) scale(${land.toFixed(3)} ${(yScale * land).toFixed(3)})` }, g);
-      if (hot) el('rect', { x: -w / 2 - 4, y: -9, width: w + 8, height: 18, rx: 4, fill: mix('#ff9f1c', '#ffe7a8', m.stamp) }, pg);
+      if (hot) el('rect', { x: -w / 2 - 4, y: -9, width: w + 8, height: 18, rx: 4, fill: mix(LABEL_FRESH, LABEL_SETTLED, m.stamp) }, pg);
       const t = el('text', { 'text-anchor': 'middle', dy: '0.35em', class: hot ? 'addr-text hot' : 'addr-text' }, pg);
       t.textContent = a[word];
-      // The old value drops off the tag.
+      // The old label slips out from under the tag and drifts away, so the new one stays easy to read.
       if (hot && m.flip >= 0.5 && m.stamp < 1 && old[word] !== a[word]) {
-        fallen.push(() => {
-          const y = NUM_Y + 80 * easeIn(m.stamp);
-          const gone = el('text', { 'text-anchor': 'middle', dy: '0.35em', class: 'addr-text addr-old', opacity: (1 - m.stamp).toFixed(3), transform: `translate(${cx.toFixed(1)} ${y.toFixed(1)}) rotate(${(28 * m.stamp).toFixed(1)})` }, g);
-          gone.textContent = old[word];
-        });
+        const gone = el('g', { class: 'addr-old', opacity: (1 - easeIn(m.stamp)).toFixed(3), transform: `translate(${(cx + 16 * m.stamp).toFixed(1)} ${(NUM_Y + 44 * easeOut(m.stamp)).toFixed(1)}) rotate(${(10 * m.stamp).toFixed(1)})` }, flash);
+        el('rect', { x: -w / 2 - 4, y: -9, width: w + 8, height: 18, rx: 4 }, gone);
+        el('text', { 'text-anchor': 'middle', dy: '0.35em', class: 'addr-text' }, gone).textContent = old[word];
       }
     };
-    // One bang, behind the field that changes, or the middle when both do.
-    if (changed && m.stamp > 0 && m.stamp < 1) {
-      const x = changed === 'both' ? 0 : changed === 'from' ? -width / 2 + 10 + fromW / 2 : width / 2 - 10 - toW / 2;
-      this.swapBurst(flash, x, NUM_Y, m.stamp, changed === 'both' ? 1.5 : 1);
-    }
     part('from', fromCap, -width / 2 + 10, fromW, changed === 'from' || changed === 'both');
     const arrow = el('text', { x: -width / 2 + 22 + fromW, y: NUM_Y, 'text-anchor': 'middle', dy: '0.35em', class: 'addr-arrow' }, g);
     arrow.textContent = '→';
     part('to', toCap, -width / 2 + 34 + fromW, toW, changed === 'to' || changed === 'both');
-    for (const drop of fallen) drop();
+    // A soft ring and a few sparkles around the fresh label, or around the whole tag when both change.
+    if (changed && m.stamp > 0 && m.stamp < 1) {
+      const x = changed === 'both' ? 0 : changed === 'from' ? -width / 2 + 10 + fromW / 2 : width / 2 - 10 - toW / 2;
+      this.freshLabel(g, x, changed === 'both' ? 0 : NUM_Y, changed === 'both' ? width : changed === 'from' ? fromW : toW, m.stamp);
+    }
   }
 
-  /** The anime bang behind a value landing: a yellow star and speed lines. */
-  private swapBurst(parent: SVGGElement, x: number, y: number, q: number, wide: number): void {
-    const g = el('g', { opacity: (1 - q).toFixed(3), transform: `translate(${x.toFixed(1)} ${y.toFixed(1)}) scale(${wide} 1)` }, parent);
-    drawBang(g, 24 + 20 * easeOut(q), 8 + 12 * easeOut(q), 1.5);
-  }
-}
-
-/** A jagged yellow star of radius r, and speed lines of the given length shooting out of it. `wide` stretches both. */
-function drawBang(g: SVGGElement, r: number, length: number, wide = 1): void {
-  const pts: string[] = [];
-  for (let j = 0; j < 20; j++) {
-    const a = (j / 20) * Math.PI * 2 + 0.2;
-    const rr = j % 2 ? r * 0.5 : r * (j % 4 ? 1 : 1.25);
-    pts.push(`${(Math.cos(a) * rr * wide).toFixed(1)},${(Math.sin(a) * rr).toFixed(1)}`);
-  }
-  el('polygon', { points: pts.join(' '), fill: BURST, class: 'burst-star' }, g);
-  for (let j = 0; j < 14; j++) {
-    const a = (j / 14) * Math.PI * 2 + 0.11 * j;
-    const r1 = r * 1.15 + 6;
-    const r2 = r1 + length + (j % 3) * 6;
-    el('line', { x1: Math.cos(a) * r1 * wide, y1: Math.sin(a) * r1, x2: Math.cos(a) * r2 * wide, y2: Math.sin(a) * r2, class: 'speed-line' }, g);
+  /** The fresh label settling: a ring spreading out from it and a few sparkles. Routine work, not an accident. */
+  private freshLabel(parent: SVGGElement, x: number, y: number, w: number, q: number): void {
+    const g = el('g', { opacity: (1 - easeIn(q)).toFixed(3), transform: `translate(${x.toFixed(1)} ${y.toFixed(1)})` }, parent);
+    const out = 14 * easeOut(q);
+    el('rect', { x: -w / 2 - 6 - out, y: -13 - out, width: w + 12 + out * 2, height: 26 + out * 2, rx: 8 + out, class: 'swap-ring' }, g);
+    const size = 7 * Math.sin(Math.min(1, q * 1.4) * Math.PI);
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2 + 0.5;
+      const sx = Math.cos(a) * (w / 2 + 16 + 14 * q);
+      const sy = Math.sin(a) * (26 + 16 * q);
+      el('path', { d: `M0 ${-size} Q0 0 ${size} 0 Q0 0 0 ${size} Q0 0 ${-size} 0 Q0 0 0 ${-size}Z`, class: 'swap-spark', transform: `translate(${sx.toFixed(1)} ${sy.toFixed(1)})` }, g);
+    }
   }
 }
 

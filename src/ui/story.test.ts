@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fetchWebPage, runScenario, type ManualFault } from '../sim';
 import { buildStory, cardLabel, dnsCardLabel, type Trip } from './story';
-import { addressBefore, buildTimeline, lockPose, packetPose, seenSoFar, stepTarget, swapLanding, swapMoment, trayAngle } from './timeline';
+import { addressBefore, buildTimeline, detailsAt, lockPose, packetPose, seenSoFar, stepTarget, swapLanding, swapMoment, trayAngle } from './timeline';
 
 const run = (manual: ManualFault[] = []) => buildStory(runScenario(fetchWebPage(), { seed: 1, faults: { randomLoss: 0, manual } }));
 const story = run();
@@ -348,9 +348,111 @@ describe('step buttons', () => {
     expect(stepTarget(tl, b.t0, -1)).toBe(a.t0);
   });
 
+  it('go one further back when pressed just after a start, so the packet never loops', () => {
+    const a = tl.segs[3]!;
+    const b = tl.segs[4]!;
+    const grace = (b.t1 - b.t0) * 0.8;
+    expect(stepTarget(tl, b.t0 + grace / 2, -1, grace)).toBe(a.t0);
+    expect(stepTarget(tl, b.t0 + grace, -1, grace)).toBe(b.t0);
+  });
+
   it('stop at both ends', () => {
     expect(stepTarget(tl, tl.total, 1)).toBe(tl.total);
     expect(stepTarget(tl, 0, -1)).toBe(0);
+  });
+});
+
+describe('what a server does before it answers', () => {
+  const steps = (s: ReturnType<typeof run>) => s.trips.flatMap((t) => t.steps.filter((x) => x.kind === 'lookup').map((x) => ({ t, x })));
+
+  it('looks the name up in the book, and the answer is what goes back', () => {
+    const [dns] = steps(story);
+    expect(dns!.x).toMatchObject({ what: 'dns', device: dns!.t.origin, ask: 'example.com', found: story.dnsAnswer });
+    expect(dns!.t.card).toBe(story.dnsAnswer);
+    expect(dns!.t.steps[0]).toBe(dns!.x);
+  });
+
+  it('takes the file off the shelf once, before the reply, also for a page in parts or over HTTPS', () => {
+    for (const options of [{}, { site: 'info.cern.ch' as const }, { https: true }]) {
+      const s = buildStory(runScenario(fetchWebPage(options), { seed: 1, faults: { randomLoss: 0, manual: [] } }));
+      const web = steps(s).filter(({ x }) => x.kind === 'lookup' && x.what === 'web');
+      expect(web.length).toBe(1);
+      expect(web[0]!.x).toMatchObject({ ask: expect.stringMatching(/^(\/|…\/)/), found: s.pageTitle });
+      expect(s.trips.slice(0, s.trips.indexOf(web[0]!.t)).some((t) => t.outward && t.card?.startsWith('GET'))).toBe(true);
+    }
+  });
+});
+
+describe('the details in a pill', () => {
+  const tl = buildTimeline(story);
+  const atStep = (card: string, match: (s: { kind: string }) => boolean) => tl.segs.find((x) => x.trip.card === card && match(x.step))!;
+  const value = (rows: { name: string; value: string }[] | undefined, name: string) => rows?.find((r) => r.name === name)?.value;
+
+  it('come from the frame on this stretch: the address changes at the router, the TTL drops', () => {
+    const links = tl.segs.filter((x) => x.trip.card === 'GET /' && x.step.kind === 'travel');
+    const start = detailsAt(links[0]!, 0.5);
+    const after = detailsAt(links[2]!, 0.5);
+    expect(value(start.ip, 'Source IP')).toBe('192.168.1.23');
+    expect(value(after.ip, 'Source IP')).not.toBe('192.168.1.23');
+    expect(parseInt(value(after.ip, 'Time to Live')!)).toBeLessThan(parseInt(value(start.ip, 'Time to Live')!));
+    expect(value(start.ethH, 'Source MAC')).not.toBe(value(after.ethH, 'Source MAC'));
+  });
+
+  it('change at the moment the router translates, not before', () => {
+    const nat = atStep('GET /', (s) => s.kind === 'nat');
+    expect(value(detailsAt(nat, 0.1).ip, 'Source IP')).toBe('192.168.1.23');
+    expect(value(detailsAt(nat, 0.9).ip, 'Source IP')).not.toBe('192.168.1.23');
+  });
+
+  it('are there before the first cable, and say what the card carries', () => {
+    const d = detailsAt(atStep('GET /', (s) => s.kind === 'appear'), 0.5);
+    expect(value(d.card, 'Request line')).toBe('GET / HTTP/1.1');
+    expect(value(d.l4, 'Destination port')).toContain('80');
+    // The frame only exists once it is wrapped.
+    expect(d.ethT).toBeUndefined();
+    expect(detailsAt(atStep('GET /', (s) => s.kind === 'travel'), 0.5).ethT?.length).toBeGreaterThan(0);
+  });
+
+  it('under a VPN only the case can be read on the line, and the sender still knows what is inside', () => {
+    const s = buildStory(runScenario(fetchWebPage({ vpn: true }), { seed: 1, faults: { randomLoss: 0, manual: [] } }));
+    const t = buildTimeline(s);
+    const seg = t.segs.find((x) => x.trip.card === 'GET /' && x.step.kind === 'travel')!;
+    const on = seg.step.kind === 'travel' ? seg.step.details! : {};
+    expect(value(on.vpn, 'Message type')).toContain('transport data');
+    expect(value(on.vpn, 'Destination IP')).toBe('198.51.100.10');
+    expect(value(detailsAt(seg, 0.5).ip, 'Destination IP')).toBe('104.20.23.154');
+  });
+});
+
+describe('the details in a pill, hop by hop', () => {
+  const tl = buildTimeline(story);
+  const value = (rows: { name: string; value: string }[] | undefined, name: string) => rows?.find((r) => r.name === name)?.value;
+
+  it('a new sleeve has its new addresses and the TTL has already dropped, before it sets off', () => {
+    const segs = tl.segs.filter((x) => x.trip.card === 'GET /');
+    const hop = segs.findIndex((x, i) => x.step.kind === 'wrap' && x.step.layer === 'eth' && segs[i - 1]?.step.kind === 'unwrap');
+    const wrap = detailsAt(segs[hop]!, 0.1);
+    const travel = detailsAt(segs[hop + 1]!, 0.5);
+    expect(segs[hop + 1]!.step.kind).toBe('travel');
+    expect(wrap.ethH).toEqual(travel.ethH);
+    expect(wrap.ip).toEqual(travel.ip);
+    expect(wrap.ethH).not.toEqual(detailsAt(segs[hop - 1]!, 0.5).ethH);
+  });
+
+  it('a VPN reply shows the translated packet from the VPN server on', () => {
+    const s = buildStory(runScenario(fetchWebPage({ vpn: true }), { seed: 1, faults: { randomLoss: 0, manual: [] } }));
+    const t = buildTimeline(s);
+    const reply = t.segs.filter((x) => x.trip.card === '200 OK');
+    const nat = reply.find((x) => x.step.kind === 'nat' && x.step.which === 'to' && x.step.after === '10.8.0.2')!;
+    const before = detailsAt(nat, 0.1);
+    const after = detailsAt(nat, 0.9);
+    expect(value(before.ip, 'Destination IP')).toBe('198.51.100.10');
+    expect(value(after.ip, 'Destination IP')).toBe('10.8.0.2');
+    expect(value(after.ip, 'Time to Live')).toBe(value(before.ip, 'Time to Live'));
+    expect(value(after.l4, 'Destination port')).not.toBe(value(before.l4, 'Destination port'));
+    const opened = reply.find((x) => x.step.kind === 'unwrap' && x.step.layer === 'vpn' && x.trip.steps.indexOf(x.step as Trip['steps'][number]) > x.trip.steps.indexOf(nat.step as Trip['steps'][number]))!;
+    expect(value(detailsAt(opened, 0.5).ip, 'Destination IP')).toBe('10.8.0.2');
+    expect(detailsAt(opened, 0.5).vpn).toBeUndefined();
   });
 });
 
@@ -424,7 +526,8 @@ describe('a VPN in the story', () => {
     const k = kinds(res);
     expect(k.indexOf('wrap:vpn')).toBeGreaterThan(k.indexOf('server>isp'));
     expect(k.indexOf('unwrap:vpn')).toBeGreaterThan(k.indexOf('home>laptop'));
-    expect(k[0]).toBe('appear');
+    expect(k[0]).toBe('lookup');
+    expect(k[1]).toBe('appear');
     expect(res.steps.filter((x) => x.kind === 'nat').map((x) => x.kind === 'nat' && x.device)).toEqual(['vpn', 'home']);
   });
 
@@ -489,7 +592,7 @@ describe('an address changing', () => {
     expect(nats[nats.length - 1]!.t1 - nats[nats.length - 1]!.t0).toBeGreaterThan(1.3);
   });
 
-  it('only bangs the first few times: later the router ticks and the VPN box has its lock', () => {
+  it('only sounds in full the first few times: later the router ticks and the VPN box has its lock', () => {
     const s = buildStory(runScenario(fetchWebPage({ vpn: true, https: true }), { seed: 1, faults: { randomLoss: 0, manual: [] } }));
     const tl = buildTimeline(s);
     const swaps = tl.cues.filter((c) => c.sound === 'swap');

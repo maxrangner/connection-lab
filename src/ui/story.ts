@@ -8,6 +8,7 @@ import {
   TCP_SYN,
   TLS_ALERT,
   TLS_APPLICATION_DATA,
+  type Field,
   type LayerPdu,
   type OpenedRecord,
   type PacketInfo,
@@ -20,7 +21,8 @@ import {
 
 /**
  * The simple story: the packets a learner needs to follow, in order. Everything is read from the real event
- * log and PDU snapshots; nothing is invented, we only leave things out (ARP, plain ACKs, teardown, TTL, ports).
+ * log and PDU snapshots; nothing is invented, we only leave things out (ARP, plain ACKs, teardown). TTL and ports
+ * only show in an opened pill.
  *
  *   1 Find the address  DNS question to the resolver and the answer back (UDP)
  *   2 Say hello         SYN, SYN-ACK, ACK
@@ -51,7 +53,17 @@ export interface Frame {
 }
 export type Chapter = 'dns' | 'hello' | 'secret' | 'page';
 
-export type Step =
+/** One piece of a packet, by where it sits. */
+export type PartKey = 'ethH' | 'vpn' | 'ip' | 'l4' | 'card' | 'ethT';
+/** A header field in a pill: its name and value, read from the real bytes. */
+export interface Row {
+  name: string;
+  value: string;
+}
+export type Details = Partial<Record<PartKey, Row[]>>;
+export type Message = { kind: 'dns-answer'; name: string } | { kind: 'http-request'; path: string } | { kind: 'http-response' };
+
+export type Step = (
   | { kind: 'appear'; device: string }
   | { kind: 'wrap'; device: string; layer: Wrap; /** For the frame (layer 'eth'): which kind and its sizes. */ frame?: Frame; /** For the VPN case: the addresses showing from here on. */ addr?: { from: string; to: string } }
   | { kind: 'unwrap'; device: string; layer: Wrap; frame?: Frame; addr?: { from: string; to: string } }
@@ -60,9 +72,12 @@ export type Step =
   /** Knocked off the cable on the way from `from` to `to`. */
   | { kind: 'lost'; from: string; to: string; link: string; at: number; seen?: Seen; /** It fell into a cut in the cable. */ cut?: boolean }
   | { kind: 'read'; device: string }
+  /** A server does its job before it answers: the resolver finds the name in its book, the web server the file on its shelf. */
+  | { kind: 'lookup'; device: string; what: 'dns' | 'web'; /** What was asked. */ ask: string; /** What it found. */ found: string }
   /** HTTPS: the sender puts a padlock on the card with its session key, the receiver opens it with the same key. */
   | { kind: 'lock'; device: string }
-  | { kind: 'unlock'; device: string };
+  | { kind: 'unlock'; device: string }
+) & { /** The packet's header fields once this step is done, if it changes them. */ details?: Details };
 
 export interface Trip {
   packetId: string;
@@ -86,6 +101,8 @@ export interface Trip {
   /** IP addresses as the sender wrote them, before any VPN case. */
   from: string;
   to: string;
+  /** What the application message is, read from its real layer or, under HTTPS, from the opened record. */
+  message?: Message;
   steps: Step[];
   lost: boolean;
   /** A resend of an earlier, lost packet. */
@@ -181,6 +198,45 @@ function seenOn(pdu: PduSnapshot | undefined, p: PacketInfo): Seen | undefined {
   return { ...base, lines: tcp ? [flagNames(p.tcp?.flags ?? 0).replace(/, /g, '-')] : [], kind: 'empty' };
 }
 
+const rowsOf = (fields: Field[]): Row[] =>
+  fields.filter((f) => f.importance === 'key').flatMap((f) => [{ name: f.name, value: clip(f.display, 30) }, ...rowsOf(f.children ?? [])]);
+
+/** The fields of each piece in a snapshot, which may hold only part of a packet. A sealed packet shows only its case. */
+function detailsOf(pdu: PduSnapshot | undefined): Details {
+  if (!pdu) return {};
+  const d: Details = {};
+  const link = layer(pdu, 'ethernet') ?? layer(pdu, 'wifi');
+  const ip = layer(pdu, 'ipv4');
+  const wg = layer(pdu, 'wireguard');
+  if (link) {
+    d.ethH = rowsOf(link.fields.filter((f) => f.offset < link.headerEnd));
+    d.ethT = link.fields.filter((f) => f.offset >= link.payloadEnd).map((f) => ({ name: f.name, value: clip(f.display, 30) }));
+  }
+  if (wg) {
+    d.vpn = [...rowsOf((ip?.fields ?? []).filter((f) => f.key === 'ipv4.src' || f.key === 'ipv4.dst')), ...rowsOf(wg.fields)];
+    return d;
+  }
+  if (ip) d.ip = rowsOf(ip.fields);
+  const l4 = layer(pdu, 'tcp') ?? layer(pdu, 'udp');
+  if (l4) d.l4 = rowsOf(l4.fields);
+  const app = layer(pdu, 'http') ?? layer(pdu, 'dns') ?? layer(pdu, 'tls');
+  if (app) d.card = rowsOf(app.fields);
+  return d;
+}
+
+/** An HTTP start line: a request and its path, or a response. */
+function httpMessage(line: string): Message | undefined {
+  const request = /^[A-Z]+ (\S+) HTTP\/1\.[01]/.exec(line);
+  if (request) return { kind: 'http-request', path: request[1]! };
+  return /^HTTP\/1\.[01] \d{3}/.test(line) ? { kind: 'http-response' } : undefined;
+}
+
+function messageOf(app: LayerPdu | undefined): Message | undefined {
+  if (app?.protocol === 'http') return httpMessage(app.summary.replace(/^HTTP /, ''));
+  if (app?.protocol === 'dns' && app.summary.startsWith('DNS response')) return { kind: 'dns-answer', name: field(app, 'dns.question').split(' ')[0]! };
+  return undefined;
+}
+
 /** Which packets the story follows. */
 function chosen(r: SimResult): PacketInfo[] {
   const out: PacketInfo[] = [];
@@ -218,12 +274,19 @@ function trip(r: SimResult, p: PacketInfo, retried: Set<string>, client: string)
   let done = false;
   /** The frame on the current link, so the receiver unwraps the same kind it was sent in. */
   let onLink: Frame | undefined;
+  /** The packet as it is right now: built up by the sender, then rewritten hop by hop. */
+  let now: Details = {};
+  const update = (pduId: string): void => {
+    now = { ...now, ...detailsOf(r.pdus.get(pduId)) };
+  };
   for (const e of r.events as SimEvent[]) {
     if (done) break;
     if (!('packetId' in e) || e.packetId !== p.id) continue;
     if (firstSeq < 0) firstSeq = e.seq;
+    const count = steps.length;
     switch (e.type) {
       case 'encapsulate': {
+        update(e.pduId);
         if (e.layer === 3) inner ??= r.pdus.get(e.pduId);
         const w = WRAP_OF_LAYER[e.layer];
         if (w === 'eth') {
@@ -241,16 +304,23 @@ function trip(r: SimResult, p: PacketInfo, retried: Set<string>, client: string)
         if (w === 'l4') done = true;
         break;
       }
+      case 'forward':
+        update(e.pduId);
+        break;
       case 'tunnel:wrap': {
+        update(e.pduId);
         const wg = layer(r.pdus.get(e.pduId)!, 'wireguard');
         tunnel = (wg?.headerEnd ?? 0) + WG_TAG_LEN;
         steps.push({ kind: 'wrap', device: e.deviceId, layer: 'vpn', addr: { from: e.addr.src, to: e.addr.dst } });
         break;
       }
       case 'tunnel:unwrap':
+        update(e.pduId);
+        delete now.vpn;
         steps.push({ kind: 'unwrap', device: e.deviceId, layer: 'vpn', addr: { from: e.addr.src, to: e.addr.dst } });
         break;
       case 'nat:translate':
+        update(e.pduId);
         steps.push({
           kind: 'nat',
           device: e.deviceId,
@@ -273,6 +343,7 @@ function trip(r: SimResult, p: PacketInfo, retried: Set<string>, client: string)
         break;
       }
     }
+    if (steps.length > count) steps[steps.length - 1]!.details = now;
   }
   if (!frame || !steps.some((s) => s.kind === 'travel' || s.kind === 'lost')) return null;
 
@@ -286,7 +357,7 @@ function trip(r: SimResult, p: PacketInfo, retried: Set<string>, client: string)
   const isTcp = l4.protocol === 'tcp';
   const origin = steps[0]!.kind === 'travel' || steps[0]!.kind === 'lost' ? (steps[0] as { from: string }).from : (steps[0] as { device: string }).device;
 
-  if (card) steps.unshift({ kind: 'appear', device: origin });
+  if (card) steps.unshift({ kind: 'appear', device: origin, details: detailsOf(packet) });
   const last = steps[steps.length - 1];
   if (card && last?.kind === 'unwrap' && last.layer === 'l4') steps.push({ kind: 'read', device: last.device });
 
@@ -308,6 +379,7 @@ function trip(r: SimResult, p: PacketInfo, retried: Set<string>, client: string)
     trailer: eth.end - eth.payloadEnd,
     from: field(ip, 'ipv4.src'),
     to: field(ip, 'ipv4.dst'),
+    message: messageOf(app),
     steps,
     lost,
     retry,
@@ -339,6 +411,8 @@ export function buildStory(r: SimResult): Story {
   const tls = r.scenario.devices.flatMap((d) => d.apps).find((a) => a.kind === 'browser')?.tls;
   if (tls) labelTls(trips, r, tls);
   numberParts(trips, r);
+  const title = pageTitle(r);
+  addLookups(trips, title);
   const url = start?.type === 'app' ? String(start.info?.url ?? '') : '';
   const wifiIfaces = new Set(r.scenario.devices.flatMap((d) => d.ifaces.filter((i) => i.wifi).map((i) => i.id)));
   const ifaceDevice = new Map(r.scenario.devices.flatMap((d) => d.ifaces.map((i) => [i.id, d.id] as const)));
@@ -356,7 +430,7 @@ export function buildStory(r: SimResult): Story {
     vpn: r.scenario.devices.some((d) => d.tunnel),
     names: Object.fromEntries(r.scenario.devices.flatMap((d) => [...d.ifaces.map((i) => [i.ip, d.label]), ...(d.tunnel ? [[d.tunnel.ip, d.label]] : [])])),
     trips,
-    pageTitle: pageTitle(r),
+    pageTitle: title,
     dnsAnswer: dnsAnswer(r),
     dnsTtl: (() => {
       const e = r.events.find((x) => x.type === 'app' && x.action === 'dns-answer');
@@ -365,6 +439,24 @@ export function buildStory(r: SimResult): Story {
     })(),
     remembered: dnsAnswer(r, 'dns-cache-hit'),
   };
+}
+
+/**
+ * Before a server answers it does its job. The resolver finds the name in its book, for each answer it sends; the web
+ * server takes the file off its shelf once, for the first packet of the reply. Both show what the real messages carry.
+ */
+function addLookups(trips: Trip[], title: string | null): void {
+  let path = '/';
+  let served = false;
+  for (const t of trips) {
+    const m = t.message;
+    if (m?.kind === 'http-request') path = m.path;
+    if (m?.kind === 'dns-answer') t.steps.unshift({ kind: 'lookup', device: t.origin, what: 'dns', ask: m.name, found: t.card ?? '' });
+    if (m?.kind === 'http-response' && !served) {
+      served = true;
+      t.steps.unshift({ kind: 'lookup', device: t.origin, what: 'web', ask: path, found: title ?? t.card ?? '' });
+    }
+  }
 }
 
 /**
@@ -384,10 +476,13 @@ function numberParts(trips: Trip[], r: SimResult): void {
   }
 }
 
+/** The first line of what a TLS record carries. */
+const recordLine = (rec: OpenedRecord): string => new TextDecoder('latin1').decode(rec.plaintext.subarray(0, 300)).split('\r\n')[0] ?? '';
+
 /** The most telling name for what a TLS record carries. */
 function recordLabel(rec: OpenedRecord): string {
   if (rec.inner === TLS_APPLICATION_DATA) {
-    const line = new TextDecoder('latin1').decode(rec.plaintext.subarray(0, 80)).split('\r\n')[0] ?? '';
+    const line = recordLine(rec);
     return /^(GET|HEAD|POST) |^HTTP\//.test(line) ? cardLabel(`HTTP ${line}`) : 'page';
   }
   if (rec.inner === TLS_ALERT) return 'bye';
@@ -439,6 +534,7 @@ function labelTls(trips: Trip[], r: SimResult, session: TlsSession): void {
     const main = [...(starting.length ? starting : touching)].sort((a, b) => RANK(b) - RANK(a))[0];
     if (!main) continue;
     t.card = recordLabel(main);
+    if (main.inner === TLS_APPLICATION_DATA) t.message = httpMessage(recordLine(main));
     t.locked = main.inner === TLS_APPLICATION_DATA || !main.handshakes.some((h) => /Hello/.test(h));
     if (t.locked) {
       // The padlock goes on right after the card appears and comes off just before it is read.

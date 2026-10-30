@@ -6,6 +6,7 @@
   --app: #4f9d69;
   --out: #2f8f5b;
   --back: #c2562f;
+  --swap: #1f9a8c;
 }
 
 * {
@@ -140,7 +141,7 @@ body {
 
 .addr-text.hot {
   font-weight: 700;
-  fill: #8a4b00;
+  fill: #0f5f57;
 }
 
 .addr-cap {
@@ -218,17 +219,31 @@ body {
   gap: 8px;
 }
 
-.net-controls button {
+.net-controls button,
+.follow {
   font: inherit;
   font-size: 14px;
   font-weight: 600;
+  height: 40px;
   color: var(--ink);
   background: #fffaf2;
   border: 1px solid #d3c8b8;
   border-radius: 999px;
-  padding: 8px 16px;
+  padding: 0 16px;
   cursor: pointer;
   box-shadow: 0 2px 6px rgba(61, 53, 44, 0.1);
+}
+
+/* Every button keeps its place and its size, so the bar never moves */
+.net-controls button:not(.menu-button) {
+  width: 46px;
+  padding: 0;
+}
+
+.follow {
+  position: fixed;
+  top: calc(14px + env(safe-area-inset-top, 0px));
+  right: max(16px, env(safe-area-inset-right, 0px));
 }
 
 .net-controls button:disabled {
@@ -481,7 +496,8 @@ body {
 
 .chapter::after {
   content: '▾';
-  font-size: 11px;
+  font-size: 18px;
+  line-height: 0;
   color: var(--ink-soft);
 }
 
@@ -761,9 +777,15 @@ body {
 }
 
 /* The bar and its popups */
+.menu-button {
+  min-width: 92px;
+}
+
 .menu-button::after {
   content: ' ▴';
-  font-size: 10px;
+  font-size: 18px;
+  line-height: 0;
+  vertical-align: -1px;
   color: var(--ink-soft);
 }
 
@@ -835,8 +857,22 @@ body {
 }
 
 @media (max-width: 520px) {
+  .net-controls {
+    gap: 5px;
+  }
+
   .net-controls button {
-    padding: 8px 12px;
+    height: 38px;
+    padding: 0 8px;
+    font-size: 13px;
+  }
+
+  .net-controls button:not(.menu-button) {
+    width: 38px;
+  }
+
+  .menu-button {
+    min-width: 72px;
   }
 }
 
@@ -877,16 +913,118 @@ body {
 
 /* An address changing is the big moment of its step */
 .addr-bg.addr-swap {
-  stroke: var(--back);
+  stroke: var(--swap);
   stroke-width: 3;
 }
 
 .addr-cap.hot {
-  fill: var(--back);
+  fill: var(--swap);
 }
 
-.addr-old {
-  fill: var(--back);
+.addr-old rect {
+  fill: #fffdf8;
+  stroke: #d3c8b8;
+}
+
+.addr-old .addr-text {
+  fill: var(--ink-soft);
+}
+
+.swap-ring {
+  fill: none;
+  stroke: var(--swap);
+  stroke-width: 2.5;
+}
+
+.swap-spark {
+  fill: #ffd84a;
+  stroke: var(--swap);
+  stroke-width: 0.8;
+}
+
+/* Open a pill on a packet */
+.size-tag[data-chip] rect,
+.size-tag[data-chip] text,
+.pill-panel,
+.pill-panel * {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.pill-panel rect {
+  fill: #fffdf8;
+  stroke-width: 2;
+  filter: drop-shadow(0 3px 6px rgba(61, 53, 44, 0.2));
+}
+
+.pill-name {
+  font-size: 11px;
+  fill: var(--ink-soft);
+}
+
+.pill-value {
+  font-size: 11.5px;
+  font-weight: 650;
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  fill: var(--ink);
+}
+
+/* What the servers do: the resolver's book and the web server's shelves */
+.book-page {
+  stroke: #cdbf9f;
+  stroke-width: 1;
+}
+
+.book-bar {
+  fill: #d8cfbe;
+}
+
+.book-lit {
+  fill: #ffe9a8;
+}
+
+.book-name {
+  font-size: 10px;
   font-weight: 700;
-  text-decoration: line-through;
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  fill: var(--ink);
+}
+
+.lookup-pill rect {
+  fill: var(--app);
+  stroke: #3b7a50;
+  stroke-width: 1.5;
+}
+
+.lookup-pill text {
+  font-size: 12px;
+  font-weight: 700;
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  fill: #fff;
+}
+
+.slot-lit {
+  stroke: #ffc94a;
+  stroke-width: 4;
+  stroke-linecap: round;
+}
+
+.slot-lit.found {
+  stroke: var(--app);
+}
+
+.web-sheet rect {
+  fill: #fffdf6;
+  stroke: #cdbf9f;
+}
+
+.web-sheet rect.web-line {
+  fill: #d8cfbe;
+  stroke: none;
+}
+
+.web-sheet text {
+  font-size: 11px;
+  font-weight: 700;
+  fill: var(--ink);
 }
