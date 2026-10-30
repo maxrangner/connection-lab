@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fetchWebPage, runScenario, type ManualFault } from '../sim';
 import { buildStory, cardLabel, dnsCardLabel, type Trip } from './story';
-import { buildTimeline } from './timeline';
+import { buildTimeline, packetPose, trayAngle } from './timeline';
 
 const run = (manual: ManualFault[] = []) => buildStory(runScenario(fetchWebPage(), { seed: 1, faults: { randomLoss: 0, manual } }));
 const story = run();
@@ -124,5 +124,68 @@ describe('stickers', () => {
       const tl = buildTimeline(s);
       expect(tl.segs.filter((x) => x.step.kind === 'wait')).toHaveLength(s.trips.filter((x) => x.lost).length);
     }
+  });
+});
+
+describe('packet facing', () => {
+  const tl = buildTimeline(story);
+  const angleDiff = (a: number, b: number): number => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
+
+  it('never jumps within a trip, and lies along the stations inside every device', () => {
+    for (const trip of story.trips) {
+      const segs = tl.segs.filter((s) => s.trip === trip && s.step.kind !== 'wait');
+      let prev: number | null = null;
+      for (const seg of segs) {
+        for (let i = 0; i <= 400; i++) {
+          const { angle } = packetPose(tl, seg, i / 400);
+          if (prev !== null) expect(angleDiff(angle, prev)).toBeLessThan(0.05);
+          prev = angle;
+          if (seg.step.kind !== 'travel' && seg.step.kind !== 'lost') expect(angleDiff(angle, trayAngle(trip))).toBeLessThan(1e-9);
+        }
+      }
+    }
+  });
+
+  it('turns only on the cable that branches off to the resolver', () => {
+    const turned = new Set<string>();
+    for (const seg of tl.segs) {
+      if (seg.step.kind !== 'travel') continue;
+      const mid = packetPose(tl, seg, 0.5).angle;
+      if (angleDiff(mid, trayAngle(seg.trip)) > 0.1) turned.add(seg.step.link);
+    }
+    expect([...turned]).toEqual(['bb1']);
+  });
+});
+
+describe('emoji statuses', () => {
+  it('thumbs up for replies and the final ACK, love when the page is in', () => {
+    const tl = buildTimeline(story);
+    expect(tl.reactions.map((r) => `${r.device}:${r.face}`)).toEqual(['laptop:thumbs', 'laptop:thumbs', 'server:thumbs', 'laptop:love']);
+  });
+
+  it('confused when part 2 arrives before part 1, love once the gap is filled', () => {
+    const plain = buildStory(runScenario(fetchWebPage({ site: 'info.cern.ch' }), { seed: 1, faults: { randomLoss: 0, manual: [] } }));
+    const first = plain.trips.find((t) => t.part?.n === 1)!;
+    const s = buildStory(runScenario(fetchWebPage({ site: 'info.cern.ch' }), { seed: 1, faults: { randomLoss: 0, manual: [{ packetId: first.packetId, linkId: 'bb2' }] } }));
+    const faces = buildTimeline(s).reactions.filter((r) => r.device === 'laptop').map((r) => r.face);
+    expect(faces.slice(-2)).toEqual(['confused', 'love']);
+  });
+
+  it('angry when the resend is lost too, crying when it gives up', () => {
+    const q = story.trips[0]!;
+    const once = buildStory(runScenario(fetchWebPage(), { seed: 1, faults: { randomLoss: 0, manual: [{ packetId: q.packetId, linkId: 'lan' }] } }));
+    const retry = once.trips[1]!;
+    const twice = buildStory(
+      runScenario(fetchWebPage(), { seed: 1, faults: { randomLoss: 0, manual: [{ packetId: q.packetId, linkId: 'lan' }, { packetId: retry.packetId, linkId: 'lan' }] } }),
+    );
+    const moods = buildTimeline(twice).segs.flatMap((x) => (x.step.kind === 'wait' ? [x.step.mood] : []));
+    expect(moods).toEqual(['surprise', 'cry']);
+    const get = story.trips.find((t) => t.card === 'GET /')!;
+    const s1 = buildStory(runScenario(fetchWebPage(), { seed: 1, faults: { randomLoss: 0, manual: [{ packetId: get.packetId, linkId: 'wan' }] } }));
+    const get2 = s1.trips.find((t) => t.card === 'GET /' && t.retry)!;
+    const s2 = buildStory(
+      runScenario(fetchWebPage(), { seed: 1, faults: { randomLoss: 0, manual: [{ packetId: get.packetId, linkId: 'wan' }, { packetId: get2.packetId, linkId: 'wan' }] } }),
+    );
+    expect(buildTimeline(s2).segs.flatMap((x) => (x.step.kind === 'wait' ? [x.step.mood] : []))).toEqual(['surprise', 'angry']);
   });
 });

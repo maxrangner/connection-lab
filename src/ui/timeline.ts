@@ -7,13 +7,32 @@ import type { Step, Story, Trip, Wrap } from './story';
  */
 
 /** A pause at the device that will resend a lost packet: its timer runs out, then it tries again. */
-export type WaitStep = { kind: 'wait'; device: string; seconds: number; giveUp: boolean };
-export type TStep = Step | WaitStep;
+export type WaitStep = {
+  kind: 'wait';
+  device: string;
+  seconds: number;
+  giveUp: boolean;
+  /** How the resender takes it when the ring runs out: surprised (first loss), angry (its resend was lost too), crying (gives up). */
+  mood: 'surprise' | 'angry' | 'cry';
+};
 
-export interface Axis {
-  x: number;
-  y: number;
+/** Little emoji statuses that pop up over a device. */
+export type Face = 'thumbs' | 'love' | 'confused';
+export const FACE_EMOJI: Record<Face | 'sad' | 'angry' | 'cry', string> = {
+  thumbs: '👍',
+  love: '😍',
+  confused: '😕',
+  sad: '😢',
+  angry: '😠',
+  cry: '😭',
+};
+
+export interface Reaction {
+  t: number;
+  device: string;
+  face: Face;
 }
+export type TStep = Step | WaitStep;
 
 export interface Seg {
   step: TStep;
@@ -23,10 +42,6 @@ export interface Seg {
   /** Packet centre when the step starts and ends. */
   p0: Vec3;
   p1: Vec3;
-  /** The direction the packet faces (its front, byte 0) during this step. */
-  axis: Axis;
-  /** The packet hops around to face the next cable. */
-  turn?: { from: Axis; to: Axis };
   /** For `lost`: how far along the cable it was knocked off (travel progress 0..1) and the travel's duration. */
   knock?: { k: number; travel: number; byYou: boolean };
 }
@@ -38,6 +53,7 @@ export interface Cue {
 
 export interface Timeline {
   segs: Seg[];
+  reactions: Reaction[];
   cues: Cue[];
   total: number;
   pos: Map<string, { x: number; y: number }>;
@@ -66,10 +82,6 @@ const PORT = 2.4;
 const DUR: Record<TStep['kind'], number> = { appear: 0.9, wrap: 0.85, unwrap: 0.85, nat: 1.6, travel: 1.9, read: 1.2, lost: 0, wait: 2.8 };
 /** Seconds a knocked packet tumbles before it is gone. */
 export const TUMBLE = 1.8;
-/** Seconds a packet takes to swing round at a router, before the step's own work starts. */
-export const TURN_TIME = 0.7;
-
-const sameAxis = (a: Axis, b: Axis): boolean => a.x === b.x && a.y === b.y;
 
 export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> = new Map()): Timeline {
   const kind = new Map(story.devices.map((d) => [d.id, d.kind]));
@@ -79,16 +91,13 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
     const p = pos.get(device) ?? { x: 0, y: 0 };
     return v3(p.x, p.y, trayZ(device, level));
   };
-  const axisOf = (from: string, to: string): Axis => {
-    const a = pos.get(from) ?? { x: 0, y: 0 };
-    const b = pos.get(to) ?? { x: 0, y: 0 };
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    return Math.abs(dx) >= Math.abs(dy) ? { x: Math.sign(dx) || 1, y: 0 } : { x: 0, y: Math.sign(dy) };
-  };
 
   const segs: Seg[] = [];
   const cues: Cue[] = [];
+  const reactions: Reaction[] = [];
+  /** What has already arrived where (to spot duplicates) and which page parts are in. */
+  const arrived = new Set<string>();
+  const filled = new Set<number>();
   // Steps get quicker as they repeat, so the third trip through a router doesn't drag.
   const seen = new Map<string, number>();
   const pace = (s: TStep, trip: Trip): number => {
@@ -101,12 +110,9 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
 
   let t = 0;
   story.trips.forEach((trip, ti) => {
-    const moves = trip.steps.filter((s) => s.kind === 'travel' || s.kind === 'lost') as Extract<Step, { from: string }>[];
-    let facing = moves[0] ? axisOf(moves[0].from, moves[0].to) : { x: 1, y: 0 };
     let p = at(trip.origin, trip.card ? LEVEL.app : LEVEL.l4);
-    let moveIdx = 0;
     for (const step of trip.steps) {
-      const seg: Seg = { step, trip, t0: t, t1: t, p0: p, p1: p, axis: facing };
+      const seg: Seg = { step, trip, t0: t, t1: t, p0: p, p1: p };
       let d = DUR[step.kind] * pace(step, trip);
       switch (step.kind) {
         case 'appear':
@@ -116,28 +122,14 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
         case 'wrap':
         case 'unwrap':
           seg.p1 = at(step.device, LEVEL[step.layer]);
-          if (step.kind === 'wrap' && step.layer === 'eth') {
-            const next = moves[moveIdx];
-            const want = next ? axisOf(next.from, next.to) : facing;
-            if (!sameAxis(want, facing)) {
-              seg.turn = { from: facing, to: want };
-              facing = want;
-              d += TURN_TIME;
-            }
-          }
           break;
         case 'nat':
           seg.p1 = at(step.device, LEVEL.ip);
           break;
         case 'travel':
-          facing = axisOf(step.from, step.to);
-          seg.axis = facing;
           seg.p1 = at(step.to, LEVEL.eth);
-          moveIdx++;
           break;
         case 'lost': {
-          facing = axisOf(step.from, step.to);
-          seg.axis = facing;
           const travel = DUR.travel * pace({ ...step, kind: 'travel' }, trip);
           // Knocked by the viewer: where they tapped. Lost by itself (a stormy cable): halfway along.
           const tapped = knocks.get(`${trip.packetId}@${step.link}`);
@@ -145,7 +137,6 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
           seg.knock = { k, travel, byYou: tapped !== undefined };
           d = k * travel + TUMBLE;
           seg.p1 = travelPath(pos, trayZ, step.from, step.to, k);
-          moveIdx++;
           break;
         }
       }
@@ -161,23 +152,53 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
       const next = story.trips[ti + 1];
       const retry = next?.retry ? next : undefined;
       const device = retry?.origin ?? trip.origin;
-      const step: WaitStep = { kind: 'wait', device, seconds: retry ? retry.start - trip.start : 0, giveUp: !retry };
-      const seg: Seg = { step, trip, t0: t, t1: t + DUR.wait, p0: p, p1: p, axis: facing };
+      const mood = !retry ? 'cry' : trip.retry ? 'angry' : 'surprise';
+      const step: WaitStep = { kind: 'wait', device, seconds: retry ? retry.start - trip.start : 0, giveUp: !retry, mood };
+      const seg: Seg = { step, trip, t0: t, t1: t + DUR.wait, p0: p, p1: p };
       segs.push(seg);
       cues.push({ t: seg.t1 - 0.5, sound: 'surprise' });
       t = seg.t1;
+    }
+    // Arrived: the receiver reacts, and the picture lingers a moment so you can see it.
+    const last = segs[segs.length - 1];
+    if (!trip.lost && last && last.trip === trip && 'device' in last.step) {
+      const face = arrivalFace(trip, last.step.device, arrived, filled);
+      if (face) {
+        reactions.push({ t: last.t1, device: last.step.device, face });
+        t += 0.6;
+      }
     }
     t += 0.5;
   });
 
   const isRouter = (device: string): boolean => (kind.get(device) ?? '').includes('router');
-  return { segs, cues, total: t, pos, kind, trayZ, isRouter };
+  return { segs, reactions, cues, total: t, pos, kind, trayZ, isRouter };
+}
+
+/**
+ * How the receiver feels about what just arrived. Thumbs up for a reply it was waiting for (and the ACK that
+ * finishes the hello); love when the page is complete; confused by a duplicate, or by a part that turns up while an
+ * earlier one is still missing. Requests (a question, SYN, GET) get no reaction.
+ */
+function arrivalFace(trip: Trip, device: string, arrived: Set<string>, filled: Set<number>): Face | null {
+  const key = `${device}|${trip.chapter}|${trip.card ?? trip.l4Label}|${trip.part?.n ?? 0}`;
+  if (arrived.has(key)) return 'confused';
+  arrived.add(key);
+  if (trip.part) {
+    filled.add(trip.part.n);
+    if (filled.size === trip.part.of) return 'love';
+    for (let m = 1; m < trip.part.n; m++) if (!filled.has(m)) return 'confused';
+    return 'thumbs';
+  }
+  if (trip.chapter === 'page' && trip.origin !== 'laptop') return 'love';
+  if (trip.origin !== 'laptop') return 'thumbs';
+  if (trip.chapter === 'hello' && trip.l4Label === 'ACK') return 'thumbs';
+  return null;
 }
 
 function addCues(cues: Cue[], seg: Seg, story: Story): void {
   const s = seg.step;
-  const start = seg.turn ? seg.t0 + TURN_TIME : seg.t0;
-  const at = (f: number): number => start + (seg.t1 - start) * f;
+  const at = (f: number): number => seg.t0 + (seg.t1 - seg.t0) * f;
   if (s.kind === 'wrap') cues.push({ t: at(0.35 + 0.65 * 0.45), sound: s.layer === 'eth' ? 'sleeve' : 'snap' });
   if (s.kind === 'unwrap' && s.layer === 'eth') cues.push({ t: at(0.35 + 0.65 * 0.62), sound: 'thud' });
   if (s.kind === 'nat') cues.push({ t: at(0.5), sound: 'flip' });
@@ -194,19 +215,36 @@ export function segAt(tl: Timeline, v: number): { seg: Seg; k: number } | null {
   return null;
 }
 
+/**
+ * Inside a device the packet always lies along its stations (the trays all run along x): facing +x on the way out
+ * from the laptop, −x on the way back. It only turns where a cable branches off another way, swinging round while it
+ * drops from its tray down to the port, and back again while it rises into the next device.
+ */
+export function trayAngle(trip: Trip): number {
+  return trip.origin === 'laptop' ? 0 : Math.PI;
+}
+
+/** Angle a turned the shortest way towards b, by t. */
+function turnTo(a: number, b: number, t: number): number {
+  const delta = Math.atan2(Math.sin(b - a), Math.cos(b - a));
+  return a + delta * t;
+}
+
 /** Down from the sender's Ethernet tray to its port, along the cable, and up into the receiver's tray. */
-export function travelPath(
+export function travelPose(
   pos: Map<string, { x: number; y: number }>,
   trayZ: (device: string, level: number) => number,
   from: string,
   to: string,
   k: number,
-): Vec3 {
+  inTray = 0,
+): { pos: Vec3; angle: number } {
   const a = pos.get(from) ?? { x: 0, y: 0 };
   const b = pos.get(to) ?? { x: 0, y: 0 };
   const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
   const ux = (b.x - a.x) / len;
   const uy = (b.y - a.y) / len;
+  const cable = Math.atan2(uy, ux);
   const pts = [
     v3(a.x, a.y, trayZ(from, 0)),
     v3(a.x + ux * PORT, a.y + uy * PORT, CABLE_Z),
@@ -215,35 +253,49 @@ export function travelPath(
   ];
   const lens = pts.slice(1).map((p, i) => Math.hypot(p.x - pts[i]!.x, p.y - pts[i]!.y, p.z - pts[i]!.z));
   const total = lens.reduce((s, x) => s + x, 0);
-  let d = easeInOut(k) * total;
+  const dist = easeInOut(k) * total;
+  // Swing round over the drop and the first third of the cable; swing back over the last third and the rise.
+  const out = lens[0]! + lens[1]! / 3;
+  const back = total - lens[2]! - lens[1]! / 3;
+  const angle = dist < out ? turnTo(inTray, cable, smooth(dist / out)) : dist > back ? turnTo(cable, inTray, smooth((dist - back) / (total - back))) : cable;
+  let d = dist;
   for (let i = 0; i < lens.length; i++) {
-    if (d <= lens[i]! || i === lens.length - 1) return lerpV(pts[i]!, pts[i + 1]!, clamp01(d / lens[i]!));
+    if (d <= lens[i]! || i === lens.length - 1) return { pos: lerpV(pts[i]!, pts[i + 1]!, clamp01(d / lens[i]!)), angle };
     d -= lens[i]!;
   }
-  return pts[3]!;
+  return { pos: pts[3]!, angle: inTray };
 }
 
-/** Packet centre for a segment at progress k: move first, then the layer work happens in place. */
-export function packetPos(tl: Timeline, seg: Seg, k: number): Vec3 {
+/** Gentle S-curve (smoothstep): starts and ends at rest, never faster than 1.5×. */
+const smooth = (t: number): number => {
+  const x = clamp01(t);
+  return x * x * (3 - 2 * x);
+};
+
+export function travelPath(
+  pos: Map<string, { x: number; y: number }>,
+  trayZ: (device: string, level: number) => number,
+  from: string,
+  to: string,
+  k: number,
+): Vec3 {
+  return travelPose(pos, trayZ, from, to, k).pos;
+}
+
+/** Packet centre and facing for a segment at progress k: move first, then the layer work happens in place. */
+export function packetPose(tl: Timeline, seg: Seg, k: number): { pos: Vec3; angle: number } {
   const s = seg.step;
-  if (s.kind === 'travel') return travelPath(tl.pos, tl.trayZ, s.from, s.to, k);
+  const inTray = trayAngle(seg.trip);
+  if (s.kind === 'travel') return travelPose(tl.pos, tl.trayZ, s.from, s.to, k, inTray);
   if (s.kind === 'lost' && seg.knock) {
     const local = k * (seg.t1 - seg.t0);
-    return travelPath(tl.pos, tl.trayZ, s.from, s.to, Math.min(seg.knock.k, local / seg.knock.travel));
+    return travelPose(tl.pos, tl.trayZ, s.from, s.to, Math.min(seg.knock.k, local / seg.knock.travel), inTray);
   }
-  return lerpV(seg.p0, seg.p1, easeInOut(clamp01(workK(seg, k) / 0.4)));
+  return { pos: lerpV(seg.p0, seg.p1, easeInOut(clamp01(k / 0.4))), angle: inTray };
 }
 
-/** Progress of a step's own work (after any turn), 0..1. */
-export function workK(seg: Seg, k: number): number {
-  if (!seg.turn) return k;
-  const dur = seg.t1 - seg.t0;
-  return clamp01((k * dur - TURN_TIME) / (dur - TURN_TIME));
-}
-
-/** Progress of the swing round at the start of a turning step, 0..1 (1 when there is no turn). */
-export function turnK(seg: Seg, k: number): number {
-  return seg.turn ? clamp01((k * (seg.t1 - seg.t0)) / TURN_TIME) : 1;
+export function packetPos(tl: Timeline, seg: Seg, k: number): Vec3 {
+  return packetPose(tl, seg, k).pos;
 }
 
 /** Which layer pieces are on the packet when a segment starts (before its own change). */

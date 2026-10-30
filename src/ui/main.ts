@@ -399,6 +399,9 @@ if (import.meta.env.DEV) {
         return !!target;
       },
       reset,
+      get reactions() {
+        return tl.reactions;
+      },
       /** Start a run straight away with these stickers (for screenshots). */
       start(f: Partial<Features>): void {
         for (const k of ['big', 'again', 'storm'] as const) stickers.set(k, !!f[k]);

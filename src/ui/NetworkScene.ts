@@ -3,7 +3,7 @@ import { box, cylinder, line, rbox, tile } from './prims';
 import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, iso, lerp, U, v3, type Vec3 } from './project';
 import { shade } from './shade';
 import type { Story, Trip, Wrap } from './story';
-import { addressBefore, DEVICE_TOP, LEVEL, packetPos, segAt, trayOpacity, turnK, workK, wrapsBefore, type Axis, type Seg, type Timeline } from './timeline';
+import { addressBefore, DEVICE_TOP, FACE_EMOJI, LEVEL, packetPos, packetPose, segAt, trayOpacity, wrapsBefore, type Seg, type Timeline } from './timeline';
 
 export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', eth: '#e08b33' } as const;
 const DEVICE = '#d9d0c2';
@@ -26,8 +26,6 @@ const cardLen = (trip: Trip): number => {
 /** Text printed on a box face: `+y` faces run along +x on screen, `+x` faces along −y. */
 const faceTf = (p: { sx: number; sy: number }, face: '+y' | '+x'): string =>
   `matrix(1 ${face === '+y' ? 0.5 : -0.5} 0 1 ${p.sx.toFixed(1)} ${p.sy.toFixed(1)})`;
-
-const angleOf = (a: Axis): number => Math.atan2(a.y, a.x);
 
 const easeOutBounce = (t: number): number => {
   const n = 7.5625;
@@ -90,6 +88,8 @@ export class NetworkScene {
   readonly packet: SVGGElement;
   private readonly devices: DeviceView[] = [];
   private readonly tags: SVGGElement;
+  /** Emoji statuses over devices; on top of everything. */
+  private readonly moods: SVGGElement;
   private readonly fx: SVGGElement;
   private readonly screen: { page: SVGGElement; title: SVGTextElement; dns: SVGGElement; dnsName: SVGTextElement; dnsAddr: SVGTextElement; fail: SVGTextElement } | null = null;
   /** Cables that crackle in stormy weather, and the layer they crackle on. */
@@ -115,6 +115,7 @@ export class NetworkScene {
     this.fx = el('g', { class: 'fx' }, world);
     this.packet = el('g', { class: 'packet' }, world);
     this.tags = el('g', { class: 'tags' }, world);
+    this.moods = el('g', { class: 'moods' }, world);
 
     for (const l of story.links) {
       const a = tl.pos.get(l.a);
@@ -327,7 +328,12 @@ export class NetworkScene {
     const hit = segAt(this.tl, v);
     let p: Vec3;
     const laptop = this.tl.pos.get('laptop') ?? { x: 0, y: 0 };
-    if (hit?.seg.step.kind === 'wait') {
+    const mood = this.tl.reactions.find((r) => v >= r.t && v < r.t + 1.1);
+    if (mood && (!hit || v < hit.seg.t0)) {
+      // Between trips: stay on whoever is reacting.
+      const d = this.tl.pos.get(mood.device) ?? { x: 0, y: 0 };
+      p = v3(d.x, d.y, (DEVICE_TOP[this.tl.kind.get(mood.device) ?? ''] ?? 1) + 1.5);
+    } else if (hit?.seg.step.kind === 'wait') {
       const d = this.tl.pos.get(hit.seg.step.device) ?? { x: 0, y: 0 };
       p = v3(d.x, d.y, (DEVICE_TOP[this.tl.kind.get(hit.seg.step.device) ?? ''] ?? 1) + 1.5);
     } else if (hit) {
@@ -432,6 +438,7 @@ export class NetworkScene {
       }
     }
     this.renderRack(v);
+    this.renderMoods(v);
     if (!this.screen) return;
     // A page in several parts shows once the last missing part has slotted into the rack.
     const parts = this.partArrivals();
@@ -445,6 +452,26 @@ export class NetworkScene {
     const last = tl.segs[tl.segs.length - 1];
     const failed = !this.story.pageTitle && !!last && v >= last.t1;
     this.screen.fail.setAttribute('opacity', failed ? '1' : '0');
+  }
+
+  /** Emoji statuses: each pops up over its device, floats up a little and fades. */
+  private renderMoods(v: number): void {
+    this.moods.replaceChildren();
+    for (const r of this.tl.reactions) {
+      const dt = v - r.t;
+      if (dt < 0 || dt > 1.6) continue;
+      const d = this.tl.pos.get(r.device) ?? { x: 0, y: 0 };
+      const top = DEVICE_TOP[this.tl.kind.get(r.device) ?? ''] ?? 1;
+      this.emoji(this.moods, iso(d.x, d.y, top + 2.2 + 0.4 * dt), FACE_EMOJI[r.face], easeOutBack(clamp01(dt / 0.3)), 1 - clamp01((dt - 1.2) / 0.4));
+    }
+  }
+
+  /** One emoji in a round white bubble, centred on a screen point. */
+  private emoji(parent: SVGGElement, c: { sx: number; sy: number }, glyph: string, scale: number, op: number): void {
+    const g = el('g', { class: 'mood', opacity: op.toFixed(3), transform: `translate(${c.sx.toFixed(1)} ${c.sy.toFixed(1)}) scale(${scale.toFixed(3)})` }, parent);
+    el('circle', { r: 20, class: 'mood-bg' }, g);
+    const t = el('text', { 'text-anchor': 'middle', dy: '0.36em', class: 'mood-face' }, g);
+    t.textContent = glyph;
   }
 
   /** 0..1: how far the laptop has shown what a card of this chapter brought (it fades in as the card goes in). */
@@ -501,18 +528,9 @@ export class NetworkScene {
       return;
     }
     const trip = seg.trip;
-    const parts = this.parts(seg, workK(seg, k));
-    const pose: Pose = { pos: packetPos(this.tl, seg, k), angle: angleOf(seg.axis), gap: peek * 0.7, spin: 0, squash: 0, op: 1, sleeve: 1 - peek, tag: peek < 0.5, chips: peek };
-
-    // Swing round to face the next cable, with a little lift.
-    if (seg.turn && turnK(seg, k) < 1) {
-      const q = turnK(seg, k);
-      const from = angleOf(seg.turn.from);
-      let delta = angleOf(seg.turn.to) - from;
-      delta = Math.atan2(Math.sin(delta), Math.cos(delta));
-      pose.angle = from + delta * easeInOut(q);
-      pose.pos = v3(pose.pos.x, pose.pos.y, pose.pos.z + Math.sin(Math.PI * q) * 0.25);
-    }
+    const parts = this.parts(seg, k);
+    const at = packetPose(this.tl, seg, k);
+    const pose: Pose = { pos: at.pos, angle: at.angle, gap: peek * 0.7, spin: 0, squash: 0, op: 1, sleeve: 1 - peek, tag: peek < 0.5, chips: peek };
 
     // Knocked off the cable: impact, tumble, bounce, fall apart.
     if (step.kind === 'lost' && seg.knock) {
@@ -520,6 +538,10 @@ export class NetworkScene {
       if (tau >= 0) {
         this.burst(pose.pos, tau, !seg.knock.byYou);
         this.tumble(pose, tau);
+        if (tau > 0.2) {
+          const c = iso(pose.pos.x, pose.pos.y, pose.pos.z + 1.6);
+          this.emoji(this.tags, c, FACE_EMOJI.sad, easeOutBack(clamp01((tau - 0.2) / 0.3)), pose.op);
+        }
       }
     }
 
@@ -631,8 +653,13 @@ export class NetworkScene {
         const r = (a * Math.PI) / 180;
         el('line', { x1: Math.cos(r) * 26, y1: Math.sin(r) * 26 - 6, x2: Math.cos(r) * 40, y2: Math.sin(r) * 40 - 6, class: 'surprise-line' }, mark);
       }
-      const t = el('text', { 'text-anchor': 'middle', dy: '0.35em', class: step.giveUp ? 'surprise give-up' : 'surprise' }, mark);
-      t.textContent = step.giveUp ? '✗' : '!';
+      if (step.mood === 'surprise') {
+        const t = el('text', { 'text-anchor': 'middle', dy: '0.35em', class: 'surprise' }, mark);
+        t.textContent = '!';
+      } else {
+        // Lost again: angry. Gave up: in tears.
+        this.emoji(mark, { sx: 0, sy: 0 }, FACE_EMOJI[step.mood], 1.25, 1);
+      }
     }
   }
 
