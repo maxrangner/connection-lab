@@ -48,9 +48,13 @@ export interface Trip {
   lost: boolean;
   /** A resend of an earlier, lost packet. */
   retry: boolean;
+  /** When the page needs several packets: which one this is (1-based) and how many there are. */
+  part?: { n: number; of: number };
 }
 
 export interface Story {
+  /** The site the browser asked for ("example.com"). */
+  site: string;
   devices: { id: string; label: string; kind: string }[];
   links: { id: string; a: string; b: string }[];
   trips: Trip[];
@@ -58,6 +62,8 @@ export interface Story {
   pageTitle: string | null;
   /** The address the DNS answer gave, if it arrived. */
   dnsAnswer: string | null;
+  /** On a second visit: the address the laptop still remembered, so it asked nobody. */
+  remembered: string | null;
 }
 
 const WRAP_OF_LAYER: Record<number, Wrap | undefined> = { 4: 'l4', 3: 'ip', 2: 'eth' };
@@ -72,7 +78,11 @@ function field(l: LayerPdu | undefined, key: string): string {
 
 /** "HTTP GET / HTTP/1.1" → "GET /", "HTTP HTTP/1.1 200 OK" → "200 OK". */
 export function cardLabel(summary: string): string {
-  return summary.replace(/^HTTP /, '').replace(/ ?HTTP\/1\.[01] ?/, '').trim();
+  const s = summary.replace(/^HTTP /, '').replace(/ ?HTTP\/1\.[01] ?/, '').trim();
+  // A long path keeps only its last part: "GET /hypertext/WWW/TheProject.html" → "GET …/TheProject.html".
+  const m = /^(GET|HEAD|POST) (\/\S+)$/.exec(s);
+  if (m && m[2]!.length > 12) return `${m[1]} …/${m[2]!.split('/').pop()}`;
+  return s;
 }
 
 /** "DNS query 0x85bb: example.com A?" → "example.com?", a response → its first address. */
@@ -162,7 +172,7 @@ function trip(r: SimResult, p: PacketInfo, retried: Set<string>): Trip | null {
   const l4 = layer(frame, 'tcp') ?? layer(frame, 'udp')!;
   const app = layer(frame, 'http') ?? layer(frame, 'dns');
   const dataBytes = l4.payloadEnd - l4.headerEnd;
-  const card = dataBytes > 0 && app ? (app.protocol === 'http' ? cardLabel(app.summary) : dnsCardLabel(app.summary)) : null;
+  const card = dataBytes > 0 ? (app ? (app.protocol === 'http' ? cardLabel(app.summary) : dnsCardLabel(app.summary)) : 'data') : null;
   const isTcp = l4.protocol === 'tcp';
   const origin = steps[0]!.kind === 'travel' || steps[0]!.kind === 'lost' ? (steps[0] as { from: string }).from : (steps[0] as { device: string }).device;
 
@@ -200,8 +210,8 @@ function pageTitle(r: SimResult): string | null {
   return /<title>([^<]*)<\/title>/i.exec(text)?.[1]?.trim() || 'example.com';
 }
 
-function dnsAnswer(r: SimResult): string | null {
-  const e = r.events.find((x) => x.type === 'app' && x.action === 'dns-answer');
+function dnsAnswer(r: SimResult, action: 'dns-answer' | 'dns-cache-hit' = 'dns-answer'): string | null {
+  const e = r.events.find((x) => x.type === 'app' && x.action === action);
   const a = e?.type === 'app' ? e.info?.addresses : undefined;
   return Array.isArray(a) ? (a[0] ?? null) : null;
 }
@@ -212,12 +222,34 @@ export function buildStory(r: SimResult): Story {
     .map((p) => trip(r, p, retried))
     .filter((t): t is Trip => !!t)
     .sort((a, b) => a.start - b.start);
+  numberParts(trips, r);
+  const start = r.events.find((e) => e.type === 'app' && e.action === 'start');
+  const url = start?.type === 'app' ? String(start.info?.url ?? '') : '';
   const ifaceDevice = new Map(r.scenario.devices.flatMap((d) => d.ifaces.map((i) => [i.id, d.id] as const)));
   return {
     devices: r.scenario.devices.map((d) => ({ id: d.id, label: d.label, kind: d.kind })),
     links: r.scenario.links.map((l) => ({ id: l.id, a: ifaceDevice.get(l.a) ?? l.a, b: ifaceDevice.get(l.b) ?? l.b })),
+    site: url ? new URL(url).hostname : '',
     trips,
     pageTitle: pageTitle(r),
     dnsAnswer: dnsAnswer(r),
+    remembered: dnsAnswer(r, 'dns-cache-hit'),
   };
+}
+
+/**
+ * A reply too big for one packet goes out in numbered parts (by where each sits in the byte stream; a resend keeps
+ * its number). The first part's card says "200 OK 1/2", the rest just "2/2".
+ */
+function numberParts(trips: Trip[], r: SimResult): void {
+  const parts = trips.filter((t) => t.chapter === 'page' && t.origin !== 'laptop');
+  const seqOf = (t: Trip): number => r.packets.get(t.packetId)?.tcp?.relSeq ?? 0;
+  const seqs = [...new Set(parts.map(seqOf))].sort((a, b) => a - b);
+  if (seqs.length < 2) return;
+  const status = parts.find((t) => t.card && t.card !== 'data')?.card ?? '';
+  for (const t of parts) {
+    const n = seqs.indexOf(seqOf(t)) + 1;
+    t.part = { n, of: seqs.length };
+    t.card = n === 1 && status ? `${status} 1/${seqs.length}` : `${n}/${seqs.length}`;
+  }
 }

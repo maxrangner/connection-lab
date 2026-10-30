@@ -380,3 +380,77 @@ body {
     animation: none;
   }
 }
+
+/* Stormy cables */
+.crackle {
+  fill: none;
+  stroke: #e2b100;
+  stroke-width: 3;
+  stroke-linejoin: bevel;
+}
+
+.spark {
+  fill: #ffe14d;
+  stroke: var(--ink);
+  stroke-width: 1;
+}
+
+.bolt {
+  fill: #ffe14d;
+  stroke: var(--ink);
+  stroke-width: 2.5;
+  stroke-linejoin: round;
+}
+
+/* Rack where a page in several parts is put back together */
+.rack-slot {
+  fill: #fffaf2;
+  stroke: #b8ad9d;
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+}
+
+.rack-card {
+  stroke: #3b7a50;
+  stroke-width: 1.5;
+}
+
+.rack-num {
+  font-size: 13px;
+  font-weight: 800;
+  fill: #fff;
+}
+
+.rack-num.empty {
+  fill: #b8ad9d;
+}
+
+/* Sticker sheet */
+.sticker {
+  cursor: grab;
+}
+
+.sticker.held {
+  cursor: grabbing;
+}
+
+.sticker-bg {
+  fill: #fffaf2;
+  stroke-width: 3;
+  filter: drop-shadow(0 3px 4px rgba(61, 53, 44, 0.25));
+}
+
+.sticker-label {
+  font-size: 12px;
+  font-weight: 650;
+  fill: var(--ink-soft);
+  pointer-events: none;
+}
+
+.crackle-edge {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 5.5;
+  stroke-opacity: 0.35;
+  stroke-linejoin: bevel;
+}

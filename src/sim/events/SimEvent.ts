@@ -37,6 +37,7 @@ export type AppAction =
   | 'start' // user asked the browser for a URL
   | 'dns-lookup' // stub resolver sends a question
   | 'dns-answer' // client got the addresses
+  | 'dns-cache-hit' // client still had the address cached, no lookup needed
   | 'dns-serve' // resolver looked up its cache and answers
   | 'http-request-sent'
   | 'http-request-received'

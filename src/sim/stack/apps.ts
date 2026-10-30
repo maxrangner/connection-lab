@@ -74,10 +74,12 @@ export function startBrowser(host: Host, spec: BrowserSpec, mss: number): void {
   const sim = host.sim;
   const url = new URL(spec.url);
   sim.emit({ type: 'app', deviceId: host.id, app: 'browser', action: 'start', info: { url: spec.url } });
-  resolve(
-    host,
-    url.hostname,
-    spec.resolver,
+  const lookup = (done: (ips: string[]) => void, fail: () => void): void => {
+    if (!spec.knownAddress) return resolve(host, url.hostname, spec.resolver, done, fail);
+    sim.emit({ type: 'app', deviceId: host.id, app: 'dns-client', action: 'dns-cache-hit', info: { name: url.hostname, addresses: [spec.knownAddress] } });
+    done([spec.knownAddress]);
+  };
+  lookup(
     (ips) => {
       const target = ips[0]!;
       let received: Uint8Array = new Uint8Array(0);

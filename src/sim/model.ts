@@ -33,7 +33,14 @@ export interface LinkSpec {
 }
 
 export type AppSpec =
-  | { kind: 'browser'; url: string; resolver: Ip4; request: Uint8Array }
+  | {
+      kind: 'browser';
+      url: string;
+      resolver: Ip4;
+      request: Uint8Array;
+      /** The address is still in the browser's DNS cache (a second visit within the record's TTL): skip the lookup. */
+      knownAddress?: Ip4;
+    }
   | { kind: 'dns-server'; records: Record<string, { ips: Ip4[]; ttl: number }>; processing: number }
   | { kind: 'http-server'; response: Uint8Array; processing: number };
 

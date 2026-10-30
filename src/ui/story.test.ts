@@ -96,3 +96,33 @@ describe('knocking a packet off a cable', () => {
     expect(retry.start - s.trips[0]!.start).toBeCloseTo(5, 3);
   });
 });
+
+describe('stickers', () => {
+  it('bigger page: the first website comes back in numbered parts', () => {
+    const s = buildStory(runScenario(fetchWebPage({ site: 'info.cern.ch' }), { seed: 1, faults: { randomLoss: 0, manual: [] } }));
+    expect(s.site).toBe('info.cern.ch');
+    expect(s.trips.find((t) => t.chapter === 'page')?.card).toBe('GET …/TheProject.html');
+    const parts = s.trips.filter((t) => t.part);
+    expect(parts.map((t) => t.card)).toEqual(['200 OK 1/2', '2/2']);
+    expect(s.pageTitle).toBe('The World Wide Web project');
+  });
+
+  it('visit again: no address lookup, the laptop remembers it', () => {
+    const s = buildStory(runScenario(fetchWebPage({ revisit: true }), { seed: 1, faults: { randomLoss: 0, manual: [] } }));
+    expect(s.trips.some((t) => t.chapter === 'dns')).toBe(false);
+    expect(s.remembered).toBe('104.20.23.154');
+    expect(s.trips[0]!.l4Label).toBe('SYN');
+  });
+
+  it('stormy: losses only on the internet side, each followed by a retry or a give-up', () => {
+    for (let seed = 1; seed <= 8; seed++) {
+      const s = buildStory(runScenario(fetchWebPage(), { seed, faults: { randomLoss: 0.15, lossyLinks: ['wan', 'bb1', 'bb2'], manual: [] } }));
+      for (const t of s.trips.filter((x) => x.lost)) {
+        const last = t.steps[t.steps.length - 1]!;
+        expect(last.kind === 'lost' && ['wan', 'bb1', 'bb2'].includes(last.link)).toBe(true);
+      }
+      const tl = buildTimeline(s);
+      expect(tl.segs.filter((x) => x.step.kind === 'wait')).toHaveLength(s.trips.filter((x) => x.lost).length);
+    }
+  });
+});

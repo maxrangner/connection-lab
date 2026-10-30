@@ -28,12 +28,12 @@ export interface Seg {
   /** The packet hops around to face the next cable. */
   turn?: { from: Axis; to: Axis };
   /** For `lost`: how far along the cable it was knocked off (travel progress 0..1) and the travel's duration. */
-  knock?: { k: number; travel: number };
+  knock?: { k: number; travel: number; byYou: boolean };
 }
 
 export interface Cue {
   t: number;
-  sound: 'snap' | 'sleeve' | 'thud' | 'flip' | 'bonk' | 'surprise' | 'pop' | 'chime';
+  sound: 'snap' | 'sleeve' | 'thud' | 'flip' | 'bonk' | 'zap' | 'surprise' | 'pop' | 'chime';
 }
 
 export interface Timeline {
@@ -139,8 +139,10 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
           facing = axisOf(step.from, step.to);
           seg.axis = facing;
           const travel = DUR.travel * pace({ ...step, kind: 'travel' }, trip);
-          const k = knocks.get(`${trip.packetId}@${step.link}`) ?? 0.5;
-          seg.knock = { k, travel };
+          // Knocked by the viewer: where they tapped. Lost by itself (a stormy cable): halfway along.
+          const tapped = knocks.get(`${trip.packetId}@${step.link}`);
+          const k = tapped ?? 0.5;
+          seg.knock = { k, travel, byYou: tapped !== undefined };
           d = k * travel + TUMBLE;
           seg.p1 = travelPath(pos, trayZ, step.from, step.to, k);
           moveIdx++;
@@ -179,7 +181,7 @@ function addCues(cues: Cue[], seg: Seg, story: Story): void {
   if (s.kind === 'wrap') cues.push({ t: at(0.35 + 0.65 * 0.45), sound: s.layer === 'eth' ? 'sleeve' : 'snap' });
   if (s.kind === 'unwrap' && s.layer === 'eth') cues.push({ t: at(0.35 + 0.65 * 0.62), sound: 'thud' });
   if (s.kind === 'nat') cues.push({ t: at(0.5), sound: 'flip' });
-  if (s.kind === 'lost' && seg.knock) cues.push({ t: seg.t0 + seg.knock.k * seg.knock.travel, sound: 'bonk' });
+  if (s.kind === 'lost' && seg.knock) cues.push({ t: seg.t0 + seg.knock.k * seg.knock.travel, sound: seg.knock.byYou ? 'bonk' : 'zap' });
   if (s.kind === 'read') {
     const last = story.trips[story.trips.length - 1];
     cues.push({ t: at(0.6), sound: seg.trip === last && seg.trip.chapter === 'page' ? 'chime' : 'pop' });

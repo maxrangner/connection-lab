@@ -1,0 +1,50 @@
+import { describe, expect, it } from 'vitest';
+import { fromBase64, toAscii } from './bytes/bytes';
+import type { EventOf, SimEventType } from './events/SimEvent';
+import type { FaultPlan } from './faults';
+import { runScenario, type SimResult } from './run';
+import { fetchWebPage, type FetchWebPageOptions } from './scenarios/fetchWebPage';
+import { CERN_HTTP_RESPONSE_BASE64, CERN_IP } from './scenarios/infoCernCapture';
+
+const run = (opts: FetchWebPageOptions, faults: FaultPlan = { randomLoss: 0, manual: [] }, seed = 1): SimResult =>
+  runScenario(fetchWebPage(opts), { seed, faults });
+
+const of = <T extends SimEventType>(r: SimResult, type: T): EventOf<T>[] => r.events.filter((e) => e.type === type) as EventOf<T>[];
+
+describe('the first website (info.cern.ch)', () => {
+  const r = run({ site: 'info.cern.ch' });
+
+  it('looks up info.cern.ch and fetches the exact captured page', () => {
+    expect(of(r, 'app').find((e) => e.action === 'dns-answer')?.info?.addresses).toEqual([CERN_IP]);
+    const got = of(r, 'app').find((e) => e.action === 'http-response-received')!;
+    expect(toAscii(r.pdus.get(got.pduId!)!.bytes)).toBe(toAscii(fromBase64(CERN_HTTP_RESPONSE_BASE64)));
+    expect(of(r, 'app').some((e) => e.action === 'done')).toBe(true);
+  });
+
+  it('needs more than one packet for the reply', () => {
+    const fromServer = [...r.packets.values()].filter((p) => p.origin === 'server' && p.tcp && p.tcp.len > 0);
+    expect(fromServer.length).toBeGreaterThanOrEqual(2);
+    expect(fromServer.every((p) => p.tcp!.len <= 1460)).toBe(true);
+  });
+});
+
+describe('visiting again', () => {
+  const r = run({ revisit: true });
+
+  it('skips the DNS lookup and ARP: the address and MACs are still cached', () => {
+    const actions = of(r, 'app').map((e) => `${e.deviceId}:${e.action}`);
+    expect(actions).toContain('laptop:dns-cache-hit');
+    expect(actions).not.toContain('laptop:dns-lookup');
+    expect([...r.packets.values()].filter((p) => p.kind === 'arp' || p.kind === 'dns')).toHaveLength(0);
+    expect(actions).toContain('laptop:done');
+  });
+});
+
+describe('random loss limited to some links', () => {
+  it('never drops on links outside the lossy set', () => {
+    for (let seed = 1; seed <= 12; seed++) {
+      const r = run({}, { randomLoss: 0.3, manual: [], lossyLinks: ['wan', 'bb1', 'bb2'] }, seed);
+      for (const d of of(r, 'drop')) if (d.reason === 'fault') expect(['wan', 'bb1', 'bb2']).toContain(d.linkId);
+    }
+  });
+});

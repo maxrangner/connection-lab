@@ -17,7 +17,7 @@ const SECTION: Record<Layer, { d: number; h: number }> = { app: { d: 1.0, h: 0.7
 
 const colorOf = (layer: Layer, trip: Trip): string => (layer === 'l4' ? COLOR[trip.l4] : COLOR[layer]);
 const layerName = (layer: Layer, trip: Trip): string => ({ app: 'App', l4: trip.l4 === 'udp' ? 'UDP' : 'TCP', ip: 'IP', eth: 'Ethernet' })[layer];
-const cardFont = (label: string): number => (label.length <= 7 ? 13 : 10.5);
+const cardFont = (label: string): number => (label.length <= 7 ? 13 : label.length <= 14 ? 10.5 : 9);
 const cardLen = (trip: Trip): number => {
   const label = trip.card ?? '';
   return Math.max(1.3 + 0.42 * Math.log2(Math.max(trip.dataBytes, 64) / 64), (label.length * cardFont(label) * 0.62 + 18) / U);
@@ -91,7 +91,12 @@ export class NetworkScene {
   private readonly devices: DeviceView[] = [];
   private readonly tags: SVGGElement;
   private readonly fx: SVGGElement;
-  private readonly screen: { page: SVGGElement; title: SVGTextElement; dns: SVGGElement; dnsAddr: SVGTextElement; fail: SVGTextElement } | null = null;
+  private readonly screen: { page: SVGGElement; title: SVGTextElement; dns: SVGGElement; dnsName: SVGTextElement; dnsAddr: SVGTextElement; fail: SVGTextElement } | null = null;
+  /** Cables that crackle in stormy weather, and the layer they crackle on. */
+  private stormy: { a: Vec3; b: Vec3 }[] = [];
+  private readonly storm: SVGGElement;
+  /** Where a page that comes in several parts is put back together, beside the laptop. */
+  private readonly rack: SVGGElement;
   private overview = { x: 0, y: 0, w: 1, h: 1 };
 
   constructor(
@@ -103,7 +108,9 @@ export class NetworkScene {
     host.appendChild(this.svg);
     const world = el('g', {}, this.svg);
     const cables = el('g', { class: 'cables' }, world);
+    this.storm = el('g', { class: 'storm' }, world);
     const devs = el('g', {}, world);
+    this.rack = el('g', { class: 'rack' }, world);
     // Effects (impact bursts, timers) sit behind the packet, the way an anime impact star does.
     this.fx = el('g', { class: 'fx' }, world);
     this.packet = el('g', { class: 'packet' }, world);
@@ -137,8 +144,127 @@ export class NetworkScene {
     this.story = story;
     this.tl = tl;
     if (this.screen) {
-      this.screen.title.textContent = story.pageTitle ?? '';
-      this.screen.dnsAddr.textContent = story.dnsAnswer ?? '';
+      // A long title wraps onto two lines at the space nearest the middle.
+      const t = story.pageTitle ?? '';
+      const cut = t.length > 14 ? [...t.matchAll(/ /g)].map((m) => m.index).sort((a, b) => Math.abs(a - t.length / 2) - Math.abs(b - t.length / 2))[0] : undefined;
+      this.screen.title.replaceChildren();
+      const lines = cut === undefined ? [t] : [t.slice(0, cut), t.slice(cut + 1)];
+      lines.forEach((line, i) => {
+        const span = el('tspan', { x: this.screen!.title.getAttribute('x') ?? 0, dy: i ? '1.15em' : lines.length > 1 ? '-0.4em' : '0' }, this.screen!.title);
+        span.textContent = line;
+      });
+      this.screen.dnsName.textContent = story.site;
+      this.screen.dnsAddr.textContent = story.remembered ?? story.dnsAnswer ?? '';
+    }
+  }
+
+  /** Which cables crackle (stormy weather on the internet side), by link id; empty for calm weather. */
+  setStorm(links: readonly string[]): void {
+    this.stormy = this.story.links
+      .filter((l) => links.includes(l.id))
+      .map((l) => {
+        const a = this.tl.pos.get(l.a) ?? { x: 0, y: 0 };
+        const b = this.tl.pos.get(l.b) ?? { x: 0, y: 0 };
+        return { a: v3(a.x, a.y, 0), b: v3(b.x, b.y, 0) };
+      });
+  }
+
+  /**
+   * Stormy cables crackle: a jittery electric line and the odd spark. This is weather, not story, so it runs on
+   * the wall clock (`time`, seconds) and changes in little jumps.
+   */
+  renderStorm(time: number): void {
+    this.storm.replaceChildren();
+    if (!this.stormy.length) return;
+    const tick = Math.floor(time * 12);
+    const rnd = (n: number): number => {
+      const x = Math.sin(n * 12.9898 + tick * 78.233) * 43758.5453;
+      return x - Math.floor(x);
+    };
+    this.stormy.forEach(({ a, b }, li) => {
+      const len = Math.hypot(b.x - a.x, b.y - a.y);
+      const ux = (b.x - a.x) / len;
+      const uy = (b.y - a.y) / len;
+      const steps = Math.max(4, Math.round(len / 0.45));
+      const pts: string[] = [];
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        // Ends stay on the ports; the middle jumps around.
+        const amp = Math.sin(Math.PI * t) * 0.34;
+        const off = (rnd(li * 100 + i) - 0.5) * 2 * amp;
+        const z = (rnd(li * 100 + i + 50) - 0.3) * amp * 1.2;
+        const p = iso(a.x + ux * len * t - uy * off, a.y + uy * len * t + ux * off, Math.max(0, z));
+        pts.push(`${p.sx.toFixed(1)},${p.sy.toFixed(1)}`);
+      }
+      const flicker = (0.55 + 0.45 * rnd(li + 7)).toFixed(2);
+      // A dark edge under the yellow keeps it readable on the light table.
+      el('polyline', { points: pts.join(' '), class: 'crackle-edge', opacity: flicker }, this.storm);
+      el('polyline', { points: pts.join(' '), class: 'crackle', opacity: flicker }, this.storm);
+      // Now and then a spark jumps off the cable.
+      if (rnd(li + 31) > 0.72) {
+        const t = 0.15 + 0.7 * rnd(li + 3);
+        const p = iso(a.x + ux * len * t, a.y + uy * len * t, 0.3);
+        const r = 5 + 6 * rnd(li + 9);
+        const spikes = [0, 1, 2, 3, 4, 5, 6, 7].map((j) => {
+          const ang = (j / 8) * Math.PI * 2;
+          const rr = j % 2 ? r * 0.4 : r;
+          return `${(p.sx + Math.cos(ang) * rr).toFixed(1)},${(p.sy + Math.sin(ang) * rr).toFixed(1)}`;
+        });
+        el('polygon', { points: spikes.join(' '), class: 'spark' }, this.storm);
+      }
+    });
+  }
+
+  /** Slot n (1-based) of the reassembly rack, as a world point the arriving card flies into. */
+  private rackSlot(n: number, of: number): Vec3 {
+    const lap = this.tl.pos.get('laptop') ?? { x: 0, y: 0 };
+    // Screen-right in world units is (+0.5, −0.5) per 28 px; slots sit 52 px apart.
+    const step = 52 / U;
+    const o = (n - 1 - (of - 1) / 2) * step;
+    return v3(lap.x - 3.0 + 0.5 * o, lap.y + 0.9 - 0.5 * o, 1.6);
+  }
+
+  /** The parts of a page that came in several packets, and when each one slotted into the rack (Infinity: not yet). */
+  private partArrivals(): { of: number; filled: Map<number, number>; shownFrom: number } | null {
+    let of = 0;
+    let shownFrom = Infinity;
+    const filled = new Map<number, number>();
+    for (const s of this.tl.segs) {
+      const part = s.trip.part;
+      if (!part) continue;
+      of = part.of;
+      shownFrom = Math.min(shownFrom, s.t0);
+      if (s.step.kind === 'read' && this.tl.kind.get(s.step.device) === 'laptop' && !filled.has(part.n)) filled.set(part.n, lerp(s.t0, s.t1, 0.92));
+    }
+    return of > 1 ? { of, filled, shownFrom } : null;
+  }
+
+  /** The rack beside the laptop: one slot per part; each fills when its part arrives, gaps show what's missing. */
+  private renderRack(v: number): void {
+    this.rack.replaceChildren();
+    const parts = this.partArrivals();
+    if (!parts || v < parts.shownFrom) return;
+    const op = clamp01((v - parts.shownFrom) / 0.4);
+    const all = [...parts.filled.values()];
+    const complete = all.length === parts.of ? Math.max(...all) : Infinity;
+    // Once the page is whole the rack slides into the laptop and goes.
+    const gone = clamp01((v - complete - 0.3) / 0.5);
+    const g = el('g', { opacity: (op * (1 - gone)).toFixed(3) }, this.rack);
+    for (let n = 1; n <= parts.of; n++) {
+      const w = this.rackSlot(n, parts.of);
+      const c = iso(w.x, w.y, w.z);
+      const at = parts.filled.get(n) ?? Infinity;
+      const pop = v >= at ? easeOutBack(clamp01((v - at) / 0.3)) : 0;
+      el('rect', { x: c.sx - 21, y: c.sy - 14, width: 42, height: 28, rx: 6, class: 'rack-slot' }, g);
+      if (pop > 0) {
+        const fg = el('g', { transform: `translate(${c.sx.toFixed(1)} ${c.sy.toFixed(1)}) scale(${pop.toFixed(3)})` }, g);
+        el('rect', { x: -19, y: -12, width: 38, height: 24, rx: 5, fill: COLOR.app, class: 'rack-card' }, fg);
+        const t = el('text', { 'text-anchor': 'middle', dy: '0.35em', class: 'rack-num' }, fg);
+        t.textContent = String(n);
+      } else {
+        const t = el('text', { x: c.sx.toFixed(1), y: c.sy.toFixed(1), 'text-anchor': 'middle', dy: '0.35em', class: 'rack-num empty' }, g);
+        t.textContent = String(n);
+      }
     }
   }
 
@@ -158,6 +284,8 @@ export class NetworkScene {
     for (const p of this.tl.pos.values()) for (const [dx, dy] of [[-2, -2], [2, 2.4], [-2, 2.4], [2, -2]] as const) for (const z of [0, 3.2]) pts.push(iso(p.x + dx, p.y + dy, z));
     // Room for the site card waiting left of the laptop.
     pts.push(iso(-8.6, 0.4, 3.6));
+    // And for the sticker sheet above it.
+    pts.push(iso(-4.6, 0.4, 8.2), iso(-9.4, -2.4, 6.5));
     const minX = Math.min(...pts.map((p) => p.sx)) - 20;
     const maxX = Math.max(...pts.map((p) => p.sx)) + 20;
     const minY = Math.min(...pts.map((p) => p.sy)) - 10;
@@ -188,8 +316,8 @@ export class NetworkScene {
     const cw = this.svg.clientWidth || 1;
     const ch = this.svg.clientHeight || 1;
     if (ch > cw * 1.2) {
-      const c = iso(-2.2, 0, 1.8);
-      return { cx: c.sx, cy: c.sy, scale: Math.max(this.baseScale(), cw / 520) };
+      const c = iso(-3.0, 0.2, 3.4);
+      return { cx: c.sx, cy: c.sy, scale: Math.max(this.baseScale(), cw / 400) };
     }
     return { cx: o.x + o.w / 2, cy: o.y + o.h / 2, scale: this.baseScale() };
   }
@@ -237,17 +365,16 @@ export class NetworkScene {
         const face = el('g', { transform: faceTf(a, '+y') }, g);
         const dns = el('g', { class: 'screen-dns', opacity: 0 }, face);
         const name = el('text', { x: w / 2, y: h * 0.38, class: 'screen-small', 'text-anchor': 'middle' }, dns);
-        name.textContent = 'example.com';
         const dnsAddr = el('text', { x: w / 2, y: h * 0.62, class: 'screen-addr', 'text-anchor': 'middle' }, dns);
         const page = el('g', { class: 'page', opacity: 0 }, face);
         el('rect', { x: 0, y: 0, width: w, height: h, fill: '#fbf8f2' }, page);
         const title = el('text', { x: w / 2, y: 0.5 * U, class: 'page-title', 'text-anchor': 'middle' }, page);
         for (const [i, lw] of [0.8, 0.62, 0.7].entries()) {
-          el('rect', { x: (w - w * lw) / 2, y: 0.72 * U + i * 6, width: w * lw, height: 2.4, rx: 1.2, fill: '#c9c1b5' }, page);
+          el('rect', { x: (w - w * lw) / 2, y: 0.78 * U + i * 6, width: w * lw, height: 2.4, rx: 1.2, fill: '#c9c1b5' }, page);
         }
         const fail = el('text', { x: w / 2, y: h / 2, dy: '0.35em', class: 'screen-fail', 'text-anchor': 'middle', opacity: 0 }, face);
         fail.textContent = '✗';
-        return { page, title, dns, dnsAddr, fail };
+        return { page, title, dns, dnsName: name, dnsAddr, fail };
       }
       case 'home-router': {
         box(g, { x: x - 1.1, y: y - 0.7, z: 0, w: 2.2, d: 1.4, h: 0.55, ...neutral });
@@ -304,10 +431,17 @@ export class NetworkScene {
         d.l4Name.setAttribute('fill', shade(udp ? COLOR.udp : COLOR.tcp, 0.75));
       }
     }
+    this.renderRack(v);
     if (!this.screen) return;
-    const page = this.story.pageTitle ? this.screenAfterRead(v, 'page') : 0;
+    // A page in several parts shows once the last missing part has slotted into the rack.
+    const parts = this.partArrivals();
+    const whole = parts && parts.filled.size === parts.of ? Math.max(...parts.filled.values()) : Infinity;
+    const pageAt = parts ? clamp01((v - whole - 0.3) / 0.4) : this.screenAfterRead(v, 'page');
+    const page = this.story.pageTitle ? pageAt : 0;
     this.screen.page.setAttribute('opacity', page.toFixed(3));
-    this.screen.dns.setAttribute('opacity', (this.screenAfterRead(v, 'dns') * (1 - page)).toFixed(3));
+    // On a second visit the laptop already knows the address from the start.
+    const known = this.story.remembered ? (v >= 0 ? 1 : 0) : this.screenAfterRead(v, 'dns');
+    this.screen.dns.setAttribute('opacity', (known * (1 - page)).toFixed(3));
     const last = tl.segs[tl.segs.length - 1];
     const failed = !this.story.pageTitle && !!last && v >= last.t1;
     this.screen.fail.setAttribute('opacity', failed ? '1' : '0');
@@ -384,7 +518,7 @@ export class NetworkScene {
     if (step.kind === 'lost' && seg.knock) {
       const tau = k * (seg.t1 - seg.t0) - seg.knock.k * seg.knock.travel;
       if (tau >= 0) {
-        this.burst(pose.pos, tau);
+        this.burst(pose.pos, tau, !seg.knock.byYou);
         this.tumble(pose, tau);
       }
     }
@@ -397,7 +531,9 @@ export class NetworkScene {
       const sink = easeIn(clamp01((k - 0.6) / 0.4));
       const d = this.tl.pos.get(step.device) ?? { x: 0, y: 0 };
       const kind = this.tl.kind.get(step.device) ?? '';
-      const target = kind === 'laptop' ? v3(d.x, d.y - 0.6, 0.95) : v3(d.x, d.y, DEVICE_TOP[kind] ?? 1);
+      const part = seg.trip.part;
+      // A part of a bigger page goes into its slot in the rack; anything else into the screen or the device.
+      const target = kind === 'laptop' ? (part ? this.rackSlot(part.n, part.of) : v3(d.x, d.y - 0.6, 0.95)) : v3(d.x, d.y, DEVICE_TOP[kind] ?? 1);
       pose.pos = v3(lerp(pose.pos.x, target.x, sink), lerp(pose.pos.y, target.y, sink), lerp(pose.pos.z, target.z, sink));
       for (const p of parts) {
         if (p.key !== 'card') continue;
@@ -438,7 +574,7 @@ export class NetworkScene {
   }
 
   /** Anime impact: a jagged yellow star and speed lines bursting from the hit. */
-  private burst(at: Vec3, tau: number): void {
+  private burst(at: Vec3, tau: number, zap = false): void {
     const T = 0.5;
     if (tau > T) return;
     const q = tau / T;
@@ -457,6 +593,11 @@ export class NetworkScene {
       const r1 = r * 1.15 + 6;
       const r2 = r1 + 18 + 26 * easeOut(q) + (j % 3) * 6;
       el('line', { x1: Math.cos(a) * r1, y1: Math.sin(a) * r1, x2: Math.cos(a) * r2, y2: Math.sin(a) * r2, class: 'speed-line' }, g);
+    }
+    // The storm did it: a lightning bolt strikes down onto the cable first.
+    if (zap && q < 0.6) {
+      const bolt = '0,-150 -14,-96 6,-92 -12,-40 8,-38 -4,0 22,-52 2,-56 18,-104 -2,-108 10,-150';
+      el('polygon', { points: bolt, class: 'bolt', opacity: (1 - q / 0.6).toFixed(3) }, g);
     }
   }
 

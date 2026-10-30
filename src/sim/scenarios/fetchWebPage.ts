@@ -7,6 +7,7 @@ import {
   HTTP_REQUEST,
   HTTP_RESPONSE_BASE64,
 } from './exampleComCapture';
+import { CERN_A_RECORDS, CERN_DNS_TTL, CERN_HOST, CERN_HTTP_REQUEST, CERN_HTTP_RESPONSE_BASE64, CERN_IP, CERN_PATH } from './infoCernCapture';
 
 /**
  * Addresses used by the "fetch a web page" scenario.
@@ -30,13 +31,32 @@ export const ADDR = {
 export interface FetchWebPageOptions {
   /** MSS the laptop advertises in its SYN. */
   mss?: number;
+  /**
+   * Which real page to fetch: example.com (932 bytes, one packet) or the first website ever,
+   * info.cern.ch/hypertext/WWW/TheProject.html (2450 bytes, so the reply needs more than one packet).
+   */
+  site?: 'example.com' | 'info.cern.ch';
+  /**
+   * A second visit soon after the first: the laptop still has the address in its DNS cache (within the record's
+   * TTL), and the laptop and home router still know each other's MAC addresses, so neither looks anything up.
+   */
+  revisit?: boolean;
 }
+
+/** What the scenario needs to know about each real site. */
+const SITES = {
+  'example.com': { url: 'http://example.com/', ip: CAPTURED_FROM_IP, request: HTTP_REQUEST, response: HTTP_RESPONSE_BASE64 },
+  'info.cern.ch': { url: `http://${CERN_HOST}${CERN_PATH}`, ip: CERN_IP, request: CERN_HTTP_REQUEST, response: CERN_HTTP_RESPONSE_BASE64 },
+} as const;
 
 export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
   const mss = opts.mss ?? 1460;
+  const site = SITES[opts.site ?? 'example.com'];
+  const server = { ip: site.ip, mac: ADDR.server.mac };
+  const revisit = !!opts.revisit;
   return {
     id: 'fetch-web-page',
-    title: 'Fetch http://example.com/',
+    title: `Fetch ${site.url}`,
     startDevice: 'laptop',
     tcp: { clientMss: mss, serverMss: 1460 },
     devices: [
@@ -51,8 +71,15 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           { network: '192.168.1.0', prefixLen: 24, iface: 'laptop.eth0' },
           { network: '0.0.0.0', prefixLen: 0, via: ADDR.homeLan.ip, iface: 'laptop.eth0' },
         ],
+        ...(revisit ? { arp: { [ADDR.homeLan.ip]: ADDR.homeLan.mac } } : {}),
         apps: [
-          { kind: 'browser', url: 'http://example.com/', resolver: ADDR.resolver.ip, request: ascii(HTTP_REQUEST) },
+          {
+            kind: 'browser',
+            url: site.url,
+            resolver: ADDR.resolver.ip,
+            request: ascii(site.request),
+            ...(revisit ? { knownAddress: site.ip } : {}),
+          },
         ],
       },
       {
@@ -70,7 +97,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           { network: '203.0.113.0', prefixLen: 24, iface: 'home.wan' },
           { network: '0.0.0.0', prefixLen: 0, via: ADDR.ispCustomer.ip, iface: 'home.wan' },
         ],
-        arp: { [ADDR.ispCustomer.ip]: ADDR.ispCustomer.mac },
+        arp: { [ADDR.ispCustomer.ip]: ADDR.ispCustomer.mac, ...(revisit ? { [ADDR.laptop.ip]: ADDR.laptop.mac } : {}) },
         nat: { inside: 'home.lan', outside: 'home.wan' },
         apps: [],
       },
@@ -91,11 +118,13 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           // Real Cloudflare prefixes containing example.com's addresses.
           { network: '104.16.0.0', prefixLen: 13, iface: 'isp.p2' },
           { network: '172.64.0.0', prefixLen: 13, iface: 'isp.p2' },
+          // CERN's own address block, where info.cern.ch lives.
+          { network: '188.184.0.0', prefixLen: 15, iface: 'isp.p2' },
         ],
         arp: {
           [ADDR.homeWan.ip]: ADDR.homeWan.mac,
           [ADDR.resolver.ip]: ADDR.resolver.mac,
-          [ADDR.server.ip]: ADDR.server.mac,
+          [server.ip]: server.mac,
         },
         apps: [],
       },
@@ -112,20 +141,23 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           {
             kind: 'dns-server',
             processing: 0.0003,
-            records: { 'example.com': { ips: [...CAPTURED_A_RECORDS], ttl: CAPTURED_DNS_TTL } },
+            records: {
+              'example.com': { ips: [...CAPTURED_A_RECORDS], ttl: CAPTURED_DNS_TTL },
+              [CERN_HOST]: { ips: [...CERN_A_RECORDS], ttl: CERN_DNS_TTL },
+            },
           },
         ],
       },
       {
         id: 'server',
         label: 'Web server',
-        sublabel: `example.com · ${ADDR.server.ip}`,
+        sublabel: `${new URL(site.url).hostname} · ${server.ip}`,
         kind: 'web-server',
         layout: { x: 1480, y: 735 },
-        ifaces: [{ id: 'server.eth0', name: 'eth0', mac: ADDR.server.mac, ip: ADDR.server.ip, prefixLen: 32 }],
+        ifaces: [{ id: 'server.eth0', name: 'eth0', mac: server.mac, ip: server.ip, prefixLen: 32 }],
         routes: [{ network: '0.0.0.0', prefixLen: 0, via: ADDR.ispToServer.ip, iface: 'server.eth0' }],
         arp: { [ADDR.ispToServer.ip]: ADDR.ispToServer.mac },
-        apps: [{ kind: 'http-server', processing: 0.0005, response: fromBase64(HTTP_RESPONSE_BASE64) }],
+        apps: [{ kind: 'http-server', processing: 0.0005, response: fromBase64(site.response) }],
       },
     ],
     links: [

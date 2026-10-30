@@ -4,6 +4,7 @@ import { el } from './svg';
 import { clamp01, easeInOut, easeOutBack, iso, lerp } from './project';
 import { NetworkScene, type Camera } from './NetworkScene';
 import { Sound } from './sound';
+import { Stickers, type Features } from './stickers';
 import { buildStory, type Chapter, type Story } from './story';
 import { buildTimeline, chapterAt, type Timeline } from './timeline';
 
@@ -12,14 +13,26 @@ import { buildTimeline, chapterAt, type Timeline } from './timeline';
  * the page. Tap a packet on a cable to knock it off; tap it anywhere else to pop it open.
  */
 
-const scenario = fetchWebPage();
+/** Stormy weather happens on the internet side; the home cable stays calm. */
+const STORM_LINKS = ['wan', 'bb1', 'bb2'];
+const STORM_LOSS = 0.15;
+let features: Features = { big: false, again: false, storm: false };
+try {
+  features = { ...features, ...(JSON.parse(localStorage.getItem('net.features') ?? '{}') as Partial<Features>) };
+} catch {
+  // Nothing remembered; start plain.
+}
 /** Packets the viewer knocked off, and how far along their cable they were (only for drawing the fall). */
 const faults: ManualFault[] = [];
 const knocks = new Map<string, number>();
+/** Each stormy run gets its own weather; knocking a packet off re-runs with the same weather. */
+let stormSeed = 1;
 let story: Story;
 let tl: Timeline;
 function simulate(): void {
-  story = buildStory(runScenario(scenario, { seed: 1, faults: { randomLoss: 0, manual: faults } }));
+  const scenario = fetchWebPage({ site: features.big ? 'info.cern.ch' : 'example.com', revisit: features.again });
+  const loss = features.storm ? STORM_LOSS : 0;
+  story = buildStory(runScenario(scenario, { seed: features.storm ? stormSeed : 1, faults: { randomLoss: loss, lossyLinks: STORM_LINKS, manual: faults } }));
   tl = buildTimeline(story, knocks);
 }
 simulate();
@@ -46,6 +59,29 @@ const cardText = el('text', { x: 12, y: 0, dy: '0.35em', 'text-anchor': 'middle'
 cardText.textContent = 'example.com';
 const hint = el('text', { class: 'hint', 'text-anchor': 'middle', x: 0, y: 44 }, card);
 hint.textContent = 'drag me onto the laptop';
+let cardPop = 9;
+
+// The sticker sheet above the card: switch features on by sticking them onto the card.
+const stickers = new Stickers(svg, features, (f) => {
+  features = f;
+  try {
+    localStorage.setItem('net.features', JSON.stringify(f));
+  } catch {
+    // Not remembered; fine.
+  }
+  showFeatures();
+  sound.play('snap');
+});
+function showFeatures(): void {
+  const site = features.big ? 'info.cern.ch' : 'example.com';
+  if (cardText.textContent !== site) {
+    cardText.textContent = site;
+    cardPop = 0;
+  }
+  scene.setStorm(features.storm ? STORM_LINKS : []);
+}
+showFeatures();
+cardPop = 9;
 
 const CHAPTERS: Record<Chapter, [string, string]> = { dns: ['1', 'Find the address'], hello: ['2', 'Say hello'], page: ['3', 'Get the page'] };
 const chapter = document.createElement('div');
@@ -79,6 +115,8 @@ const followBtn = button('◎ Follow packet', () => {
   camFree = false;
 });
 const againBtn = button('↺ Again', reset);
+// At the end: go round once more, now with the address remembered.
+const visitBtn = button('↻ Visit again', visitAgain);
 root.appendChild(controls);
 
 type Mode = 'idle' | 'drag' | 'spring' | 'drop' | 'play';
@@ -229,12 +267,29 @@ function reset(): void {
   peek = peekTarget = 0;
   cardPos = { ...home };
   camFree = false;
-  if (faults.length) {
-    faults.length = 0;
-    knocks.clear();
-    simulate();
-    scene.setStory(story, tl);
-  }
+}
+
+/** The card has gone into the laptop: run the simulation with the chosen stickers, fresh weather and no knocks. */
+function beginRun(): void {
+  faults.length = 0;
+  knocks.clear();
+  stormSeed = 1 + Math.floor(Math.random() * 1e6);
+  simulate();
+  scene.setStory(story, tl);
+  showFeatures();
+  mode = 'play';
+  v = 0;
+  cueDone = 0;
+  paused = false;
+  peek = peekTarget = 0;
+}
+
+/** Back to the start with the "Visit again" sticker on, and the card flies straight into the laptop. */
+function visitAgain(): void {
+  reset();
+  stickers.set('again', true);
+  anim = { from: { ...home }, to: scene.laptopDropPoint(), t: -0.5, dur: 0.6 };
+  mode = 'drop';
 }
 
 let last = performance.now();
@@ -249,7 +304,10 @@ function frame(now: number): void {
     const k = clamp01(anim.t / anim.dur);
     const e = mode === 'spring' ? easeOutBack(k) : easeInOut(k);
     cardPos = { sx: lerp(anim.from.sx, anim.to.sx, e), sy: lerp(anim.from.sy, anim.to.sy, e) };
-    if (k >= 1) mode = mode === 'drop' ? 'play' : 'idle';
+    if (k >= 1) {
+      if (mode === 'drop') beginRun();
+      else mode = 'idle';
+    }
   }
   if (mode === 'play' && !paused && !peekTarget) {
     const next = Math.min(tl.total, v + dt * speed);
@@ -260,11 +318,15 @@ function frame(now: number): void {
 
   const bob = mode === 'idle' ? Math.sin(clock * 2.4) * 4 : 0;
   const dropK = mode === 'drop' ? clamp01(anim.t / anim.dur) : 0;
-  const scale = mode === 'drop' ? 1 - 0.8 * dropK : mode === 'drag' ? 1.06 : 1;
+  cardPop += dt;
+  const pop = cardPop < 0.4 ? 1 + 0.12 * Math.sin((cardPop / 0.4) * Math.PI) : 1;
+  const scale = (mode === 'drop' ? 1 - 0.8 * dropK : mode === 'drag' ? 1.06 : 1) * pop;
   card.style.display = mode === 'play' ? 'none' : '';
   card.setAttribute('transform', `translate(${cardPos.sx.toFixed(1)} ${(cardPos.sy + bob).toFixed(1)}) scale(${scale.toFixed(3)})`);
   card.setAttribute('opacity', (1 - dropK).toFixed(3));
   hint.style.display = mode === 'idle' ? '' : 'none';
+  stickers.update(dt, home, { sx: cardPos.sx, sy: cardPos.sy + bob }, scale, 1 - dropK, mode !== 'play');
+  scene.renderStorm(clock);
 
   // The camera eases between the whole network (before the start) and a close follow of the packet,
   // unless the viewer has taken it over.
@@ -300,6 +362,8 @@ function frame(now: number): void {
   soundBtn.classList.toggle('off', sound.muted);
   soundBtn.setAttribute('aria-label', sound.muted ? 'Sound off' : 'Sound on');
   againBtn.classList.toggle('big', done);
+  visitBtn.hidden = !done;
+  visitBtn.classList.toggle('big', done);
   followBtn.hidden = !camFree;
   followBtn.textContent = mode === 'play' ? '◎ Follow packet' : '◎ Show all';
   // Before the start only the follow button can show (after the viewer moved the view).
@@ -335,6 +399,14 @@ if (import.meta.env.DEV) {
         return !!target;
       },
       reset,
+      /** Start a run straight away with these stickers (for screenshots). */
+      start(f: Partial<Features>): void {
+        for (const k of ['big', 'again', 'storm'] as const) stickers.set(k, !!f[k]);
+        beginRun();
+        stormSeed = 1;
+        simulate();
+        scene.setStory(story, tl);
+      },
     },
   });
 }

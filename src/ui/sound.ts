@@ -37,6 +37,10 @@ export class Sound {
         this.tone(c, t, 'sine', 420, 110, 0.25, 0.22);
         this.noise(c, t, 0.12, 0.12, 1200);
         break;
+      case 'zap':
+        this.noise(c, t, 0.18, 0.16, 6000);
+        this.tone(c, t, 'sawtooth', 1800, 160, 0.22, 0.07);
+        break;
       case 'surprise':
         this.tone(c, t, 'square', 880, 1320, 0.07, 0.05);
         this.tone(c, t + 0.09, 'square', 1320, 1760, 0.09, 0.05);
