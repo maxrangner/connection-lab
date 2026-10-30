@@ -43,8 +43,10 @@ let stormWindows: LossWindow[] = [];
 let decided: Record<string, boolean> = {};
 let story: Story;
 let tl: Timeline;
+/** Which device the card was dropped on: the laptop (Ethernet cable) or the phone (Wi-Fi). */
+let client: 'laptop' | 'phone' = 'laptop';
 function simulate(): void {
-  const scenario = fetchWebPage({ site: features.big ? 'info.cern.ch' : 'example.com', revisit: features.again, slow: features.slow });
+  const scenario = fetchWebPage({ site: features.big ? 'info.cern.ch' : 'example.com', revisit: features.again, slow: features.slow, from: client });
   const plan = { randomLoss: STORM_LOSS, lossyLinks: STORM_LINKS, lossWindows: stormWindows, decided, manual: faults };
   story = buildStory(runScenario(scenario, { seed: stormSeed, faults: plan }));
   tl = buildTimeline(story, knocks);
@@ -72,7 +74,7 @@ el('ellipse', { cx: -66, cy: 0, rx: 4, ry: 9, class: 'site-card-globe' }, cardBo
 const cardText = el('text', { x: 12, y: 0, dy: '0.35em', 'text-anchor': 'middle' }, cardBody);
 cardText.textContent = 'example.com';
 const hint = el('text', { class: 'hint', 'text-anchor': 'middle', x: 0, y: 44 }, card);
-hint.textContent = 'drag me onto the laptop';
+hint.textContent = 'drag me onto the laptop or the phone';
 let cardPop = 9;
 
 // The sticker sheet above the card: switch features on by sticking them onto the card.
@@ -218,17 +220,30 @@ card.addEventListener('pointermove', (e) => {
   if (mode !== 'drag') return;
   const p = toSvg(e);
   cardPos = { sx: p.sx + grab.dx, sy: p.sy + grab.dy };
-  const drop = scene.laptopDropPoint();
-  card.classList.toggle('over', Math.hypot(cardPos.sx - drop.sx, cardPos.sy - drop.sy) < 130);
+  card.classList.toggle('over', !!dropTarget());
 });
+
+/** The laptop or phone the card is over, if any. */
+function dropTarget(): { id: string; sx: number; sy: number } | null {
+  let best: { id: string; sx: number; sy: number } | null = null;
+  let bestD = 130;
+  for (const d of scene.dropPoints()) {
+    const dist = Math.hypot(cardPos.sx - d.sx, cardPos.sy - d.sy);
+    if (dist < bestD) {
+      best = d;
+      bestD = dist;
+    }
+  }
+  return best;
+}
 card.addEventListener('pointerup', () => {
   if (mode !== 'drag') return;
   card.classList.remove('held', 'over');
-  const drop = scene.laptopDropPoint();
-  const onLaptop = Math.hypot(cardPos.sx - drop.sx, cardPos.sy - drop.sy) < 130;
-  anim = { from: { ...cardPos }, to: onLaptop ? drop : { ...home }, t: 0, dur: onLaptop ? 0.35 : 0.5 };
-  mode = onLaptop ? 'drop' : 'spring';
-  if (onLaptop) {
+  const drop = dropTarget();
+  if (drop) client = drop.id === 'phone' ? 'phone' : 'laptop';
+  anim = { from: { ...cardPos }, to: drop ?? { ...home }, t: 0, dur: drop ? 0.35 : 0.5 };
+  mode = drop ? 'drop' : 'spring';
+  if (drop) {
     camFree = false;
     sound.play('pop');
   }
@@ -349,11 +364,12 @@ function beginRun(): void {
   peek = peekTarget = 0;
 }
 
-/** Back to the start with the "Visit again" sticker on, and the card flies straight into the laptop. */
+/** Back to the start with the "Visit again" sticker on, and the card flies straight into the same device. */
 function visitAgain(): void {
   reset();
   stickers.set('again', true);
-  anim = { from: { ...home }, to: scene.laptopDropPoint(), t: -0.5, dur: 0.6 };
+  const to = scene.dropPoints().find((d) => d.id === client) ?? home;
+  anim = { from: { ...home }, to, t: -0.5, dur: 0.6 };
   mode = 'drop';
 }
 
@@ -470,7 +486,8 @@ if (import.meta.env.DEV) {
         return tl.reactions;
       },
       /** Start a run straight away with these stickers (for screenshots). */
-      start(f: Partial<Features> & { storm?: boolean }): void {
+      start(f: Partial<Features> & { storm?: boolean; from?: 'laptop' | 'phone' }): void {
+        client = f.from ?? 'laptop';
         for (const k of ['big', 'again', 'slow'] as const) stickers.set(k, !!f[k]);
         if (!!f.storm !== stormy) toggleStorm();
         beginRun();

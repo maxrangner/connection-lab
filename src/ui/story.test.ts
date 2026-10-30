@@ -234,3 +234,34 @@ describe('satellite line in the timeline', () => {
     expect(top).toBeGreaterThan(5);
   });
 });
+
+describe('phone over Wi-Fi in the story', () => {
+  const s = buildStory(runScenario(fetchWebPage({ from: 'phone' }), { seed: 1, faults: { randomLoss: 0, manual: [] } }));
+  const tl = buildTimeline(s);
+
+  it('starts at the phone, never visits the laptop', () => {
+    expect(s.client).toBe('phone');
+    expect(s.trips[0]!.origin).toBe('phone');
+    expect(s.trips.some((t) => t.steps.some((x) => ('device' in x ? x.device : x.from + x.to).includes('laptop')))).toBe(false);
+  });
+
+  it('the home router takes off the Wi-Fi frame and puts on an Ethernet one', () => {
+    const get = s.trips.find((t) => t.card === 'GET /')!;
+    const frames = get.steps.flatMap((x) => (x.kind === 'wrap' || x.kind === 'unwrap') && x.frame ? [`${x.kind}:${x.device}:${x.frame.l2}:${x.frame.head}`] : []);
+    expect(frames.slice(0, 3)).toEqual(['wrap:phone:wifi:32', 'unwrap:home:wifi:32', 'wrap:home:ethernet:14']);
+  });
+
+  it('the packet turns smoothly onto the Wi-Fi hop and lies along the stations again', () => {
+    const angleDiff = (a: number, b: number): number => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
+    for (const trip of s.trips) {
+      let prev: number | null = null;
+      for (const seg of tl.segs.filter((x) => x.trip === trip && x.step.kind !== 'wait')) {
+        for (let i = 0; i <= 400; i++) {
+          const { angle } = packetPose(tl, seg, i / 400);
+          if (prev !== null) expect(angleDiff(angle, prev)).toBeLessThan(0.05);
+          prev = angle;
+        }
+      }
+    }
+  });
+});

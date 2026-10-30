@@ -97,7 +97,7 @@ export class Router extends Device {
     });
 
     // Outbound NAT (after routing): replace the private source with our public address and a port of our own.
-    if (nat && route.iface === nat.outside && inIface.id === nat.inside && proto) {
+    if (nat && route.iface === nat.outside && nat.inside.includes(inIface.id) && proto) {
       const sport = u16(bytes, ip.headerLen);
       const dport = u16(bytes, ip.headerLen + 2);
       const outside = this.iface(nat.outside);

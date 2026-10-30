@@ -19,7 +19,9 @@ import { CERN_A_RECORDS, CERN_DNS_TTL, CERN_HOST, CERN_HTTP_REQUEST, CERN_HTTP_R
  */
 export const ADDR = {
   laptop: { ip: '192.168.1.23', mac: '3c:22:fb:5a:10:e4' },
+  phone: { ip: '192.168.1.42', mac: 'f0:5c:77:3e:91:2a' },
   homeLan: { ip: '192.168.1.1', mac: 'a4:91:b1:7d:02:01' },
+  homeWlan: { ip: '192.168.1.1', mac: 'a4:91:b1:7d:02:03' },
   homeWan: { ip: '203.0.113.7', mac: 'a4:91:b1:7d:02:02' },
   ispCustomer: { ip: '203.0.113.1', mac: '00:1b:21:3a:4c:01' },
   ispToResolver: { ip: '198.51.100.1', mac: '00:1b:21:3a:4c:02' },
@@ -46,6 +48,8 @@ export interface FetchWebPageOptions {
    * about 36 000 km each way, so it takes about 280 ms one way (and is slower, 25 Mbit/s).
    */
   slow?: boolean;
+  /** Which device opens the page: the laptop on its Ethernet cable, or the phone over Wi-Fi. */
+  from?: 'laptop' | 'phone';
 }
 
 /** What the scenario needs to know about each real site. */
@@ -59,10 +63,25 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
   const site = SITES[opts.site ?? 'example.com'];
   const server = { ip: site.ip, mac: ADDR.server.mac };
   const revisit = !!opts.revisit;
+  const from = opts.from ?? 'laptop';
+  const browser = (gateway: { ip: string; mac: string }) => ({
+    ...(revisit ? { arp: { [gateway.ip]: gateway.mac } } : {}),
+    apps: [
+      {
+        kind: 'browser' as const,
+        url: site.url,
+        resolver: ADDR.resolver.ip,
+        request: ascii(site.request),
+        ...(revisit ? { knownAddress: site.ip } : {}),
+      },
+    ],
+  });
+  // On a revisit the router still remembers whichever device asked last time.
+  const remembered = from === 'phone' ? ADDR.phone : ADDR.laptop;
   return {
     id: 'fetch-web-page',
     title: `Fetch ${site.url}`,
-    startDevice: 'laptop',
+    startDevice: from,
     tcp: { clientMss: mss, serverMss: 1460 },
     devices: [
       {
@@ -76,16 +95,20 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           { network: '192.168.1.0', prefixLen: 24, iface: 'laptop.eth0' },
           { network: '0.0.0.0', prefixLen: 0, via: ADDR.homeLan.ip, iface: 'laptop.eth0' },
         ],
-        ...(revisit ? { arp: { [ADDR.homeLan.ip]: ADDR.homeLan.mac } } : {}),
-        apps: [
-          {
-            kind: 'browser',
-            url: site.url,
-            resolver: ADDR.resolver.ip,
-            request: ascii(site.request),
-            ...(revisit ? { knownAddress: site.ip } : {}),
-          },
+        ...(from === 'laptop' ? browser(ADDR.homeLan) : { apps: [] }),
+      },
+      {
+        id: 'phone',
+        label: 'Phone',
+        sublabel: ADDR.phone.ip,
+        kind: 'phone',
+        layout: { x: 600, y: 700 },
+        ifaces: [{ id: 'phone.wlan0', name: 'wlan0', mac: ADDR.phone.mac, ip: ADDR.phone.ip, prefixLen: 24, wifi: 'station' }],
+        routes: [
+          { network: '192.168.1.0', prefixLen: 24, iface: 'phone.wlan0' },
+          { network: '0.0.0.0', prefixLen: 0, via: ADDR.homeWlan.ip, iface: 'phone.wlan0' },
         ],
+        ...(from === 'phone' ? browser(ADDR.homeWlan) : { apps: [] }),
       },
       {
         id: 'home',
@@ -96,14 +119,18 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
         ifaces: [
           { id: 'home.lan', name: 'lan', mac: ADDR.homeLan.mac, ip: ADDR.homeLan.ip, prefixLen: 24 },
           { id: 'home.wan', name: 'wan', mac: ADDR.homeWan.mac, ip: ADDR.homeWan.ip, prefixLen: 24 },
+          // The built-in Wi-Fi access point. Real home routers bridge Wi-Fi and the Ethernet ports into one network
+          // with one address; here that bridge is two interfaces sharing 192.168.1.1, with a route to the phone.
+          { id: 'home.wlan', name: 'wlan', mac: ADDR.homeWlan.mac, ip: ADDR.homeWlan.ip, prefixLen: 24, wifi: 'ap' },
         ],
         routes: [
           { network: '192.168.1.0', prefixLen: 24, iface: 'home.lan' },
+          { network: ADDR.phone.ip, prefixLen: 32, iface: 'home.wlan' },
           { network: '203.0.113.0', prefixLen: 24, iface: 'home.wan' },
           { network: '0.0.0.0', prefixLen: 0, via: ADDR.ispCustomer.ip, iface: 'home.wan' },
         ],
-        arp: { [ADDR.ispCustomer.ip]: ADDR.ispCustomer.mac, ...(revisit ? { [ADDR.laptop.ip]: ADDR.laptop.mac } : {}) },
-        nat: { inside: 'home.lan', outside: 'home.wan' },
+        arp: { [ADDR.ispCustomer.ip]: ADDR.ispCustomer.mac, ...(revisit ? { [remembered.ip]: remembered.mac } : {}) },
+        nat: { inside: ['home.lan', 'home.wlan'], outside: 'home.wan' },
         apps: [],
       },
       {
@@ -167,6 +194,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
     ],
     links: [
       { id: 'lan', a: 'laptop.eth0', b: 'home.lan', bitsPerSecond: 1e9, delay: 5e-8, label: 'Ethernet cable · 1 Gbit/s', name: 'the Ethernet cable' },
+      { id: 'wlan', a: 'phone.wlan0', b: 'home.wlan', bitsPerSecond: 300e6, delay: 3e-8, label: 'Wi-Fi · 300 Mbit/s', name: 'the Wi-Fi' },
       opts.slow
         ? { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: 25e6, delay: 0.28, label: 'Satellite to ISP · 25 Mbit/s · 280 ms', name: 'the satellite link' }
         : { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: 1e9, delay: 0.002, label: 'Fiber to ISP · 1 Gbit/s · 2 ms', name: 'the fiber line to the ISP' },

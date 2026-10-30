@@ -1,5 +1,5 @@
 import { clamp01, easeInOut, lerpV, v3, type Vec3 } from './project';
-import type { Step, Story, Trip, Wrap } from './story';
+import type { Frame, Step, Story, Trip, Wrap } from './story';
 
 /**
  * Story → visual timeline. Every trip's steps get a start and end in visual seconds, one packet at a time.
@@ -62,18 +62,24 @@ export interface Timeline {
   isRouter(device: string): boolean;
   /** Arch height of a radio (satellite) hop by link id; flat cables are absent. */
   sky: Map<string, number>;
+  /** Wi-Fi links: the packet flies straight through the air between the two devices. */
+  air: Set<string>;
+  /** The device the page is opened on. */
+  client: string;
 }
 
 /** World positions (tiles) by device kind: the chain runs along +x, the DNS resolver branches off along −y. */
 const POS: Record<string, { x: number; y: number }> = {
   laptop: { x: 0, y: 0 },
+  // The phone sits in front of the home router, talking to it over Wi-Fi.
+  phone: { x: 8, y: 8 },
   'home-router': { x: 8, y: 0 },
   router: { x: 16, y: 0 },
   'web-server': { x: 24, y: 0 },
   'dns-resolver': { x: 16, y: -8 },
 };
 
-export const DEVICE_TOP: Record<string, number> = { laptop: 1.7, 'home-router': 0.55, router: 0.8, 'web-server': 2.6, 'dns-resolver': 1.1 };
+export const DEVICE_TOP: Record<string, number> = { laptop: 1.7, phone: 2.0, 'home-router': 0.55, router: 0.8, 'web-server': 2.6, 'dns-resolver': 1.1 };
 export const CABLE_Z = 0.55;
 /** Tray levels: 0 Ethernet, 1 IP, 2 transport, 3 app. */
 export const LEVEL: Record<Wrap | 'app', number> = { eth: 0, ip: 1, l4: 2, app: 3 };
@@ -99,6 +105,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
 
   // A slow link (a satellite hop, hundreds of ms each way) arches into the sky and takes longer to cross.
   const sky = new Map(story.links.filter((l) => l.delay >= SLOW_DELAY).map((l) => [l.id, SKY_HEIGHT] as const));
+  const air = new Set(story.links.filter((l) => l.medium === 'wifi').map((l) => l.id));
   const linkPace = (link: string): number => (sky.has(link) ? 2.4 : 1);
   const segs: Seg[] = [];
   const cues: Cue[] = [];
@@ -145,7 +152,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
           const k = tapped ?? 0.5;
           seg.knock = { k, travel, byYou: tapped !== undefined };
           d = k * travel + TUMBLE;
-          seg.p1 = travelPath(pos, trayZ, step.from, step.to, k, sky.get(step.link) ?? 0);
+          seg.p1 = travelPath(pos, trayZ, step.from, step.to, k, sky.get(step.link) ?? 0, air.has(step.link));
           break;
         }
       }
@@ -181,7 +188,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   });
 
   const isRouter = (device: string): boolean => (kind.get(device) ?? '').includes('router');
-  return { segs, reactions, cues, total: t, pos, kind, trayZ, isRouter, sky };
+  return { segs, reactions, cues, total: t, pos, kind, trayZ, isRouter, sky, air, client: story.client };
 }
 
 /**
@@ -199,8 +206,8 @@ function arrivalFace(trip: Trip, device: string, arrived: Set<string>, filled: S
     for (let m = 1; m < trip.part.n; m++) if (!filled.has(m)) return 'confused';
     return 'thumbs';
   }
-  if (trip.chapter === 'page' && trip.origin !== 'laptop') return 'love';
-  if (trip.origin !== 'laptop') return 'thumbs';
+  if (trip.chapter === 'page' && !trip.outward) return 'love';
+  if (!trip.outward) return 'thumbs';
   if (trip.chapter === 'hello' && trip.l4Label === 'ACK') return 'thumbs';
   return null;
 }
@@ -230,7 +237,7 @@ export function segAt(tl: Timeline, v: number): { seg: Seg; k: number } | null {
  * drops from its tray down to the port, and back again while it rises into the next device.
  */
 export function trayAngle(trip: Trip): number {
-  return trip.origin === 'laptop' ? 0 : Math.PI;
+  return trip.outward ? 0 : Math.PI;
 }
 
 /** Angle a turned the shortest way towards b, by t. */
@@ -251,6 +258,7 @@ export function travelPose(
   k: number,
   inTray = 0,
   sky = 0,
+  flies = false,
 ): { pos: Vec3; angle: number } {
   const a = pos.get(from) ?? { x: 0, y: 0 };
   const b = pos.get(to) ?? { x: 0, y: 0 };
@@ -260,7 +268,14 @@ export function travelPose(
   const cable = Math.atan2(uy, ux);
   const portA = v3(a.x + ux * PORT, a.y + uy * PORT, CABLE_Z);
   const portB = v3(b.x - ux * PORT, b.y - uy * PORT, CABLE_Z);
-  const middle = sky > 0 ? [portA, v3((a.x + b.x) / 2, (a.y + b.y) / 2, sky), portB] : [portA, portB];
+  // Over Wi-Fi there is no cable to drop to: the packet flies in a low arc from tray to tray.
+  const za = trayZ(from, 0);
+  const zb = trayZ(to, 0);
+  const middle = flies
+    ? [v3(a.x + (b.x - a.x) * 0.5, a.y + (b.y - a.y) * 0.5, Math.max(za, zb) + 1.2)]
+    : sky > 0
+      ? [portA, v3((a.x + b.x) / 2, (a.y + b.y) / 2, sky), portB]
+      : [portA, portB];
   const pts = [v3(a.x, a.y, trayZ(from, 0)), ...middle, v3(b.x, b.y, trayZ(to, 0))];
   const lens = pts.slice(1).map((p, i) => Math.hypot(p.x - pts[i]!.x, p.y - pts[i]!.y, p.z - pts[i]!.z));
   const total = lens.reduce((s, x) => s + x, 0);
@@ -293,18 +308,19 @@ export function travelPath(
   to: string,
   k: number,
   sky = 0,
+  flies = false,
 ): Vec3 {
-  return travelPose(pos, trayZ, from, to, k, 0, sky).pos;
+  return travelPose(pos, trayZ, from, to, k, 0, sky, flies).pos;
 }
 
 /** Packet centre and facing for a segment at progress k: move first, then the layer work happens in place. */
 export function packetPose(tl: Timeline, seg: Seg, k: number): { pos: Vec3; angle: number } {
   const s = seg.step;
   const inTray = trayAngle(seg.trip);
-  if (s.kind === 'travel') return travelPose(tl.pos, tl.trayZ, s.from, s.to, k, inTray, tl.sky.get(s.link) ?? 0);
+  if (s.kind === 'travel') return travelPose(tl.pos, tl.trayZ, s.from, s.to, k, inTray, tl.sky.get(s.link) ?? 0, tl.air.has(s.link));
   if (s.kind === 'lost' && seg.knock) {
     const local = k * (seg.t1 - seg.t0);
-    return travelPose(tl.pos, tl.trayZ, s.from, s.to, Math.min(seg.knock.k, local / seg.knock.travel), inTray, tl.sky.get(s.link) ?? 0);
+    return travelPose(tl.pos, tl.trayZ, s.from, s.to, Math.min(seg.knock.k, local / seg.knock.travel), inTray, tl.sky.get(s.link) ?? 0, tl.air.has(s.link));
   }
   return { pos: lerpV(seg.p0, seg.p1, easeInOut(clamp01(k / 0.4))), angle: inTray };
 }
@@ -379,4 +395,16 @@ export function seenSoFar(tl: Timeline, v: number): { decided: Record<string, bo
     now = Math.max(now, st.at);
   }
   return { decided, now };
+}
+
+/** The frame around the packet during a segment: the one being put on or taken off, else the last one put on. */
+export function frameAt(seg: Seg): Frame | undefined {
+  const s = seg.step;
+  if ((s.kind === 'wrap' || s.kind === 'unwrap') && s.frame) return s.frame;
+  let f: Frame | undefined;
+  for (const x of seg.trip.steps) {
+    if (x === s) break;
+    if (x.kind === 'wrap' && x.frame) f = x.frame;
+  }
+  return f ?? seg.trip.steps.find((x): x is Extract<Step, { kind: 'wrap' }> => x.kind === 'wrap' && !!x.frame)?.frame;
 }

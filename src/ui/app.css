@@ -554,3 +554,25 @@ body {
 .chapter-menu button.current {
   background: var(--paper-2);
 }
+
+/* Wi-Fi: radio through the air */
+.airwave {
+  fill: none;
+  stroke: #2a9d8f;
+  stroke-width: 2.5;
+  stroke-dasharray: 1 7;
+  stroke-linecap: round;
+  stroke-opacity: 0.7;
+}
+
+.ripple {
+  fill: none;
+  stroke: #2a9d8f;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-opacity: 0.55;
+}
+
+.sleeve.wifi path {
+  stroke: #1f7a6f;
+}

@@ -12,14 +12,20 @@ import { flagNames, TCP_ACK, TCP_FIN, TCP_SYN, type LayerPdu, type PacketInfo, t
  * is simply the next trip.
  */
 
-/** Pieces that go around the data: transport (TCP or UDP), IP, Ethernet. */
+/** Pieces that go around the data: transport (TCP or UDP), IP, and the link layer's frame (Ethernet or Wi-Fi). */
 export type Wrap = 'l4' | 'ip' | 'eth';
+/** Which kind of frame a link uses, with its real header and trailer sizes. */
+export interface Frame {
+  l2: 'ethernet' | 'wifi';
+  head: number;
+  tail: number;
+}
 export type Chapter = 'dns' | 'hello' | 'page';
 
 export type Step =
   | { kind: 'appear'; device: string }
-  | { kind: 'wrap'; device: string; layer: Wrap }
-  | { kind: 'unwrap'; device: string; layer: Wrap }
+  | { kind: 'wrap'; device: string; layer: Wrap; /** For the frame (layer 'eth'): which kind and its sizes. */ frame?: Frame }
+  | { kind: 'unwrap'; device: string; layer: Wrap; frame?: Frame }
   | { kind: 'nat'; device: string; which: 'from' | 'to'; before: string; after: string }
   | { kind: 'travel'; from: string; to: string; link: string; /** Sim time the frame was sent. */ at: number }
   /** Knocked off the cable on the way from `from` to `to`. */
@@ -32,6 +38,8 @@ export interface Trip {
   /** Sim time the packet was made. */
   start: number;
   origin: string;
+  /** Sent by the device the page is opened on (rather than coming back to it). */
+  outward: boolean;
   /** Text on the data card ("GET /", "example.com?"), or null for a packet with no data (SYN, ACK). */
   card: string | null;
   dataBytes: number;
@@ -55,9 +63,11 @@ export interface Trip {
 export interface Story {
   /** The site the browser asked for ("example.com"). */
   site: string;
+  /** The device the page is opened on (laptop or phone). */
+  client: string;
   devices: { id: string; label: string; kind: string }[];
   /** Cables, with their one-way delay in seconds. */
-  links: { id: string; a: string; b: string; delay: number }[];
+  links: { id: string; a: string; b: string; delay: number; medium: 'cable' | 'wifi' }[];
   trips: Trip[];
   /** The page's <title> if the page arrived, else null. */
   pageTitle: string | null;
@@ -119,12 +129,14 @@ function chosen(r: SimResult): PacketInfo[] {
   return out;
 }
 
-function trip(r: SimResult, p: PacketInfo, retried: Set<string>): Trip | null {
+function trip(r: SimResult, p: PacketInfo, retried: Set<string>, client: string): Trip | null {
   const steps: Step[] = [];
   let frame: PduSnapshot | undefined;
   let lost = false;
   let firstSeq = -1;
   let done = false;
+  /** The frame on the current link, so the receiver unwraps the same kind it was sent in. */
+  let onLink: Frame | undefined;
   for (const e of r.events as SimEvent[]) {
     if (done) break;
     if (!('packetId' in e) || e.packetId !== p.id) continue;
@@ -132,13 +144,18 @@ function trip(r: SimResult, p: PacketInfo, retried: Set<string>): Trip | null {
     switch (e.type) {
       case 'encapsulate': {
         const w = WRAP_OF_LAYER[e.layer];
-        if (w) steps.push({ kind: 'wrap', device: e.deviceId, layer: w });
-        if (w === 'eth') frame ??= r.pdus.get(e.pduId);
+        if (w === 'eth') {
+          const pdu = r.pdus.get(e.pduId);
+          frame ??= pdu;
+          const l2 = pdu?.layers[0];
+          onLink = l2 && { l2: e.protocol === 'wifi' ? 'wifi' : 'ethernet', head: l2.headerEnd - l2.start, tail: l2.end - l2.payloadEnd };
+          steps.push({ kind: 'wrap', device: e.deviceId, layer: w, frame: onLink });
+        } else if (w) steps.push({ kind: 'wrap', device: e.deviceId, layer: w });
         break;
       }
       case 'decapsulate': {
         const w = WRAP_OF_LAYER[e.layer];
-        if (w) steps.push({ kind: 'unwrap', device: e.deviceId, layer: w });
+        if (w) steps.push({ kind: 'unwrap', device: e.deviceId, layer: w, ...(w === 'eth' && onLink ? { frame: onLink } : {}) });
         if (w === 'l4') done = true;
         break;
       }
@@ -168,7 +185,7 @@ function trip(r: SimResult, p: PacketInfo, retried: Set<string>): Trip | null {
   }
   if (!frame || !steps.some((s) => s.kind === 'travel' || s.kind === 'lost')) return null;
 
-  const eth = layer(frame, 'ethernet')!;
+  const eth = layer(frame, 'ethernet') ?? layer(frame, 'wifi')!;
   const ip = layer(frame, 'ipv4')!;
   const l4 = layer(frame, 'tcp') ?? layer(frame, 'udp')!;
   const app = layer(frame, 'http') ?? layer(frame, 'dns');
@@ -189,6 +206,7 @@ function trip(r: SimResult, p: PacketInfo, retried: Set<string>): Trip | null {
     chapter: p.kind === 'dns' ? 'dns' : dataBytes > 0 ? 'page' : 'hello',
     start: p.createdAt,
     origin,
+    outward: origin === client,
     card,
     dataBytes,
     l4: isTcp ? 'tcp' : 'udp',
@@ -219,18 +237,27 @@ function dnsAnswer(r: SimResult, action: 'dns-answer' | 'dns-cache-hit' = 'dns-a
 
 export function buildStory(r: SimResult): Story {
   const retried = new Set<string>();
+  const start = r.events.find((e) => e.type === 'app' && e.action === 'start');
+  const client = start?.type === 'app' ? start.deviceId : r.scenario.startDevice;
   const trips = chosen(r)
-    .map((p) => trip(r, p, retried))
+    .map((p) => trip(r, p, retried, client))
     .filter((t): t is Trip => !!t)
     .sort((a, b) => a.start - b.start);
   numberParts(trips, r);
-  const start = r.events.find((e) => e.type === 'app' && e.action === 'start');
   const url = start?.type === 'app' ? String(start.info?.url ?? '') : '';
+  const wifiIfaces = new Set(r.scenario.devices.flatMap((d) => d.ifaces.filter((i) => i.wifi).map((i) => i.id)));
   const ifaceDevice = new Map(r.scenario.devices.flatMap((d) => d.ifaces.map((i) => [i.id, d.id] as const)));
   return {
     devices: r.scenario.devices.map((d) => ({ id: d.id, label: d.label, kind: d.kind })),
-    links: r.scenario.links.map((l) => ({ id: l.id, a: ifaceDevice.get(l.a) ?? l.a, b: ifaceDevice.get(l.b) ?? l.b, delay: l.delay })),
+    links: r.scenario.links.map((l) => ({
+      id: l.id,
+      a: ifaceDevice.get(l.a) ?? l.a,
+      b: ifaceDevice.get(l.b) ?? l.b,
+      delay: l.delay,
+      medium: wifiIfaces.has(l.a) || wifiIfaces.has(l.b) ? ('wifi' as const) : ('cable' as const),
+    })),
     site: url ? new URL(url).hostname : '',
+    client,
     trips,
     pageTitle: pageTitle(r),
     dnsAnswer: dnsAnswer(r),
@@ -243,7 +270,7 @@ export function buildStory(r: SimResult): Story {
  * its number). The first part's card says "200 OK 1/2", the rest just "2/2".
  */
 function numberParts(trips: Trip[], r: SimResult): void {
-  const parts = trips.filter((t) => t.chapter === 'page' && t.origin !== 'laptop');
+  const parts = trips.filter((t) => t.chapter === 'page' && !t.outward);
   const seqOf = (t: Trip): number => r.packets.get(t.packetId)?.tcp?.relSeq ?? 0;
   const seqs = [...new Set(parts.map(seqOf))].sort((a, b) => a - b);
   if (seqs.length < 2) return;

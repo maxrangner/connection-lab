@@ -1,4 +1,4 @@
-export type Protocol = 'ethernet' | 'arp' | 'ipv4' | 'udp' | 'tcp' | 'dns' | 'http';
+export type Protocol = 'ethernet' | 'wifi' | 'arp' | 'ipv4' | 'udp' | 'tcp' | 'dns' | 'http';
 
 /**
  * Layer numbers in the 5-layer TCP/IP model: 1 physical, 2 link, 3 network, 4 transport, 5 application.
@@ -8,6 +8,7 @@ export type LayerNum = 1 | 2 | 3 | 4 | 5;
 
 export const PROTOCOL_LAYER: Record<Protocol, LayerNum> = {
   ethernet: 2,
+  wifi: 2,
   arp: 2, // ARP rides directly in Ethernet; it serves layer 3 but is carried as a link-layer payload.
   ipv4: 3,
   udp: 4,

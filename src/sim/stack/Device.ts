@@ -5,6 +5,7 @@ import type { DeviceSpec, IfaceSpec, RouteSpec } from '../model';
 import { ARP_REPLY, ARP_REQUEST, buildArp, parseArp } from '../proto/arp';
 import { buildEthernet, ETHERTYPE_ARP, ETHERTYPE_IPV4, parseEthernet } from '../proto/ethernet';
 import { parseIpv4 } from '../proto/ipv4';
+import { buildWifi, parseWifi } from '../proto/wifi';
 import type { World } from './World';
 
 const ARP_TIMEOUT = 1; // seconds between ARP retries
@@ -26,6 +27,8 @@ export abstract class Device {
   protected readonly rng: Rng;
   private pendingArp = new Map<Ip4, PendingArp>();
   private timerCounter = 0;
+  /** 802.11 sequence numbers, one counter per Wi-Fi interface. */
+  private wifiSeq = new Map<string, number>();
 
   constructor(
     readonly world: World,
@@ -65,26 +68,29 @@ export abstract class Device {
     const sim = this.sim;
     const link = this.world.ifaceLink.get(ifaceId);
     sim.emit({ type: 'rx', deviceId: this.id, iface: ifaceId, linkId: link?.spec.id ?? '', packetId, frameId });
-    const eth = parseEthernet(frame);
     const iface = this.iface(ifaceId);
+    const l2 = iface.wifi ? 'wifi' : 'ethernet';
+    const eth = iface.wifi ? parseWifi(frame) : parseEthernet(frame);
     if (!eth.fcsValid) {
       sim.emit({ type: 'drop', packetId, reason: 'bad-checksum', deviceId: this.id, frameId });
       return;
     }
-    if (eth.dst !== iface.mac && eth.dst !== BROADCAST_MAC) {
+    // Over Wi-Fi the radio receiver (address 1) must be us too.
+    const heard = !('addr1' in eth) || eth.addr1 === iface.mac || eth.addr1 === BROADCAST_MAC;
+    if (!heard || (eth.dst !== iface.mac && eth.dst !== BROADCAST_MAC)) {
       sim.emit({ type: 'drop', packetId, reason: 'not-for-me', deviceId: this.id, frameId });
       return;
     }
     if (eth.type === ETHERTYPE_ARP) {
       const arpBytes = frame.slice(eth.payloadStart, eth.payloadStart + 28);
       const pduId = sim.pdu(packetId, arpBytes, 'arp');
-      sim.emit({ type: 'decapsulate', deviceId: this.id, packetId, layer: 2, protocol: 'ethernet', pduId });
+      sim.emit({ type: 'decapsulate', deviceId: this.id, packetId, layer: 2, protocol: l2, pduId });
       this.onArp(iface, arpBytes, packetId);
     } else if (eth.type === ETHERTYPE_IPV4) {
       const ip = parseIpv4(frame, eth.payloadStart);
       const ipBytes = frame.slice(eth.payloadStart, eth.payloadStart + ip.totalLength);
       const pduId = sim.pdu(packetId, ipBytes, 'ipv4');
-      sim.emit({ type: 'decapsulate', deviceId: this.id, packetId, layer: 2, protocol: 'ethernet', pduId });
+      sim.emit({ type: 'decapsulate', deviceId: this.id, packetId, layer: 2, protocol: l2, pduId });
       if (!ip.checksumValid) {
         sim.emit({ type: 'drop', packetId, reason: 'bad-checksum', deviceId: this.id });
         return;
@@ -199,10 +205,29 @@ export abstract class Device {
     }
   }
 
+  /** The access point a station's Wi-Fi interface is connected to: the interface at the other end of its link. */
+  private bssid(iface: IfaceSpec): Mac {
+    const link = this.world.ifaceLink.get(iface.id);
+    const other = link && (link.spec.a === iface.id ? link.spec.b : link.spec.a);
+    const owner = other ? this.world.ifaceOwner.get(other) : undefined;
+    return owner && other ? owner.iface(other).mac : BROADCAST_MAC;
+  }
+
   protected sendFrame(iface: IfaceSpec, dstMac: Mac, type: number, payload: Uint8Array, packetId: string): void {
-    const frame = buildEthernet({ dst: dstMac, src: iface.mac, type }, payload);
-    const frameId = this.sim.pdu(packetId, frame, 'ethernet');
-    this.sim.emit({ type: 'encapsulate', deviceId: this.id, packetId, layer: 2, protocol: 'ethernet', pduId: frameId });
+    let frame: Uint8Array;
+    if (iface.wifi) {
+      const seq = this.wifiSeq.get(iface.id) ?? 0;
+      this.wifiSeq.set(iface.id, (seq + 1) & 0xfff);
+      // Going up, address 1 is the access point and 3 the real destination; coming down, 1 is the phone and 3 the sender.
+      // Here the access point is built into the router, so the access point's MAC is the router's own (its BSSID).
+      const up = iface.wifi === 'station';
+      frame = buildWifi({ toAp: up, addr1: up ? this.bssid(iface) : dstMac, addr2: iface.mac, addr3: up ? dstMac : iface.mac, seq, type }, payload);
+    } else {
+      frame = buildEthernet({ dst: dstMac, src: iface.mac, type }, payload);
+    }
+    const protocol = iface.wifi ? 'wifi' : 'ethernet';
+    const frameId = this.sim.pdu(packetId, frame, protocol);
+    this.sim.emit({ type: 'encapsulate', deviceId: this.id, packetId, layer: 2, protocol, pduId: frameId });
     const link = this.world.ifaceLink.get(iface.id);
     if (!link) throw new Error(`${iface.id} has no link`);
     link.transmit(iface.id, frame, packetId, frameId);

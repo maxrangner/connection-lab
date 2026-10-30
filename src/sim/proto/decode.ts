@@ -5,6 +5,7 @@ import { describeEthernet, ETHERTYPE_ARP, ETHERTYPE_IPV4, parseEthernet } from '
 import { describeHttp } from './http';
 import { describeIpv4, IPPROTO_TCP, IPPROTO_UDP, parseIpv4 } from './ipv4';
 import { describeTcp, parseTcp } from './tcp';
+import { describeWifi, parseWifi } from './wifi';
 import type { LayerPdu, Protocol } from './types';
 import { describeUdp, parseUdp } from './udp';
 
@@ -35,6 +36,16 @@ function walk(b: Uint8Array, proto: Protocol, o: number, end: number, ctx: Decod
       if (eth.type === ETHERTYPE_ARP) innerEnd = walk(b, 'arp', eth.payloadStart, eth.payloadEnd, ctx, out);
       else if (eth.type === ETHERTYPE_IPV4) innerEnd = walk(b, 'ipv4', eth.payloadStart, eth.payloadEnd, ctx, out);
       out[idx] = describeEthernet(b, innerEnd);
+      return b.length;
+    }
+    case 'wifi': {
+      const w = parseWifi(b);
+      const idx = out.length;
+      out.push(describeWifi(b));
+      let innerEnd = w.payloadEnd;
+      if (w.type === ETHERTYPE_ARP) innerEnd = walk(b, 'arp', w.payloadStart, w.payloadEnd, ctx, out);
+      else if (w.type === ETHERTYPE_IPV4) innerEnd = walk(b, 'ipv4', w.payloadStart, w.payloadEnd, ctx, out);
+      out[idx] = describeWifi(b, innerEnd);
       return b.length;
     }
     case 'arp': {

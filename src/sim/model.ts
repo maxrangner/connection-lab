@@ -1,6 +1,6 @@
 import type { Ip4, Mac } from './bytes/addr';
 
-export type DeviceKind = 'laptop' | 'home-router' | 'router' | 'dns-resolver' | 'web-server';
+export type DeviceKind = 'laptop' | 'phone' | 'home-router' | 'router' | 'dns-resolver' | 'web-server';
 
 export interface IfaceSpec {
   /** Globally unique, e.g. "laptop.eth0". */
@@ -9,6 +9,8 @@ export interface IfaceSpec {
   mac: Mac;
   ip: Ip4;
   prefixLen: number;
+  /** A Wi-Fi radio instead of an Ethernet port: the access point side or a station (phone) side. */
+  wifi?: 'ap' | 'station';
 }
 
 export interface RouteSpec {
@@ -53,7 +55,8 @@ export interface DeviceSpec {
   routes: RouteSpec[];
   /** Pre-filled ARP cache entries (e.g. on point-to-point backbone links). */
   arp?: Record<Ip4, Mac>;
-  nat?: { inside: string; outside: string };
+  /** Interfaces on the home side (Ethernet and Wi-Fi) and the one facing the ISP. */
+  nat?: { inside: string[]; outside: string };
   apps: AppSpec[];
   /** Map position for the UI, in scene units. */
   layout: { x: number; y: number };

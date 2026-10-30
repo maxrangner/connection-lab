@@ -3,9 +3,9 @@ import { box, cylinder, line, rbox, tile } from './prims';
 import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, iso, lerp, U, v3, type Vec3 } from './project';
 import { shade } from './shade';
 import type { Story, Trip, Wrap } from './story';
-import { addressBefore, DEVICE_TOP, FACE_EMOJI, LEVEL, packetPos, packetPose, segAt, trayOpacity, wrapsBefore, type Seg, type Timeline } from './timeline';
+import { addressBefore, DEVICE_TOP, FACE_EMOJI, frameAt, LEVEL, packetPos, packetPose, segAt, trayOpacity, wrapsBefore, type Seg, type Timeline } from './timeline';
 
-export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', eth: '#e08b33' } as const;
+export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', eth: '#e08b33', wifi: '#2a9d8f' } as const;
 const DEVICE = '#d9d0c2';
 const BURST = '#ffd84a';
 const WAIT = '#c2562f';
@@ -15,8 +15,11 @@ const TILES_PER_BYTE = 0.04;
 type Layer = Wrap | 'app';
 const SECTION: Record<Layer, { d: number; h: number }> = { app: { d: 1.0, h: 0.72 }, l4: { d: 1.18, h: 0.88 }, ip: { d: 1.34, h: 1.02 }, eth: { d: 1.62, h: 1.18 } };
 
-const colorOf = (layer: Layer, trip: Trip): string => (layer === 'l4' ? COLOR[trip.l4] : COLOR[layer]);
-const layerName = (layer: Layer, trip: Trip): string => ({ app: 'App', l4: trip.l4 === 'udp' ? 'UDP' : 'TCP', ip: 'IP', eth: 'Ethernet' })[layer];
+type L2 = 'ethernet' | 'wifi';
+const colorOf = (layer: Layer, trip: Trip, l2: L2 = 'ethernet'): string =>
+  layer === 'l4' ? COLOR[trip.l4] : layer === 'eth' && l2 === 'wifi' ? COLOR.wifi : COLOR[layer];
+const layerName = (layer: Layer, trip: Trip, l2: L2 = 'ethernet'): string =>
+  ({ app: 'App', l4: trip.l4 === 'udp' ? 'UDP' : 'TCP', ip: 'IP', eth: l2 === 'wifi' ? 'Wi-Fi' : 'Ethernet' })[layer];
 const cardFont = (label: string): number => (label.length <= 7 ? 13 : label.length <= 14 ? 10.5 : 9);
 const cardLen = (trip: Trip): number => {
   const label = trip.card ?? '';
@@ -73,6 +76,18 @@ interface DeviceView {
   g: SVGGElement;
   trays: SVGGElement;
   l4Name: SVGTextElement | null;
+  /** The frame tray (Ethernet or Wi-Fi) and its name. */
+  l2Tray: SVGPathElement | null;
+  l2Name: SVGTextElement | null;
+}
+
+interface Screen {
+  page: SVGGElement;
+  title: SVGTextElement;
+  dns: SVGGElement;
+  dnsName: SVGTextElement;
+  dnsAddr: SVGTextElement;
+  fail: SVGTextElement;
 }
 
 export interface Camera {
@@ -91,13 +106,16 @@ export class NetworkScene {
   /** Emoji statuses over devices; on top of everything. */
   private readonly moods: SVGGElement;
   private readonly fx: SVGGElement;
-  private readonly screen: { page: SVGGElement; title: SVGTextElement; dns: SVGGElement; dnsName: SVGTextElement; dnsAddr: SVGTextElement; fail: SVGTextElement } | null = null;
+  /** What the laptop and the phone show on their screens. */
+  private readonly screens = new Map<string, Screen>();
   /** Cables that crackle in stormy weather, and the layer they crackle on. */
   private stormy: { a: Vec3; b: Vec3 }[] = [];
   private readonly storm: SVGGElement;
   /** Where a page that comes in several parts is put back together, beside the laptop. */
   private readonly rack: SVGGElement;
   private overview = { x: 0, y: 0, w: 1, h: 1 };
+  /** The kind of frame around the packet being drawn. */
+  private l2: L2 = 'ethernet';
   private readonly cables: SVGGElement;
   /** Each drawn cable (or satellite hop) and the devices at its ends, to grey out the unused ones. */
   private cableViews: { g: SVGGElement; a: string; b: string }[] = [];
@@ -129,12 +147,12 @@ export class NetworkScene {
       const trays = el('g', { class: 'trays', opacity: 0 }, devs);
       const g = el('g', { class: 'device' }, devs);
       const screen = this.buildDevice(g, d.kind, p.x, p.y);
-      if (screen) this.screen = screen;
-      const l4Name = this.buildTrays(trays, d.id, p.x, p.y);
+      if (screen) this.screens.set(d.id, screen);
+      const { l4Name, l2Tray, l2Name } = this.buildTrays(trays, d.id, p.x, p.y);
       const s = iso(p.x, p.y + 1.9, 0);
       const name = el('text', { class: 'device-name', 'text-anchor': 'middle', x: s.sx.toFixed(1), y: (s.sy + 26).toFixed(1) }, g);
       name.textContent = d.label;
-      this.devices.push({ id: d.id, g, trays, l4Name });
+      this.devices.push({ id: d.id, g, trays, l4Name, l2Tray, l2Name });
     }
     this.fit();
     this.setStory(story, tl);
@@ -146,18 +164,18 @@ export class NetworkScene {
     this.tl = tl;
     this.buildCables();
     this.used = new Set(story.trips.flatMap((t) => t.steps.flatMap((s) => ('device' in s ? [s.device] : [s.from, s.to]))));
-    if (this.screen) {
+    for (const screen of this.screens.values()) {
       // A long title wraps onto two lines at the space nearest the middle.
       const t = story.pageTitle ?? '';
       const cut = t.length > 14 ? [...t.matchAll(/ /g)].map((m) => m.index).sort((a, b) => Math.abs(a - t.length / 2) - Math.abs(b - t.length / 2))[0] : undefined;
-      this.screen.title.replaceChildren();
+      screen.title.replaceChildren();
       const lines = cut === undefined ? [t] : [t.slice(0, cut), t.slice(cut + 1)];
       lines.forEach((line, i) => {
-        const span = el('tspan', { x: this.screen!.title.getAttribute('x') ?? 0, dy: i ? '1.15em' : lines.length > 1 ? '-0.4em' : '0' }, this.screen!.title);
+        const span = el('tspan', { x: screen.title.getAttribute('x') ?? 0, dy: i ? '1.15em' : lines.length > 1 ? '-0.4em' : '0' }, screen.title);
         span.textContent = line;
       });
-      this.screen.dnsName.textContent = story.site;
-      this.screen.dnsAddr.textContent = story.remembered ?? story.dnsAnswer ?? '';
+      screen.dnsName.textContent = story.site;
+      screen.dnsAddr.textContent = story.remembered ?? story.dnsAnswer ?? '';
     }
   }
 
@@ -171,7 +189,22 @@ export class NetworkScene {
       if (!a || !b) continue;
       const g = el('g', { class: 'link' }, this.cables);
       const sky = this.tl.sky.get(l.id);
-      if (sky) {
+      if (this.tl.air.has(l.id)) {
+        const za = (DEVICE_TOP[this.tl.kind.get(l.a) ?? ''] ?? 1) + 0.2;
+        const zb = (DEVICE_TOP[this.tl.kind.get(l.b) ?? ''] ?? 1) + 0.9;
+        const pts: string[] = [];
+        for (let i = 0; i <= 20; i++) {
+          const q = i / 20;
+          const p = iso(lerp(a.x, b.x, q), lerp(a.y, b.y, q), lerp(za, zb, q) + Math.sin(Math.PI * q) * 1.4);
+          pts.push(`${p.sx.toFixed(1)},${p.sy.toFixed(1)}`);
+        }
+        el('polyline', { points: pts.join(' '), class: 'airwave' }, g);
+        // Radio ripples at both ends.
+        for (const [p, z] of [[a, za], [b, zb]] as const) {
+          const c = iso(p.x, p.y, z + 0.3);
+          for (const r of [7, 12, 17]) el('path', { d: `M${(c.sx - r).toFixed(1)} ${(c.sy - r * 0.2).toFixed(1)}A${r} ${r} 0 0 1 ${(c.sx + r).toFixed(1)} ${(c.sy - r * 0.2).toFixed(1)}`, class: 'ripple' }, g);
+        }
+      } else if (sky) {
         const top = v3((a.x + b.x) / 2, (a.y + b.y) / 2, sky);
         const len = Math.hypot(b.x - a.x, b.y - a.y);
         const ux = (b.x - a.x) / len;
@@ -261,7 +294,7 @@ export class NetworkScene {
 
   /** Slot n (1-based) of the reassembly rack, as a world point the arriving card flies into. */
   private rackSlot(n: number, of: number): Vec3 {
-    const lap = this.tl.pos.get('laptop') ?? { x: 0, y: 0 };
+    const lap = this.tl.pos.get(this.tl.client) ?? { x: 0, y: 0 };
     // Screen-right in world units is (+0.5, −0.5) per 28 px; slots sit 52 px apart.
     const step = 52 / U;
     const o = (n - 1 - (of - 1) / 2) * step;
@@ -278,7 +311,7 @@ export class NetworkScene {
       if (!part) continue;
       of = part.of;
       shownFrom = Math.min(shownFrom, s.t0);
-      if (s.step.kind === 'read' && this.tl.kind.get(s.step.device) === 'laptop' && !filled.has(part.n)) filled.set(part.n, lerp(s.t0, s.t1, 0.92));
+      if (s.step.kind === 'read' && s.step.device === this.tl.client && !filled.has(part.n)) filled.set(part.n, lerp(s.t0, s.t1, 0.92));
     }
     return of > 1 ? { of, filled, shownFrom } : null;
   }
@@ -317,10 +350,12 @@ export class NetworkScene {
     return p.x + p.y;
   }
 
-  /** Screen point (in SVG units) where the laptop accepts a dropped card. */
-  laptopDropPoint(): { sx: number; sy: number } {
-    const p = this.tl.pos.get('laptop') ?? { x: 0, y: 0 };
-    return iso(p.x, p.y - 0.3, 1.0);
+  /** Screen points (in SVG units) where the laptop and the phone accept a dropped card. */
+  dropPoints(): { id: string; sx: number; sy: number }[] {
+    return ['laptop', 'phone'].flatMap((id) => {
+      const p = this.tl.pos.get(id);
+      return p ? [{ id, ...iso(p.x, p.y - 0.3, id === 'phone' ? 1.4 : 1.0) }] : [];
+    });
   }
 
   private fit(): void {
@@ -370,7 +405,7 @@ export class NetworkScene {
   followCamera(v: number): Camera {
     const hit = segAt(this.tl, v);
     let p: Vec3;
-    const laptop = this.tl.pos.get('laptop') ?? { x: 0, y: 0 };
+    const laptop = this.tl.pos.get(this.tl.client) ?? { x: 0, y: 0 };
     const mood = this.tl.reactions.find((r) => v >= r.t && v < r.t + 1.1);
     if (mood && (!hit || v < hit.seg.t0)) {
       // Between trips: stay on whoever is reacting.
@@ -381,7 +416,7 @@ export class NetworkScene {
       p = v3(d.x, d.y, (DEVICE_TOP[this.tl.kind.get(hit.seg.step.device) ?? ''] ?? 1) + 1.5);
     } else if (hit) {
       p = packetPos(this.tl, hit.seg, hit.k);
-      if (hit.seg.step.kind === 'read' && this.tl.kind.get(hit.seg.step.device) === 'laptop') p = v3(p.x, p.y, lerp(p.z, 1.2, hit.k));
+      if (hit.seg.step.kind === 'read' && hit.seg.step.device === this.tl.client) p = v3(p.x, p.y, lerp(p.z, 1.2, hit.k));
     } else {
       p = v3(laptop.x, laptop.y, 1.6);
     }
@@ -397,33 +432,48 @@ export class NetworkScene {
     this.svg.setAttribute('viewBox', `${(c.cx - w / 2).toFixed(1)} ${(c.cy - h / 2).toFixed(1)} ${w.toFixed(1)} ${h.toFixed(1)}`);
   }
 
-  private buildDevice(g: SVGGElement, kind: string, x: number, y: number): NetworkScene['screen'] {
+  /**
+   * A screen on a vertical face at world point `a` (its top-left corner, face looking towards +y), `w` × `h` px.
+   * Content is laid out for the laptop's 66 × 37 px screen and scaled to fit.
+   */
+  private buildScreen(g: SVGGElement, a: { sx: number; sy: number }, w: number, h: number): Screen {
+    const face = el('g', { transform: faceTf(a, '+y') }, g);
+    el('rect', { x: 0, y: 0, width: w, height: h, fill: '#3b4049' }, face);
+    const W = 2.36 * U;
+    const H = 1.32 * U;
+    const k = Math.min(w / W, h / H);
+    const page = el('g', { class: 'page', opacity: 0 }, face);
+    el('rect', { x: 0, y: 0, width: w, height: h, fill: '#fbf8f2' }, page);
+    const content = (parent: SVGGElement): SVGGElement =>
+      el('g', { transform: `translate(${((w - W * k) / 2).toFixed(2)} ${((h - H * k) / 2).toFixed(2)}) scale(${k.toFixed(3)})` }, parent);
+    const dns = el('g', { class: 'screen-dns', opacity: 0 }, face);
+    const dc = content(dns);
+    const name = el('text', { x: W / 2, y: H * 0.38, class: 'screen-small', 'text-anchor': 'middle' }, dc);
+    const dnsAddr = el('text', { x: W / 2, y: H * 0.62, class: 'screen-addr', 'text-anchor': 'middle' }, dc);
+    const pc = content(page);
+    const title = el('text', { x: W / 2, y: 0.5 * U, class: 'page-title', 'text-anchor': 'middle' }, pc);
+    for (const [i, lw] of [0.8, 0.62, 0.7].entries()) {
+      el('rect', { x: (W - W * lw) / 2, y: 0.78 * U + i * 6, width: W * lw, height: 2.4, rx: 1.2, fill: '#c9c1b5' }, pc);
+    }
+    const fail = el('text', { x: w / 2, y: h / 2, dy: '0.35em', class: 'screen-fail', 'text-anchor': 'middle', opacity: 0 }, face);
+    fail.textContent = '✗';
+    return { page, title, dns, dnsName: name, dnsAddr, fail };
+  }
+
+  private buildDevice(g: SVGGElement, kind: string, x: number, y: number): Screen | null {
     const neutral = { color: DEVICE, cls: 'dev-body' };
     switch (kind) {
       case 'laptop': {
         box(g, { x: x - 1.3, y: y - 0.9, z: 0, w: 2.6, d: 1.8, h: 0.14, ...neutral });
         box(g, { x: x - 1.3, y: y - 1.05, z: 0.14, w: 2.6, d: 0.1, h: 1.56, ...neutral });
         // Screen glass on the face towards the viewer; what it shows changes as the story goes on.
-        const a = iso(x - 1.18, y - 0.95, 1.6);
-        const b = iso(x + 1.18, y - 0.95, 1.6);
-        const c = iso(x + 1.18, y - 0.95, 0.28);
-        const d = iso(x - 1.18, y - 0.95, 0.28);
-        el('path', { d: `M${a.sx} ${a.sy}L${b.sx} ${b.sy}L${c.sx} ${c.sy}L${d.sx} ${d.sy}Z`, fill: '#3b4049' }, g);
-        const w = 2.36 * U;
-        const h = 1.32 * U;
-        const face = el('g', { transform: faceTf(a, '+y') }, g);
-        const dns = el('g', { class: 'screen-dns', opacity: 0 }, face);
-        const name = el('text', { x: w / 2, y: h * 0.38, class: 'screen-small', 'text-anchor': 'middle' }, dns);
-        const dnsAddr = el('text', { x: w / 2, y: h * 0.62, class: 'screen-addr', 'text-anchor': 'middle' }, dns);
-        const page = el('g', { class: 'page', opacity: 0 }, face);
-        el('rect', { x: 0, y: 0, width: w, height: h, fill: '#fbf8f2' }, page);
-        const title = el('text', { x: w / 2, y: 0.5 * U, class: 'page-title', 'text-anchor': 'middle' }, page);
-        for (const [i, lw] of [0.8, 0.62, 0.7].entries()) {
-          el('rect', { x: (w - w * lw) / 2, y: 0.78 * U + i * 6, width: w * lw, height: 2.4, rx: 1.2, fill: '#c9c1b5' }, page);
-        }
-        const fail = el('text', { x: w / 2, y: h / 2, dy: '0.35em', class: 'screen-fail', 'text-anchor': 'middle', opacity: 0 }, face);
-        fail.textContent = '✗';
-        return { page, title, dns, dnsName: name, dnsAddr, fail };
+        return this.buildScreen(g, iso(x - 1.18, y - 0.95, 1.6), 2.36 * U, 1.32 * U);
+      }
+      case 'phone': {
+        // A phone standing on a little stand, screen towards the viewer.
+        box(g, { x: x - 0.5, y: y - 0.6, z: 0, w: 1.0, d: 0.5, h: 0.25, ...neutral });
+        box(g, { x: x - 0.7, y: y - 0.12, z: 0, w: 1.4, d: 0.22, h: 2.3, ...neutral });
+        return this.buildScreen(g, iso(x - 0.6, y + 0.1, 2.18), 1.2 * U, 2.0 * U);
       }
       case 'home-router': {
         box(g, { x: x - 1.1, y: y - 0.7, z: 0, w: 2.2, d: 1.4, h: 0.55, ...neutral });
@@ -451,20 +501,24 @@ export class NetworkScene {
     }
   }
 
-  /** Returns the transport tray's name, which says TCP or UDP depending on the packet. */
-  private buildTrays(g: SVGGElement, device: string, x: number, y: number): SVGTextElement | null {
+  /** Returns the trays whose names change with the packet: transport (TCP or UDP) and frame (Ethernet or Wi-Fi). */
+  private buildTrays(g: SVGGElement, device: string, x: number, y: number): Pick<DeviceView, 'l4Name' | 'l2Tray' | 'l2Name'> {
     const layers: Layer[] = this.tl.isRouter(device) ? ['eth', 'ip'] : ['eth', 'ip', 'l4', 'app'];
-    let l4: SVGTextElement | null = null;
+    const out: Pick<DeviceView, 'l4Name' | 'l2Tray' | 'l2Name'> = { l4Name: null, l2Tray: null, l2Name: null };
     for (const layer of layers) {
       const color = layer === 'l4' ? COLOR.tcp : COLOR[layer];
       const z = this.tl.trayZ(device, LEVEL[layer]) - SECTION.eth.h / 2 - 0.12;
-      tile(g, x - 2.9, y - 1.15, 5.8, 2.3, z, { class: 'tray', fill: color, stroke: color });
+      const tray = tile(g, x - 2.9, y - 1.15, 5.8, 2.3, z, { class: 'tray', fill: color, stroke: color });
       const p = iso(x + 2.9, y - 1.15, z);
       const t = el('text', { x: p.sx + 8, y: p.sy + 4, class: 'tray-name', 'text-anchor': 'start', fill: shade(color, 0.75) }, g);
       t.textContent = layer === 'app' ? 'App' : layer === 'l4' ? 'TCP' : layer === 'ip' ? 'IP' : 'Ethernet';
-      if (layer === 'l4') l4 = t;
+      if (layer === 'l4') out.l4Name = t;
+      if (layer === 'eth') {
+        out.l2Tray = tray;
+        out.l2Name = t;
+      }
     }
-    return l4;
+    return out;
   }
 
   /** Devices, trays and the laptop screen at visual time v. */
@@ -483,22 +537,36 @@ export class NetworkScene {
         d.l4Name.textContent = udp ? 'UDP' : 'TCP';
         d.l4Name.setAttribute('fill', shade(udp ? COLOR.udp : COLOR.tcp, 0.75));
       }
+      if (d.l2Tray && d.l2Name && hit) {
+        const wifi = frameAt(hit.seg)?.l2 === 'wifi';
+        const color = wifi ? COLOR.wifi : COLOR.eth;
+        d.l2Name.textContent = wifi ? 'Wi-Fi' : 'Ethernet';
+        d.l2Name.setAttribute('fill', shade(color, 0.75));
+        d.l2Tray.setAttribute('fill', color);
+        d.l2Tray.setAttribute('stroke', color);
+      }
     }
     this.renderRack(v);
     this.renderMoods(v);
-    if (!this.screen) return;
+    for (const [id, screen] of this.screens) if (id !== tl.client) this.blank(screen);
+    const screen = this.screens.get(tl.client);
+    if (!screen) return;
     // A page in several parts shows once the last missing part has slotted into the rack.
     const parts = this.partArrivals();
     const whole = parts && parts.filled.size === parts.of ? Math.max(...parts.filled.values()) : Infinity;
     const pageAt = parts ? clamp01((v - whole - 0.3) / 0.4) : this.screenAfterRead(v, 'page');
     const page = this.story.pageTitle ? pageAt : 0;
-    this.screen.page.setAttribute('opacity', page.toFixed(3));
+    screen.page.setAttribute('opacity', page.toFixed(3));
     // On a second visit the laptop already knows the address from the start.
     const known = this.story.remembered ? (v >= 0 ? 1 : 0) : this.screenAfterRead(v, 'dns');
-    this.screen.dns.setAttribute('opacity', (known * (1 - page)).toFixed(3));
+    screen.dns.setAttribute('opacity', (known * (1 - page)).toFixed(3));
     const last = tl.segs[tl.segs.length - 1];
     const failed = !this.story.pageTitle && !!last && v >= last.t1;
-    this.screen.fail.setAttribute('opacity', failed ? '1' : '0');
+    screen.fail.setAttribute('opacity', failed ? '1' : '0');
+  }
+
+  private blank(screen: Screen): void {
+    for (const e of [screen.page, screen.dns, screen.fail]) e.setAttribute('opacity', '0');
   }
 
   /** Emoji statuses: each pops up over its device, floats up a little and fades. */
@@ -525,7 +593,7 @@ export class NetworkScene {
   private screenAfterRead(v: number, chapter: Trip['chapter']): number {
     let o = 0;
     for (const s of this.tl.segs) {
-      if (s.step.kind !== 'read' || s.trip.chapter !== chapter || this.tl.kind.get(s.step.device) !== 'laptop') continue;
+      if (s.step.kind !== 'read' || s.trip.chapter !== chapter || s.step.device !== this.tl.client) continue;
       o = Math.max(o, clamp01((v - lerp(s.t0, s.t1, 0.8)) / 0.4));
     }
     return o;
@@ -575,6 +643,7 @@ export class NetworkScene {
       return;
     }
     const trip = seg.trip;
+    this.l2 = frameAt(seg)?.l2 ?? 'ethernet';
     const parts = this.parts(seg, k);
     const at = packetPose(this.tl, seg, k);
     const pose: Pose = { pos: at.pos, angle: at.angle, gap: peek * 0.7, spin: 0, squash: 0, op: 1, sleeve: 1 - peek, tag: peek < 0.5, chips: peek };
@@ -602,7 +671,14 @@ export class NetworkScene {
       const kind = this.tl.kind.get(step.device) ?? '';
       const part = seg.trip.part;
       // A part of a bigger page goes into its slot in the rack; anything else into the screen or the device.
-      const target = kind === 'laptop' ? (part ? this.rackSlot(part.n, part.of) : v3(d.x, d.y - 0.6, 0.95)) : v3(d.x, d.y, DEVICE_TOP[kind] ?? 1);
+      const target =
+        step.device === this.tl.client
+          ? part
+            ? this.rackSlot(part.n, part.of)
+            : kind === 'phone'
+              ? v3(d.x, d.y + 0.2, 1.3)
+              : v3(d.x, d.y - 0.6, 0.95)
+          : v3(d.x, d.y, DEVICE_TOP[kind] ?? 1);
       pose.pos = v3(lerp(pose.pos.x, target.x, sink), lerp(pose.pos.y, target.y, sink), lerp(pose.pos.z, target.z, sink));
       for (const p of parts) {
         if (p.key !== 'card') continue;
@@ -763,7 +839,7 @@ export class NetworkScene {
       if (along < 0.005) continue;
       const centre = at((u0 + u1) / 2 + p.slide);
       const z = pos.z - h / 2 + p.lift + (p.key === 'card' ? wiggle : 0);
-      const color = colorOf(p.layer, trip);
+      const color = colorOf(p.layer, trip, this.l2);
       const g = el('g', { opacity: p.op.toFixed(3), class: `part part-${p.layer}` }, g0);
       rbox(g, { cx: centre.x, cy: centre.y, z, len: along, wid: d, h, angle: pose.angle, color });
       // Name printed on the long side facing the viewer, if there is room for it.
@@ -781,7 +857,7 @@ export class NetworkScene {
         const onEnd = faceText(across, v3(centre.x + out.x * (along / 2), centre.y + out.y * (along / 2), z + h / 2));
         if (onEnd) {
           const t = el('text', { class: 'face-label eth-label', 'text-anchor': 'middle', dy: '0.35em', transform: onEnd.tf }, g);
-          t.textContent = 'Ethernet';
+          t.textContent = this.l2 === 'wifi' ? 'Wi-Fi' : 'Ethernet';
         }
       }
     }
@@ -793,8 +869,8 @@ export class NetworkScene {
     if (sleeve && front && back && sleeve.op * pose.sleeve > 0.01) {
       const sec = SECTION.eth;
       const centre = at((back.u0 + front.u1) / 2 + sleeve.slide);
-      const g = el('g', { opacity: (sleeve.op * pose.sleeve).toFixed(3), class: 'sleeve' }, g0);
-      rbox(g, { cx: centre.x, cy: centre.y, z: pos.z - sec.h / 2 - 0.02 + sleeve.lift, len: front.u1 - back.u0, wid: sec.d + 0.04, h: sec.h + 0.04, angle: pose.angle, color: COLOR.eth });
+      const g = el('g', { opacity: (sleeve.op * pose.sleeve).toFixed(3), class: `sleeve ${this.l2}` }, g0);
+      rbox(g, { cx: centre.x, cy: centre.y, z: pos.z - sec.h / 2 - 0.02 + sleeve.lift, len: front.u1 - back.u0, wid: sec.d + 0.04, h: sec.h + 0.04, angle: pose.angle, color: colorOf('eth', trip, this.l2) });
     }
 
     const ip = parts.find((p) => p.key === 'ip');
@@ -843,14 +919,15 @@ export class NetworkScene {
       }
       return p;
     };
+    const frame = frameAt(seg) ?? { l2: 'ethernet', head: trip.header.eth, tail: trip.trailer };
     const L = TILES_PER_BYTE;
     const list = [
-      mk('ethH', 'eth', trip.header.eth, trip.header.eth * L),
+      mk('ethH', 'eth', frame.head, frame.head * L),
       mk('ip', 'ip', trip.header.ip, trip.header.ip * L),
       mk('l4', 'l4', trip.header.l4, trip.header.l4 * L),
     ];
     if (trip.card) list.push(mk('card', 'app', trip.dataBytes, cardLen(trip)));
-    list.push(mk('ethT', 'eth', trip.trailer, Math.max(trip.trailer * L, 0.12)));
+    list.push(mk('ethT', 'eth', frame.tail, Math.max(frame.tail * L, 0.12)));
     // The trailer cap follows the sleeve: the same slide and fall.
     const head = list[0]!;
     const tail = list[list.length - 1]!;
@@ -861,7 +938,7 @@ export class NetworkScene {
   private sizeChips(items: { p: Part; top: Vec3 }[], trip: Trip, op: number): void {
     const chips = items
       .map(({ p, top }) => {
-        const name = p.key === 'card' ? (trip.card ?? '') : p.key === 'ethT' ? '' : p.key === 'l4' ? trip.l4Label : layerName(p.layer, trip);
+        const name = p.key === 'card' ? (trip.card ?? '') : p.key === 'ethT' ? '' : p.key === 'l4' ? trip.l4Label : layerName(p.layer, trip, this.l2);
         const text = name ? `${name} · ${p.bytes} B` : `${p.bytes} B`;
         return { p, a: iso(top.x, top.y, top.z), text, w: text.length * 6.6 + 14, x: 0 };
       })
@@ -876,7 +953,7 @@ export class NetworkScene {
     }
     const y = Math.min(...chips.map((c) => c.a.sy)) - 30 - 20 * op;
     for (const c of chips) {
-      const color = colorOf(c.p.layer, trip);
+      const color = colorOf(c.p.layer, trip, this.l2);
       const g = el('g', { class: 'size-tag', opacity: op.toFixed(3) }, this.tags);
       el('path', { d: `M${c.a.sx.toFixed(1)} ${c.a.sy.toFixed(1)}L${c.x.toFixed(1)} ${y.toFixed(1)}`, stroke: color, fill: 'none' }, g);
       el('rect', { x: c.x - c.w / 2, y: y - 18, width: c.w, height: 18, rx: 9, fill: color }, g);
@@ -899,7 +976,7 @@ export class NetworkScene {
     const s = iso(p.x, p.y, p.z);
     const pop = changed ? 1.25 : 1;
     // The arrow says which way we're going: out from the asker, or back to it.
-    const back = seg.trip.origin !== 'laptop';
+    const back = !seg.trip.outward;
     const g = el('g', { class: `addr ${back ? 'addr-back' : 'addr-out'}`, opacity: op.toFixed(3), transform: `translate(${s.sx.toFixed(1)} ${s.sy.toFixed(1)}) scale(${pop})` }, this.tags);
     const fromW = a.from.length * 7.2;
     const toW = a.to.length * 7.2;
