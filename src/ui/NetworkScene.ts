@@ -98,6 +98,11 @@ export class NetworkScene {
   /** Where a page that comes in several parts is put back together, beside the laptop. */
   private readonly rack: SVGGElement;
   private overview = { x: 0, y: 0, w: 1, h: 1 };
+  private readonly cables: SVGGElement;
+  /** Each drawn cable (or satellite hop) and the devices at its ends, to grey out the unused ones. */
+  private cableViews: { g: SVGGElement; a: string; b: string }[] = [];
+  /** Devices that take part in this run; the rest are greyed out once it starts. */
+  private used = new Set<string>();
 
   constructor(
     host: HTMLElement,
@@ -107,7 +112,7 @@ export class NetworkScene {
     this.svg = el('svg', { class: 'net-stage', preserveAspectRatio: 'xMidYMid meet' });
     host.appendChild(this.svg);
     const world = el('g', {}, this.svg);
-    const cables = el('g', { class: 'cables' }, world);
+    this.cables = el('g', { class: 'cables' }, world);
     this.storm = el('g', { class: 'storm' }, world);
     const devs = el('g', {}, world);
     this.rack = el('g', { class: 'rack' }, world);
@@ -117,11 +122,6 @@ export class NetworkScene {
     this.tags = el('g', { class: 'tags' }, world);
     this.moods = el('g', { class: 'moods' }, world);
 
-    for (const l of story.links) {
-      const a = tl.pos.get(l.a);
-      const b = tl.pos.get(l.b);
-      if (a && b) line(cables, v3(a.x, a.y, 0), v3(b.x, b.y, 0), { class: 'cable' });
-    }
     // Draw far devices first: a larger x + y is nearer the viewer.
     const order = [...story.devices].sort((m, n) => this.depthOf(m.id) - this.depthOf(n.id));
     for (const d of order) {
@@ -144,6 +144,8 @@ export class NetworkScene {
   setStory(story: Story, tl: Timeline): void {
     this.story = story;
     this.tl = tl;
+    this.buildCables();
+    this.used = new Set(story.trips.flatMap((t) => t.steps.flatMap((s) => ('device' in s ? [s.device] : [s.from, s.to]))));
     if (this.screen) {
       // A long title wraps onto two lines at the space nearest the middle.
       const t = story.pageTitle ?? '';
@@ -159,14 +161,55 @@ export class NetworkScene {
     }
   }
 
+  /** Cables between devices; a slow link is a radio hop up to a satellite instead. */
+  private buildCables(): void {
+    this.cables.replaceChildren();
+    this.cableViews = [];
+    for (const l of this.story.links) {
+      const a = this.tl.pos.get(l.a);
+      const b = this.tl.pos.get(l.b);
+      if (!a || !b) continue;
+      const g = el('g', { class: 'link' }, this.cables);
+      const sky = this.tl.sky.get(l.id);
+      if (sky) {
+        const top = v3((a.x + b.x) / 2, (a.y + b.y) / 2, sky);
+        const len = Math.hypot(b.x - a.x, b.y - a.y);
+        const ux = (b.x - a.x) / len;
+        const uy = (b.y - a.y) / len;
+        // Radio beams from a dish beside each end up to the satellite.
+        for (const [p, s] of [[a, 1], [b, -1]] as const) {
+          const foot = v3(p.x + ux * 2.4 * s, p.y + uy * 2.4 * s, 0.3);
+          line(g, foot, top, { class: 'beam' });
+          cylinder(g, { x: foot.x, y: foot.y, z: 0, r: 0.35, h: 0.3, color: DEVICE });
+        }
+        // The satellite: a small body with a solar panel either side.
+        rbox(g, { cx: top.x, cy: top.y, z: top.z - 0.35, len: 0.7, wid: 0.7, h: 0.7, angle: 0, color: '#cfc6b8' });
+        for (const s of [-1, 1]) tile(g, top.x - 0.45 + s * 1.15, top.y - 0.35, 0.9, 0.7, top.z, { class: 'panel' });
+      } else {
+        line(g, v3(a.x, a.y, 0), v3(b.x, b.y, 0), { class: 'cable' });
+      }
+      this.cableViews.push({ g, a: l.a, b: l.b });
+    }
+  }
+
   /** Which cables crackle (stormy weather on the internet side), by link id; empty for calm weather. */
   setStorm(links: readonly string[]): void {
     this.stormy = this.story.links
       .filter((l) => links.includes(l.id))
-      .map((l) => {
+      .flatMap((l) => {
         const a = this.tl.pos.get(l.a) ?? { x: 0, y: 0 };
         const b = this.tl.pos.get(l.b) ?? { x: 0, y: 0 };
-        return { a: v3(a.x, a.y, 0), b: v3(b.x, b.y, 0) };
+        const sky = this.tl.sky.get(l.id);
+        if (!sky) return [{ a: v3(a.x, a.y, 0), b: v3(b.x, b.y, 0) }];
+        // A satellite hop crackles along both radio beams.
+        const len = Math.hypot(b.x - a.x, b.y - a.y);
+        const ux = (b.x - a.x) / len;
+        const uy = (b.y - a.y) / len;
+        const top = v3((a.x + b.x) / 2, (a.y + b.y) / 2, sky);
+        return [
+          { a: v3(a.x + ux * 2.4, a.y + uy * 2.4, 0.3), b: top },
+          { a: top, b: v3(b.x - ux * 2.4, b.y - uy * 2.4, 0.3) },
+        ];
       });
   }
 
@@ -194,7 +237,7 @@ export class NetworkScene {
         const amp = Math.sin(Math.PI * t) * 0.34;
         const off = (rnd(li * 100 + i) - 0.5) * 2 * amp;
         const z = (rnd(li * 100 + i + 50) - 0.3) * amp * 1.2;
-        const p = iso(a.x + ux * len * t - uy * off, a.y + uy * len * t + ux * off, Math.max(0, z));
+        const p = iso(a.x + ux * len * t - uy * off, a.y + uy * len * t + ux * off, Math.max(0, lerp(a.z, b.z, t) + z));
         pts.push(`${p.sx.toFixed(1)},${p.sy.toFixed(1)}`);
       }
       const flicker = (0.55 + 0.45 * rnd(li + 7)).toFixed(2);
@@ -428,6 +471,10 @@ export class NetworkScene {
   render(v: number): void {
     const tl = this.tl;
     const hit = segAt(tl, v);
+    // Once a run starts, whatever it doesn't use steps back.
+    const greying = v >= 0;
+    for (const d of this.devices) d.g.classList.toggle('unused', greying && !this.used.has(d.id));
+    for (const c of this.cableViews) c.g.classList.toggle('unused', greying && (!this.used.has(c.a) || !this.used.has(c.b)));
     for (const d of this.devices) {
       d.trays.setAttribute('opacity', trayOpacity(tl, d.id, v).toFixed(3));
       d.g.setAttribute('transform', `translate(0 ${(-this.hop(d.id, v) * U).toFixed(2)})`);

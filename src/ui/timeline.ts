@@ -60,6 +60,8 @@ export interface Timeline {
   kind: Map<string, string>;
   trayZ(device: string, level: number): number;
   isRouter(device: string): boolean;
+  /** Arch height of a radio (satellite) hop by link id; flat cables are absent. */
+  sky: Map<string, number>;
 }
 
 /** World positions (tiles) by device kind: the chain runs along +x, the DNS resolver branches off along −y. */
@@ -80,6 +82,9 @@ const LEVEL_GAP = 1.15;
 const PORT = 2.4;
 /** Seconds of visual time per step, the first time it happens. */
 const DUR: Record<TStep['kind'], number> = { appear: 0.9, wrap: 0.85, unwrap: 0.85, nat: 1.6, travel: 1.9, read: 1.2, lost: 0, wait: 2.8 };
+/** A link this slow (one-way seconds) is drawn as a radio hop up to a satellite. */
+export const SLOW_DELAY = 0.1;
+export const SKY_HEIGHT = 9;
 /** Seconds a knocked packet tumbles before it is gone. */
 export const TUMBLE = 1.8;
 
@@ -92,6 +97,9 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
     return v3(p.x, p.y, trayZ(device, level));
   };
 
+  // A slow link (a satellite hop, hundreds of ms each way) arches into the sky and takes longer to cross.
+  const sky = new Map(story.links.filter((l) => l.delay >= SLOW_DELAY).map((l) => [l.id, SKY_HEIGHT] as const));
+  const linkPace = (link: string): number => (sky.has(link) ? 2.4 : 1);
   const segs: Seg[] = [];
   const cues: Cue[] = [];
   const reactions: Reaction[] = [];
@@ -128,15 +136,16 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
           break;
         case 'travel':
           seg.p1 = at(step.to, LEVEL.eth);
+          d *= linkPace(step.link);
           break;
         case 'lost': {
-          const travel = DUR.travel * pace({ ...step, kind: 'travel' }, trip);
+          const travel = DUR.travel * pace({ ...step, kind: 'travel' }, trip) * linkPace(step.link);
           // Knocked by the viewer: where they tapped. Lost by itself (a stormy cable): halfway along.
           const tapped = knocks.get(`${trip.packetId}@${step.link}`);
           const k = tapped ?? 0.5;
           seg.knock = { k, travel, byYou: tapped !== undefined };
           d = k * travel + TUMBLE;
-          seg.p1 = travelPath(pos, trayZ, step.from, step.to, k);
+          seg.p1 = travelPath(pos, trayZ, step.from, step.to, k, sky.get(step.link) ?? 0);
           break;
         }
       }
@@ -172,7 +181,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   });
 
   const isRouter = (device: string): boolean => (kind.get(device) ?? '').includes('router');
-  return { segs, reactions, cues, total: t, pos, kind, trayZ, isRouter };
+  return { segs, reactions, cues, total: t, pos, kind, trayZ, isRouter, sky };
 }
 
 /**
@@ -230,7 +239,10 @@ function turnTo(a: number, b: number, t: number): number {
   return a + delta * t;
 }
 
-/** Down from the sender's Ethernet tray to its port, along the cable, and up into the receiver's tray. */
+/**
+ * Down from the sender's Ethernet tray to its port, along the cable, and up into the receiver's tray. A link with
+ * `sky` > 0 is a radio hop (a satellite): the packet climbs to the top of an arch that high and comes back down.
+ */
 export function travelPose(
   pos: Map<string, { x: number; y: number }>,
   trayZ: (device: string, level: number) => number,
@@ -238,6 +250,7 @@ export function travelPose(
   to: string,
   k: number,
   inTray = 0,
+  sky = 0,
 ): { pos: Vec3; angle: number } {
   const a = pos.get(from) ?? { x: 0, y: 0 };
   const b = pos.get(to) ?? { x: 0, y: 0 };
@@ -245,25 +258,26 @@ export function travelPose(
   const ux = (b.x - a.x) / len;
   const uy = (b.y - a.y) / len;
   const cable = Math.atan2(uy, ux);
-  const pts = [
-    v3(a.x, a.y, trayZ(from, 0)),
-    v3(a.x + ux * PORT, a.y + uy * PORT, CABLE_Z),
-    v3(b.x - ux * PORT, b.y - uy * PORT, CABLE_Z),
-    v3(b.x, b.y, trayZ(to, 0)),
-  ];
+  const portA = v3(a.x + ux * PORT, a.y + uy * PORT, CABLE_Z);
+  const portB = v3(b.x - ux * PORT, b.y - uy * PORT, CABLE_Z);
+  const middle = sky > 0 ? [portA, v3((a.x + b.x) / 2, (a.y + b.y) / 2, sky), portB] : [portA, portB];
+  const pts = [v3(a.x, a.y, trayZ(from, 0)), ...middle, v3(b.x, b.y, trayZ(to, 0))];
   const lens = pts.slice(1).map((p, i) => Math.hypot(p.x - pts[i]!.x, p.y - pts[i]!.y, p.z - pts[i]!.z));
   const total = lens.reduce((s, x) => s + x, 0);
+  const first = lens[0]!;
+  const last = lens[lens.length - 1]!;
+  const onCable = total - first - last;
   const dist = easeInOut(k) * total;
   // Swing round over the drop and the first third of the cable; swing back over the last third and the rise.
-  const out = lens[0]! + lens[1]! / 3;
-  const back = total - lens[2]! - lens[1]! / 3;
+  const out = first + onCable / 3;
+  const back = total - last - onCable / 3;
   const angle = dist < out ? turnTo(inTray, cable, smooth(dist / out)) : dist > back ? turnTo(cable, inTray, smooth((dist - back) / (total - back))) : cable;
   let d = dist;
   for (let i = 0; i < lens.length; i++) {
     if (d <= lens[i]! || i === lens.length - 1) return { pos: lerpV(pts[i]!, pts[i + 1]!, clamp01(d / lens[i]!)), angle };
     d -= lens[i]!;
   }
-  return { pos: pts[3]!, angle: inTray };
+  return { pos: pts[pts.length - 1]!, angle: inTray };
 }
 
 /** Gentle S-curve (smoothstep): starts and ends at rest, never faster than 1.5×. */
@@ -278,18 +292,19 @@ export function travelPath(
   from: string,
   to: string,
   k: number,
+  sky = 0,
 ): Vec3 {
-  return travelPose(pos, trayZ, from, to, k).pos;
+  return travelPose(pos, trayZ, from, to, k, 0, sky).pos;
 }
 
 /** Packet centre and facing for a segment at progress k: move first, then the layer work happens in place. */
 export function packetPose(tl: Timeline, seg: Seg, k: number): { pos: Vec3; angle: number } {
   const s = seg.step;
   const inTray = trayAngle(seg.trip);
-  if (s.kind === 'travel') return travelPose(tl.pos, tl.trayZ, s.from, s.to, k, inTray);
+  if (s.kind === 'travel') return travelPose(tl.pos, tl.trayZ, s.from, s.to, k, inTray, tl.sky.get(s.link) ?? 0);
   if (s.kind === 'lost' && seg.knock) {
     const local = k * (seg.t1 - seg.t0);
-    return travelPose(tl.pos, tl.trayZ, s.from, s.to, Math.min(seg.knock.k, local / seg.knock.travel), inTray);
+    return travelPose(tl.pos, tl.trayZ, s.from, s.to, Math.min(seg.knock.k, local / seg.knock.travel), inTray, tl.sky.get(s.link) ?? 0);
   }
   return { pos: lerpV(seg.p0, seg.p1, easeInOut(clamp01(k / 0.4))), angle: inTray };
 }

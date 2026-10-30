@@ -16,12 +16,12 @@ import { buildTimeline, chapterAt, seenSoFar, type Timeline } from './timeline';
 /** Stormy weather happens on the internet side; the home cable stays calm. */
 const STORM_LINKS = ['wan', 'bb1', 'bb2'];
 const STORM_LOSS = 0.15;
-let features: Features = { big: false, again: false };
+let features: Features = { big: false, again: false, slow: false };
 /** Stormy weather is a switch you can flip any time, before or during a run. */
 let stormy = false;
 try {
   const saved = JSON.parse(localStorage.getItem('net.features') ?? '{}') as Partial<Features> & { storm?: boolean };
-  features = { big: !!saved.big, again: !!saved.again };
+  features = { big: !!saved.big, again: !!saved.again, slow: !!saved.slow };
   stormy = !!saved.storm;
 } catch {
   // Nothing remembered; start plain.
@@ -44,7 +44,7 @@ let decided: Record<string, boolean> = {};
 let story: Story;
 let tl: Timeline;
 function simulate(): void {
-  const scenario = fetchWebPage({ site: features.big ? 'info.cern.ch' : 'example.com', revisit: features.again });
+  const scenario = fetchWebPage({ site: features.big ? 'info.cern.ch' : 'example.com', revisit: features.again, slow: features.slow });
   const plan = { randomLoss: STORM_LOSS, lossyLinks: STORM_LINKS, lossWindows: stormWindows, decided, manual: faults };
   story = buildStory(runScenario(scenario, { seed: stormSeed, faults: plan }));
   tl = buildTimeline(story, knocks);
@@ -79,6 +79,9 @@ let cardPop = 9;
 const stickers = new Stickers(svg, features, (f) => {
   features = f;
   remember();
+  // Show the network this run will use (a satellite hop for the slow line) before it starts.
+  simulate();
+  scene.setStory(story, tl);
   showFeatures();
   sound.play('snap');
 });
@@ -94,11 +97,45 @@ showFeatures();
 cardPop = 9;
 
 const CHAPTERS: Record<Chapter, [string, string]> = { dns: ['1', 'Find the address'], hello: ['2', 'Say hello'], page: ['3', 'Get the page'] };
-const chapter = document.createElement('div');
+const chapter = document.createElement('button');
 chapter.className = 'chapter';
 chapter.hidden = true;
+chapter.setAttribute('aria-haspopup', 'true');
 root.appendChild(chapter);
 let shownChapter: Chapter | null = null;
+
+// Tap the chapter label to jump to any chapter of this run.
+const chapterMenu = document.createElement('div');
+chapterMenu.className = 'chapter-menu';
+chapterMenu.hidden = true;
+root.appendChild(chapterMenu);
+chapter.addEventListener('click', () => {
+  if (!chapterMenu.hidden) {
+    chapterMenu.hidden = true;
+    return;
+  }
+  chapterMenu.replaceChildren();
+  const seen = new Set<Chapter>();
+  for (const s of tl.segs) {
+    const ch = s.trip.chapter;
+    if (seen.has(ch)) continue;
+    seen.add(ch);
+    const [n, name] = CHAPTERS[ch];
+    const item = document.createElement('button');
+    item.innerHTML = `<span class="chapter-num">${n}</span><span>${name}</span>`;
+    item.classList.toggle('current', ch === shownChapter);
+    item.addEventListener('click', () => {
+      v = s.t0;
+      cueDone = v;
+      paused = false;
+      peek = peekTarget = 0;
+      camFree = false;
+      chapterMenu.hidden = true;
+    });
+    chapterMenu.appendChild(item);
+  }
+  chapterMenu.hidden = false;
+});
 
 const controls = document.createElement('div');
 controls.className = 'net-controls';
@@ -374,6 +411,7 @@ function frame(now: number): void {
   if (ch !== shownChapter) {
     shownChapter = ch;
     chapter.hidden = !ch;
+    if (!ch) chapterMenu.hidden = true;
     if (ch) {
       const [n, name] = CHAPTERS[ch];
       chapter.innerHTML = `<span class="chapter-num">${n}</span><span>${name}</span>`;
@@ -433,7 +471,7 @@ if (import.meta.env.DEV) {
       },
       /** Start a run straight away with these stickers (for screenshots). */
       start(f: Partial<Features> & { storm?: boolean }): void {
-        for (const k of ['big', 'again'] as const) stickers.set(k, !!f[k]);
+        for (const k of ['big', 'again', 'slow'] as const) stickers.set(k, !!f[k]);
         if (!!f.storm !== stormy) toggleStorm();
         beginRun();
         stormSeed = 1;

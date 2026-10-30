@@ -48,3 +48,18 @@ describe('random loss limited to some links', () => {
     }
   });
 });
+
+describe('satellite line', () => {
+  const r = run({ slow: true });
+
+  it('still loads the page, with no resends despite the long delay', () => {
+    expect(of(r, 'app').some((e) => e.action === 'done')).toBe(true);
+    expect(of(r, 'tcp:retransmit')).toHaveLength(0);
+  });
+
+  it('takes about 280 ms each way across the satellite hop', () => {
+    const tx = of(r, 'tx').find((e) => e.linkId === 'wan')!;
+    expect(tx.arrive - tx.start).toBeGreaterThan(0.28);
+    expect(tx.arrive - tx.start).toBeLessThan(0.29);
+  });
+});

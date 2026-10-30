@@ -56,7 +56,8 @@ export interface Story {
   /** The site the browser asked for ("example.com"). */
   site: string;
   devices: { id: string; label: string; kind: string }[];
-  links: { id: string; a: string; b: string }[];
+  /** Cables, with their one-way delay in seconds. */
+  links: { id: string; a: string; b: string; delay: number }[];
   trips: Trip[];
   /** The page's <title> if the page arrived, else null. */
   pageTitle: string | null;
@@ -228,7 +229,7 @@ export function buildStory(r: SimResult): Story {
   const ifaceDevice = new Map(r.scenario.devices.flatMap((d) => d.ifaces.map((i) => [i.id, d.id] as const)));
   return {
     devices: r.scenario.devices.map((d) => ({ id: d.id, label: d.label, kind: d.kind })),
-    links: r.scenario.links.map((l) => ({ id: l.id, a: ifaceDevice.get(l.a) ?? l.a, b: ifaceDevice.get(l.b) ?? l.b })),
+    links: r.scenario.links.map((l) => ({ id: l.id, a: ifaceDevice.get(l.a) ?? l.a, b: ifaceDevice.get(l.b) ?? l.b, delay: l.delay })),
     site: url ? new URL(url).hostname : '',
     trips,
     pageTitle: pageTitle(r),

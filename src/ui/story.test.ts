@@ -221,3 +221,16 @@ describe('switching the storm on and off mid-run', () => {
     expect(changed).toBeGreaterThan(0);
   });
 });
+
+describe('satellite line in the timeline', () => {
+  it('arches the home→ISP hop into the sky and takes longer to cross it', () => {
+    const s = buildStory(runScenario(fetchWebPage({ slow: true }), { seed: 1, faults: { randomLoss: 0, manual: [] } }));
+    const tl = buildTimeline(s);
+    expect([...tl.sky.keys()]).toEqual(['wan']);
+    const wan = tl.segs.find((x) => x.step.kind === 'travel' && x.step.link === 'wan')!;
+    const lan = tl.segs.find((x) => x.step.kind === 'travel' && x.step.link === 'lan')!;
+    expect(wan.t1 - wan.t0).toBeGreaterThan(2 * (lan.t1 - lan.t0));
+    const top = packetPose(tl, wan, 0.5).pos.z;
+    expect(top).toBeGreaterThan(5);
+  });
+});

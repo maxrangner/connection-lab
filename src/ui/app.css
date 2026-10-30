@@ -477,3 +477,80 @@ body {
   background: #ffe14d;
   border-color: #c08a10;
 }
+
+/* Devices and cables a run doesn't use step back */
+.device,
+.link {
+  transition: opacity 0.4s;
+}
+
+.device.unused,
+.link.unused {
+  opacity: 0.28;
+  filter: grayscale(1);
+}
+
+/* Satellite hop */
+.beam {
+  stroke: #b8ad9d;
+  stroke-width: 2.5;
+  stroke-dasharray: 2 7;
+  stroke-linecap: round;
+}
+
+.panel {
+  fill: #4a6a8a;
+  stroke: #2f4a66;
+  stroke-width: 1;
+}
+
+/* The chapter label is a button that opens the chapter list */
+.chapter {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.chapter::after {
+  content: '▾';
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+.chapter-menu {
+  position: fixed;
+  top: calc(56px + env(safe-area-inset-top, 0px));
+  left: max(16px, env(safe-area-inset-left, 0px));
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border-radius: 14px;
+  background: #fffaf2;
+  border: 1px solid #d3c8b8;
+  box-shadow: 0 6px 16px rgba(61, 53, 44, 0.15);
+}
+
+.chapter-menu[hidden] {
+  display: none;
+}
+
+.chapter-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px 6px 6px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.chapter-menu button:hover,
+.chapter-menu button.current {
+  background: var(--paper-2);
+}

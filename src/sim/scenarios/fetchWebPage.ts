@@ -41,6 +41,11 @@ export interface FetchWebPageOptions {
    * TTL), and the laptop and home router still know each other's MAC addresses, so neither looks anything up.
    */
   revisit?: boolean;
+  /**
+   * Satellite internet: the line from the home router to the ISP goes up to a geostationary satellite and back,
+   * about 36 000 km each way, so it takes about 280 ms one way (and is slower, 25 Mbit/s).
+   */
+  slow?: boolean;
 }
 
 /** What the scenario needs to know about each real site. */
@@ -162,7 +167,9 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
     ],
     links: [
       { id: 'lan', a: 'laptop.eth0', b: 'home.lan', bitsPerSecond: 1e9, delay: 5e-8, label: 'Ethernet cable · 1 Gbit/s', name: 'the Ethernet cable' },
-      { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: 1e9, delay: 0.002, label: 'Fiber to ISP · 1 Gbit/s · 2 ms', name: 'the fiber line to the ISP' },
+      opts.slow
+        ? { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: 25e6, delay: 0.28, label: 'Satellite to ISP · 25 Mbit/s · 280 ms', name: 'the satellite link' }
+        : { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: 1e9, delay: 0.002, label: 'Fiber to ISP · 1 Gbit/s · 2 ms', name: 'the fiber line to the ISP' },
       { id: 'bb1', a: 'isp.p1', b: 'resolver.eth0', bitsPerSecond: 1e10, delay: 0.003, label: 'Backbone · 10 Gbit/s · 3 ms', name: 'a backbone link' },
       { id: 'bb2', a: 'isp.p2', b: 'server.eth0', bitsPerSecond: 1e10, delay: 0.004, label: 'Backbone · 10 Gbit/s · 4 ms', name: 'a backbone link' },
     ],
