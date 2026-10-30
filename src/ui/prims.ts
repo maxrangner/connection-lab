@@ -39,6 +39,49 @@ export function box(parent: Element | null, s: BoxSpec): BoxEl {
   return { g, top, left, right };
 }
 
+export interface RBoxSpec {
+  /** Centre of the footprint and bottom height. */
+  cx: number;
+  cy: number;
+  z: number;
+  /** Length along `angle`, width across it, height. */
+  len: number;
+  wid: number;
+  h: number;
+  /** Radians from +x towards +y. */
+  angle: number;
+  color: string;
+}
+
+/**
+ * A box turned by any angle about the vertical axis. Draws the sides that face the viewer (normal towards +x+y),
+ * shaded by how much they face +x or +y, then the top.
+ */
+export function rbox(parent: Element | null, s: RBoxSpec): SVGGElement {
+  const g = el('g', { class: 'ibox' });
+  const d = { x: Math.cos(s.angle), y: Math.sin(s.angle) };
+  const p = { x: -d.y, y: d.x };
+  const corner = (a: number, b: number, z: number): string => P(s.cx + d.x * a + p.x * b, s.cy + d.y * a + p.y * b, z);
+  const L = s.len / 2;
+  const W = s.wid / 2;
+  const top = s.z + s.h;
+  // Each side: its outward normal and its two bottom corners (in along/across coordinates).
+  const sides: [{ x: number; y: number }, [number, number], [number, number]][] = [
+    [d, [L, -W], [L, W]],
+    [{ x: -d.x, y: -d.y }, [-L, W], [-L, -W]],
+    [p, [L, W], [-L, W]],
+    [{ x: -p.x, y: -p.y }, [-L, -W], [L, -W]],
+  ];
+  for (const [n, a, b] of sides) {
+    if (n.x + n.y <= 1e-6) continue;
+    const k = FACE.left * Math.max(0, n.y) ** 2 + FACE.right * Math.max(0, n.x) ** 2;
+    el('path', { d: `M${corner(a[0], a[1], s.z)}L${corner(b[0], b[1], s.z)}L${corner(b[0], b[1], top)}L${corner(a[0], a[1], top)}Z`, fill: shade(s.color, k) }, g);
+  }
+  el('path', { d: `M${corner(L, -W, top)}L${corner(L, W, top)}L${corner(-L, W, top)}L${corner(-L, -W, top)}Z`, fill: shade(s.color, FACE.top) }, g);
+  if (parent) parent.appendChild(g);
+  return g;
+}
+
 /** A flat iso rectangle on the ground plane (or at height z). */
 export function tile(parent: Element | null, x: number, y: number, w: number, d: number, z: number, attrs: Record<string, string | number>): SVGPathElement {
   const p = el('path', { d: `M${P(x, y, z)}L${P(x + w, y, z)}L${P(x + w, y + d, z)}L${P(x, y + d, z)}Z`, ...attrs });

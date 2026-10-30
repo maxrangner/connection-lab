@@ -1,9 +1,9 @@
 import { el } from './svg';
-import { box, cylinder, line, tile } from './prims';
+import { box, cylinder, line, rbox, tile } from './prims';
 import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, iso, lerp, U, v3, type Vec3 } from './project';
 import { shade } from './shade';
 import type { Story, Trip, Wrap } from './story';
-import { addressBefore, DEVICE_TOP, LEVEL, packetPos, segAt, trayOpacity, wrapsBefore, type Axis, type Seg, type Timeline } from './timeline';
+import { addressBefore, DEVICE_TOP, LEVEL, packetPos, segAt, trayOpacity, turnK, workK, wrapsBefore, type Axis, type Seg, type Timeline } from './timeline';
 
 export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', eth: '#e08b33' } as const;
 const DEVICE = '#d9d0c2';
@@ -26,6 +26,8 @@ const cardLen = (trip: Trip): number => {
 /** Text printed on a box face: `+y` faces run along +x on screen, `+x` faces along −y. */
 const faceTf = (p: { sx: number; sy: number }, face: '+y' | '+x'): string =>
   `matrix(1 ${face === '+y' ? 0.5 : -0.5} 0 1 ${p.sx.toFixed(1)} ${p.sy.toFixed(1)})`;
+
+const angleOf = (a: Axis): number => Math.atan2(a.y, a.x);
 
 const easeOutBounce = (t: number): number => {
   const n = 7.5625;
@@ -56,9 +58,8 @@ interface Part {
 /** How the packet is drawn this frame. */
 interface Pose {
   pos: Vec3;
-  axis: Axis;
-  /** Squeezes every piece along the packet (the hop-and-turn at a router). */
-  lenScale: number;
+  /** Direction the packet's front (byte 0) faces, radians from +x towards +y. */
+  angle: number;
   gap: number;
   /** Degrees of screen-space spin (tumbling off a cable) and a landing squash. */
   spin: number;
@@ -366,15 +367,17 @@ export class NetworkScene {
       return;
     }
     const trip = seg.trip;
-    const parts = this.parts(seg, k);
-    const pose: Pose = { pos: packetPos(this.tl, seg, k), axis: seg.axis, lenScale: 1, gap: peek * 0.7, spin: 0, squash: 0, op: 1, sleeve: 1 - peek, tag: peek < 0.5, chips: peek };
+    const parts = this.parts(seg, workK(seg, k));
+    const pose: Pose = { pos: packetPos(this.tl, seg, k), angle: angleOf(seg.axis), gap: peek * 0.7, spin: 0, squash: 0, op: 1, sleeve: 1 - peek, tag: peek < 0.5, chips: peek };
 
-    // Hop and turn to face the next cable.
-    if (seg.turn && k < 0.4) {
-      const q = k / 0.4;
-      pose.axis = q < 0.5 ? seg.turn.from : seg.turn.to;
-      pose.lenScale = q < 0.5 ? 1 - 1.5 * q : 0.25 + 1.5 * (q - 0.5);
-      pose.pos = v3(pose.pos.x, pose.pos.y, pose.pos.z + Math.sin(Math.PI * q) * 0.6);
+    // Swing round to face the next cable, with a little lift.
+    if (seg.turn && turnK(seg, k) < 1) {
+      const q = turnK(seg, k);
+      const from = angleOf(seg.turn.from);
+      let delta = angleOf(seg.turn.to) - from;
+      delta = Math.atan2(Math.sin(delta), Math.cos(delta));
+      pose.angle = from + delta * easeInOut(q);
+      pose.pos = v3(pose.pos.x, pose.pos.y, pose.pos.z + Math.sin(Math.PI * q) * 0.25);
     }
 
     // Knocked off the cable: impact, tumble, bounce, fall apart.
@@ -408,7 +411,9 @@ export class NetworkScene {
   private tumble(pose: Pose, tau: number): void {
     const i = pose.pos;
     // Off to the side facing the viewer, a little onward, up and down with gravity, one small bounce.
-    const side = pose.axis.x !== 0 ? { x: 0, y: 1 } : { x: 1, y: 0 };
+    const ahead = { x: Math.cos(pose.angle), y: Math.sin(pose.angle) };
+    const across = { x: -ahead.y, y: ahead.x };
+    const side = across.x + across.y >= 0 ? across : { x: -across.x, y: -across.y };
     const rest = 0.62;
     const up = 3.4;
     const g = 6;
@@ -420,8 +425,8 @@ export class NetworkScene {
       z = rest + 1.1 * q * (1 - q);
     }
     const fly = easeOut(Math.min(1, tau / (land + 0.35)));
-    pose.pos = v3(i.x + side.x * 1.9 * fly + pose.axis.x * 0.6 * fly, i.y + side.y * 1.9 * fly + pose.axis.y * 0.6 * fly, z);
-    pose.spin = 720 * fly * (pose.axis.x + pose.axis.y >= 0 ? 1 : -1);
+    pose.pos = v3(i.x + side.x * 1.9 * fly + ahead.x * 0.6 * fly, i.y + side.y * 1.9 * fly + ahead.y * 0.6 * fly, z);
+    pose.spin = 720 * fly * (ahead.x + ahead.y >= 0 ? 1 : -1);
     const sq = tau - land;
     pose.squash = sq >= 0 && sq < 0.16 ? 1 - sq / 0.16 : 0;
     const apart = clamp01((tau - land - 0.45) / 0.7);
@@ -492,7 +497,7 @@ export class NetworkScene {
 
   private drawPose(seg: Seg, k: number, trip: Trip, parts: Part[], pose: Pose, wiggle: number): void {
     const visible = parts.filter((p) => p.op > 0.01);
-    const lengths = visible.map((p) => p.len * p.f * p.scale * pose.lenScale);
+    const lengths = visible.map((p) => p.len * p.f * p.scale);
     const total = lengths.reduce((a, b) => a + b, 0) + pose.gap * Math.max(0, visible.length - 1);
     let u = total / 2;
     const placed: { p: Part; u0: number; u1: number }[] = [];
@@ -502,9 +507,10 @@ export class NetworkScene {
       u -= len + pose.gap;
     });
 
-    const { pos, axis } = pose;
-    const alongX = axis.x !== 0;
-    const at = (uu: number): Vec3 => v3(pos.x + axis.x * uu, pos.y + axis.y * uu, pos.z);
+    const { pos } = pose;
+    const dir = { x: Math.cos(pose.angle), y: Math.sin(pose.angle) };
+    const across = { x: -dir.y, y: dir.x };
+    const at = (uu: number): Vec3 => v3(pos.x + dir.x * uu, pos.y + dir.y * uu, pos.z);
     const mid = (a: { u0: number; u1: number }): number => {
       const m = at((a.u0 + a.u1) / 2);
       return m.x + m.y;
@@ -517,40 +523,51 @@ export class NetworkScene {
       transform: `rotate(${pose.spin.toFixed(1)} ${c.sx.toFixed(1)} ${c.sy.toFixed(1)}) translate(${c.sx.toFixed(1)} ${c.sy.toFixed(1)}) scale(${sx.toFixed(3)} ${sy.toFixed(3)}) translate(${(-c.sx).toFixed(1)} ${(-c.sy).toFixed(1)})`,
     }, this.packet);
 
-    // Where a piece sits in the world: along the packet's axis, centred across it.
-    const footprint = (u0: number, u1: number, d: number, slide: number): { x: number; y: number; w: number; d: number } => {
-      const a = at(u0 + slide);
-      const b = at(u1 + slide);
-      return alongX
-        ? { x: Math.min(a.x, b.x), y: pos.y - d / 2, w: Math.abs(b.x - a.x), d }
-        : { x: pos.x - d / 2, y: Math.min(a.y, b.y), w: d, d: Math.abs(b.y - a.y) };
+    // Text printed on a vertical face runs along the face's bottom edge, pointing right on screen.
+    const faceText = (edge: { x: number; y: number }, at3: Vec3): { tf: string; ex: number } | null => {
+      let ex = edge.x - edge.y;
+      let ey = (edge.x + edge.y) / 2;
+      if (ex < 0) {
+        ex = -ex;
+        ey = -ey;
+      }
+      if (ex < 0.55) return null;
+      const s = iso(at3.x, at3.y, at3.z);
+      return { tf: `matrix(${ex.toFixed(3)} ${ey.toFixed(3)} 0 1 ${s.sx.toFixed(1)} ${s.sy.toFixed(1)})`, ex };
     };
-    // The end cap whose end face looks at the viewer carries the "Ethernet" label.
-    const facingEnd: PartKey = axis.x + axis.y > 0 ? 'ethH' : 'ethT';
+    // The long side and the end that face the viewer.
+    const side = across.x + across.y >= 0 ? across : { x: -across.x, y: -across.y };
+    const frontFaces = dir.x + dir.y > 0.05;
+    const backFaces = dir.x + dir.y < -0.05;
 
     for (const { p, u0, u1 } of [...placed].sort((m, n) => mid(m) - mid(n))) {
       const sec = SECTION[p.layer];
       const d = sec.d * p.scale;
       const h = sec.h * p.scale;
-      const f = footprint(u0, u1, d, p.slide);
-      const along = alongX ? f.w : f.d;
+      const along = u1 - u0;
       if (along < 0.005) continue;
+      const centre = at((u0 + u1) / 2 + p.slide);
       const z = pos.z - h / 2 + p.lift + (p.key === 'card' ? wiggle : 0);
       const color = colorOf(p.layer, trip);
       const g = el('g', { opacity: p.op.toFixed(3), class: `part part-${p.layer}` }, g0);
-      box(g, { x: f.x, y: f.y, z, w: f.w, d: f.d, h, color });
+      rbox(g, { cx: centre.x, cy: centre.y, z, len: along, wid: d, h, angle: pose.angle, color });
       // Name printed on the long side facing the viewer, if there is room for it.
       const label = p.key === 'card' ? (trip.card ?? '') : p.key === 'ip' ? 'IP' : p.key === 'l4' ? trip.l4Label : '';
       const font = p.key === 'card' ? cardFont(label) : 10;
-      if (label && along * U > label.length * font * 0.62 + 4 && p.f > 0.6 && pose.lenScale > 0.95) {
-        const side = alongX ? iso(f.x + f.w / 2, f.y + f.d, z + h / 2) : iso(f.x + f.w, f.y + f.d / 2, z + h / 2);
-        const t = el('text', { class: p.key === 'card' ? 'face-label card-label' : 'face-label', 'text-anchor': 'middle', 'font-size': font, dy: '0.35em', transform: faceTf(side, alongX ? '+y' : '+x') }, g);
+      const onSide = label && p.f > 0.6 ? faceText(dir, v3(centre.x + side.x * (d / 2), centre.y + side.y * (d / 2), z + h / 2)) : null;
+      if (label && onSide && along * U * onSide.ex > label.length * font * 0.62 + 4) {
+        const t = el('text', { class: p.key === 'card' ? 'face-label card-label' : 'face-label', 'text-anchor': 'middle', 'font-size': font, dy: '0.35em', transform: onSide.tf }, g);
         t.textContent = label;
       }
-      if (p.key === facingEnd && pose.sleeve > 0.5 && pose.lenScale > 0.95) {
-        const end = alongX ? iso(f.x + f.w, f.y + f.d / 2, z + h / 2) : iso(f.x + f.w / 2, f.y + f.d, z + h / 2);
-        const t = el('text', { class: 'face-label eth-label', 'text-anchor': 'middle', dy: '0.35em', transform: faceTf(end, alongX ? '+x' : '+y') }, g);
-        t.textContent = 'Ethernet';
+      // "Ethernet" on the end cap whose end face looks at the viewer.
+      const endCap = (p.key === 'ethH' && frontFaces) || (p.key === 'ethT' && backFaces);
+      if (endCap && pose.sleeve > 0.5) {
+        const out = p.key === 'ethH' ? dir : { x: -dir.x, y: -dir.y };
+        const onEnd = faceText(across, v3(centre.x + out.x * (along / 2), centre.y + out.y * (along / 2), z + h / 2));
+        if (onEnd) {
+          const t = el('text', { class: 'face-label eth-label', 'text-anchor': 'middle', dy: '0.35em', transform: onEnd.tf }, g);
+          t.textContent = 'Ethernet';
+        }
       }
     }
 
@@ -560,14 +577,14 @@ export class NetworkScene {
     const back = placed.find((x) => x.p.key === 'ethT');
     if (sleeve && front && back && sleeve.op * pose.sleeve > 0.01) {
       const sec = SECTION.eth;
-      const f = footprint(back.u0, front.u1, sec.d + 0.04, sleeve.slide);
+      const centre = at((back.u0 + front.u1) / 2 + sleeve.slide);
       const g = el('g', { opacity: (sleeve.op * pose.sleeve).toFixed(3), class: 'sleeve' }, g0);
-      box(g, { x: f.x, y: f.y, z: pos.z - sec.h / 2 - 0.02 + sleeve.lift, w: f.w, d: f.d, h: sec.h + 0.04, color: COLOR.eth });
+      rbox(g, { cx: centre.x, cy: centre.y, z: pos.z - sec.h / 2 - 0.02 + sleeve.lift, len: front.u1 - back.u0, wid: sec.d + 0.04, h: sec.h + 0.04, angle: pose.angle, color: COLOR.eth });
     }
 
     const ip = parts.find((p) => p.key === 'ip');
     if (ip && ip.op > 0.5 && ip.f > 0.5 && pose.tag) {
-      this.addressTag(seg, k, v3(pos.x - axis.x * 0.6, pos.y - axis.y * 0.6, pos.z + 2.35), 1 - pose.chips * 2);
+      this.addressTag(seg, k, v3(pos.x - dir.x * 0.6, pos.y - dir.y * 0.6, pos.z + 2.35), 1 - pose.chips * 2);
     }
     if (pose.chips > 0.02) {
       const items = placed.map(({ p, u0, u1 }) => ({ p, top: v3(at((u0 + u1) / 2).x, at((u0 + u1) / 2).y, pos.z + SECTION[p.layer].h / 2) }));

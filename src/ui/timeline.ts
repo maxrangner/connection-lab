@@ -66,6 +66,8 @@ const PORT = 2.4;
 const DUR: Record<TStep['kind'], number> = { appear: 0.9, wrap: 0.85, unwrap: 0.85, nat: 1.6, travel: 1.9, read: 1.2, lost: 0, wait: 2.8 };
 /** Seconds a knocked packet tumbles before it is gone. */
 export const TUMBLE = 1.8;
+/** Seconds a packet takes to swing round at a router, before the step's own work starts. */
+export const TURN_TIME = 0.7;
 
 const sameAxis = (a: Axis, b: Axis): boolean => a.x === b.x && a.y === b.y;
 
@@ -120,6 +122,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
             if (!sameAxis(want, facing)) {
               seg.turn = { from: facing, to: want };
               facing = want;
+              d += TURN_TIME;
             }
           }
           break;
@@ -171,7 +174,8 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
 
 function addCues(cues: Cue[], seg: Seg, story: Story): void {
   const s = seg.step;
-  const at = (f: number): number => seg.t0 + (seg.t1 - seg.t0) * f;
+  const start = seg.turn ? seg.t0 + TURN_TIME : seg.t0;
+  const at = (f: number): number => start + (seg.t1 - start) * f;
   if (s.kind === 'wrap') cues.push({ t: at(0.35 + 0.65 * 0.45), sound: s.layer === 'eth' ? 'sleeve' : 'snap' });
   if (s.kind === 'unwrap' && s.layer === 'eth') cues.push({ t: at(0.35 + 0.65 * 0.62), sound: 'thud' });
   if (s.kind === 'nat') cues.push({ t: at(0.5), sound: 'flip' });
@@ -225,7 +229,19 @@ export function packetPos(tl: Timeline, seg: Seg, k: number): Vec3 {
     const local = k * (seg.t1 - seg.t0);
     return travelPath(tl.pos, tl.trayZ, s.from, s.to, Math.min(seg.knock.k, local / seg.knock.travel));
   }
-  return lerpV(seg.p0, seg.p1, easeInOut(clamp01(k / 0.4)));
+  return lerpV(seg.p0, seg.p1, easeInOut(clamp01(workK(seg, k) / 0.4)));
+}
+
+/** Progress of a step's own work (after any turn), 0..1. */
+export function workK(seg: Seg, k: number): number {
+  if (!seg.turn) return k;
+  const dur = seg.t1 - seg.t0;
+  return clamp01((k * dur - TURN_TIME) / (dur - TURN_TIME));
+}
+
+/** Progress of the swing round at the start of a turning step, 0..1 (1 when there is no turn). */
+export function turnK(seg: Seg, k: number): number {
+  return seg.turn ? clamp01((k * (seg.t1 - seg.t0)) / TURN_TIME) : 1;
 }
 
 /** Which layer pieces are on the packet when a segment starts (before its own change). */
