@@ -29,9 +29,12 @@ export class Sound {
       case 'thud':
         this.tone(c, t, 'sine', 160, 70, 0.14, 0.18);
         break;
-      case 'flip':
-        this.tone(c, t, 'square', 500, 900, 0.06, 0.03);
-        this.tone(c, t + 0.07, 'square', 900, 1300, 0.05, 0.03);
+      case 'swap':
+        // A quick whoosh up, a stamp coming down, a bright ding.
+        this.tone(c, t, 'sine', 300, 1500, 0.11, 0.1);
+        this.tone(c, t + 0.1, 'square', 190, 70, 0.1, 0.14);
+        this.noise(c, t + 0.1, 0.05, 0.1, 2500);
+        [1320, 1980].forEach((f, i) => this.tone(c, t + 0.13 + i * 0.05, 'triangle', f, f, 0.22, 0.09));
         break;
       case 'bonk':
         this.tone(c, t, 'sine', 420, 110, 0.25, 0.22);

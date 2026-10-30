@@ -1,10 +1,10 @@
 import { el } from './svg';
 import { box, cylinder, line, rbox, tile } from './prims';
 import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, easeOutBounce, iso, lerp, U, v3, type Vec3 } from './project';
-import { drawCloud, drawScissors, drawShield, rain } from './props';
+import { drawBolt, drawSatellite, drawScissors, drawShield, drawSpyglass } from './icons';
 import { shade } from './shade';
 import type { Seen, Story, Trip, Wrap } from './story';
-import { addressBefore, DEVICE_TOP, FACE_EMOJI, frameAt, LEVEL, lockPose, packetPos, packetPose, segAt, trayOpacity, wrapsBefore, type LockPose, type Seg, type Timeline } from './timeline';
+import { addressBefore, DEVICE_TOP, FACE_EMOJI, frameAt, LEVEL, lockPose, packetPos, packetPose, segAt, swapMoment, trayOpacity, wrapsBefore, type LockPose, type Seg, type Timeline } from './timeline';
 
 export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', vpn: '#2e5e6e', eth: '#e08b33', wifi: '#2a9d8f' } as const;
 const DEVICE = '#d9d0c2';
@@ -277,7 +277,10 @@ export class NetworkScene {
   private renderSpy(v: number): void {
     this.spyNote.replaceChildren();
     const line = this.spy;
-    if (!line || v < 0) return;
+    if (!line) return;
+    const glass = this.linkSpot(line, 0.66, 30);
+    drawSpyglass(el('g', { transform: `translate(${glass.sx.toFixed(1)} ${glass.sy.toFixed(1)})` }, this.spyNote));
+    if (v < 0) return;
     let last: { seen: Seen; t0: number; t1: number } | null = null;
     for (const s of this.tl.segs) {
       const st = s.step;
@@ -326,6 +329,8 @@ export class NetworkScene {
           line(g, foot, top, { class: 'beam' });
           cylinder(g, { x: foot.x, y: foot.y, z: 0, r: 0.35, h: 0.3, color: DEVICE });
         }
+        const sat = iso(top.x, top.y, top.z);
+        drawSatellite(el('g', { transform: `translate(${sat.sx.toFixed(1)} ${sat.sy.toFixed(1)})` }, g));
       } else if (this.cut.has(l.id)) {
         // Two loose ends with a gap between them.
         const [a, b] = path as [Vec3, Vec3];
@@ -371,12 +376,6 @@ export class NetworkScene {
   hasLink(id: string): boolean {
     const l = this.story.links.find((x) => x.id === id);
     return !!l && this.linkShown(l.a) && this.linkShown(l.b);
-  }
-
-  /** The top of a device, for something standing on it. */
-  deviceTop(id: string): { sx: number; sy: number } {
-    const d = this.tl.pos.get(id) ?? { x: 0, y: 0 };
-    return iso(d.x, d.y, (DEVICE_TOP[this.tl.kind.get(id) ?? ''] ?? 1) + 0.9);
   }
 
   /** Which cables are cut. */
@@ -439,12 +438,10 @@ export class NetworkScene {
         });
         el('polygon', { points: spikes.join(' '), class: 'spark' }, this.storm);
       }
-      // A rain cloud over every stormy line.
-      const c = this.linkSpot(id, 0.5, 62);
-      const cloud = el('g', { class: 'storm-cloud', transform: `translate(${c.sx.toFixed(1)} ${c.sy.toFixed(1)}) scale(0.8)` }, this.storm);
-      drawCloud(cloud);
-      const drops = el('g', {}, cloud);
-      rain(drops, time, true);
+      // A chunky bolt stands over every stormy line, trembling.
+      const c = this.linkSpot(id, 0.5, 52);
+      const jump = (rnd(li + 91) - 0.5) * 5;
+      drawBolt(el('g', { class: 'storm-bolt', transform: `translate(${(c.sx + jump).toFixed(1)} ${c.sy.toFixed(1)}) scale(${(0.92 + 0.12 * rnd(li + 77)).toFixed(3)})` }, this.storm));
     });
   }
 
@@ -520,14 +517,6 @@ export class NetworkScene {
     this.fit();
   }
 
-  /** The two screen ends of a cable. */
-  cableEnds(link: string): [{ sx: number; sy: number }, { sx: number; sy: number }] | null {
-    const l = this.story.links.find((x) => x.id === link);
-    const a = l && this.tl.pos.get(l.a);
-    const b = l && this.tl.pos.get(l.b);
-    return a && b ? [iso(a.x, a.y, 0), iso(b.x, b.y, 0)] : null;
-  }
-
   /** The remembered address on each device's screen (only the one running shows anything else). */
   setRemembered(known: ReadonlyMap<string, { site: string; ip: string }>): void {
     this.remembered = known;
@@ -540,7 +529,8 @@ export class NetworkScene {
     const minX = Math.min(...pts.map((p) => p.sx)) - 20;
     const maxX = Math.max(...pts.map((p) => p.sx)) + 20;
     const minY = Math.min(...pts.map((p) => p.sy)) - 10;
-    const maxY = Math.max(...pts.map((p) => p.sy)) + 40;
+    // Room for the device names, and for the bar over the bottom of the view.
+    const maxY = Math.max(...pts.map((p) => p.sy)) + 90;
     this.overview = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
   }
 
@@ -599,18 +589,6 @@ export class NetworkScene {
   /** The point `x`, `y` screen pixels from the top left of the view, in SVG units. */
   viewPoint(c: Camera, x: number, y: number): { sx: number; sy: number } {
     return { sx: c.cx + (x - (this.svg.clientWidth || 1) / 2) / c.scale, sy: c.cy + (y - (this.svg.clientHeight || 1) / 2) / c.scale };
-  }
-
-  /**
-   * Where tool number `i` waits, in SVG units: in a row right of the buttons, whose right edge is `barRight` px,
-   * stacking upwards when the view is too narrow for the row.
-   */
-  toolSlot(c: Camera, barRight: number, i: number): { sx: number; sy: number } {
-    const cw = this.svg.clientWidth || 1;
-    const ch = this.svg.clientHeight || 1;
-    const first = barRight + 58;
-    const columns = Math.max(1, Math.floor((cw - 50 - first) / 84) + 1);
-    return this.viewPoint(c, Math.min(first + (i % columns) * 84, cw - 50), ch - 66 - Math.floor(i / columns) * 84);
   }
 
   /** Sets the viewBox so it matches the element's aspect ratio. */
@@ -678,6 +656,8 @@ export class NetworkScene {
       case 'vpn-server': {
         box(g, { x: x - 1.0, y: y - 0.8, z: 0, w: 2.0, d: 1.6, h: 1.3, ...neutral });
         for (let i = 0; i < 3; i++) line(g, v3(x - 0.7, y + 0.8, 1.0 - i * 0.3), v3(x + 0.7, y + 0.8, 1.0 - i * 0.3), { class: 'slot' });
+        const top = iso(x, y, 2.2);
+        drawShield(el('g', { transform: `translate(${top.sx.toFixed(1)} ${top.sy.toFixed(1)})` }, g));
         return null;
       }
       case 'dns-resolver': {
@@ -1259,28 +1239,27 @@ export class NetworkScene {
     }
   }
 
-  /** "from → to" on the IP piece. At the home router one side flips (NAT). */
+  /** "from → to" on the IP piece. When an address changes it is the big moment of the step, see `swapMoment`. */
   private addressTag(seg: Seg, k: number, p: Vec3, op: number): void {
     const a = addressBefore(seg);
-    let flipScale = 1;
+    const old = { ...a };
     let changed: 'from' | 'to' | 'both' | null = null;
-    if (seg.step.kind === 'nat') {
-      changed = seg.step.which;
-      const w = clamp01((k - 0.3) / 0.4);
-      if (w >= 0.5) a[seg.step.which] = seg.step.after;
-      flipScale = Math.abs(1 - 2 * w);
-    } else if ((seg.step.kind === 'wrap' || seg.step.kind === 'unwrap') && seg.step.addr) {
-      // Going into the VPN box the packet gets a whole new address label, and coming out it has its old one again.
+    const step = seg.step;
+    const m = swapMoment(k);
+    if (step.kind === 'nat') {
+      changed = step.which;
+      if (m.flip >= 0.5) a[step.which] = step.after;
+    } else if ((step.kind === 'wrap' || step.kind === 'unwrap') && step.addr) {
+      // Going into the VPN box the packet gets a whole new address label; coming out it has its old one again.
       changed = 'both';
-      const w = clamp01((k - 0.45) / 0.3);
-      if (w >= 0.5) Object.assign(a, seg.step.addr);
-      flipScale = Math.abs(1 - 2 * w);
+      if (m.flip >= 0.5) Object.assign(a, step.addr);
     }
     const s = iso(p.x, p.y, p.z);
-    const pop = changed ? 1.25 : 1;
+    const pop = changed ? 1 + 0.75 * m.grow : 1;
     // The arrow says which way we're going: out from the asker, or back to it.
     const back = !seg.trip.outward;
-    const g = el('g', { class: `addr ${back ? 'addr-back' : 'addr-out'}`, opacity: op.toFixed(3), transform: `translate(${s.sx.toFixed(1)} ${s.sy.toFixed(1)}) scale(${pop})` }, this.tags);
+    const g = el('g', { class: `addr ${back ? 'addr-back' : 'addr-out'}`, opacity: op.toFixed(3), transform: `translate(${s.sx.toFixed(1)} ${s.sy.toFixed(1)}) scale(${pop.toFixed(3)})` }, this.tags);
+    const flash = el('g', {}, g);
     // With a VPN the numbers alone don't say much: name who they belong to.
     const caption = (word: string, ip: string): string => (this.story.vpn && this.story.names[ip] ? `${word} ${this.story.names[ip]}` : word);
     const fromCap = caption('from', a.from);
@@ -1290,19 +1269,57 @@ export class NetworkScene {
     const width = fromW + toW + 44;
     // Small "from" / "to" captions sit above the addresses; the numbers sit on the lower line.
     const NUM_Y = 7;
-    el('rect', { x: -width / 2, y: -19, width, height: 38, rx: 7, class: 'addr-bg' }, g);
-    const part = (caption: string, text: string, x: number, w: number, hot: boolean): void => {
-      const cap = el('text', { x: (x + w / 2).toFixed(1), y: -8, 'text-anchor': 'middle', dy: '0.35em', class: 'addr-cap' }, g);
-      cap.textContent = caption;
-      const pg = el('g', { transform: `translate(${(x + w / 2).toFixed(1)} ${NUM_Y}) scale(1 ${hot ? flipScale.toFixed(3) : 1})` }, g);
-      if (hot) el('rect', { x: -w / 2 - 4, y: -9, width: w + 8, height: 18, rx: 4, class: 'addr-hot' }, pg);
+    const swapping = changed && m.grow > 0.01;
+    el('rect', { x: -width / 2, y: -19, width, height: 38, rx: 7, class: swapping ? 'addr-bg addr-swap' : 'addr-bg' }, g);
+    const fallen: (() => void)[] = [];
+    const part = (word: 'from' | 'to', cap: string, x: number, w: number, hot: boolean): void => {
+      const cx = x + w / 2;
+      const capText = el('text', { x: cx.toFixed(1), y: -8, 'text-anchor': 'middle', dy: '0.35em', class: hot ? 'addr-cap hot' : 'addr-cap' }, g);
+      capText.textContent = cap;
+      const yScale = hot ? Math.max(0.04, Math.abs(1 - 2 * m.flip)) : 1;
+      const land = hot && m.flip >= 0.5 ? 1 + 0.6 * (1 - easeOutBack(clamp01(m.stamp / 0.5))) : 1;
+      const pg = el('g', { transform: `translate(${cx.toFixed(1)} ${NUM_Y}) scale(${land.toFixed(3)} ${(yScale * land).toFixed(3)})` }, g);
+      if (hot) el('rect', { x: -w / 2 - 4, y: -9, width: w + 8, height: 18, rx: 4, fill: mix('#ff9f1c', '#ffe7a8', m.stamp) }, pg);
       const t = el('text', { 'text-anchor': 'middle', dy: '0.35em', class: hot ? 'addr-text hot' : 'addr-text' }, pg);
-      t.textContent = text;
+      t.textContent = a[word];
+      // The old value drops off the tag.
+      if (hot && m.flip >= 0.5 && m.stamp < 1 && old[word] !== a[word]) {
+        fallen.push(() => {
+          const y = NUM_Y + 80 * easeIn(m.stamp);
+          const gone = el('text', { 'text-anchor': 'middle', dy: '0.35em', class: 'addr-text addr-old', opacity: (1 - m.stamp).toFixed(3), transform: `translate(${cx.toFixed(1)} ${y.toFixed(1)}) rotate(${(28 * m.stamp).toFixed(1)})` }, g);
+          gone.textContent = old[word];
+        });
+      }
     };
-    part(fromCap, a.from, -width / 2 + 10, fromW, changed === 'from' || changed === 'both');
+    // One bang, behind the field that changes, or the middle when both do.
+    if (changed && m.stamp > 0 && m.stamp < 1) {
+      const x = changed === 'both' ? 0 : changed === 'from' ? -width / 2 + 10 + fromW / 2 : width / 2 - 10 - toW / 2;
+      this.swapBurst(flash, x, NUM_Y, m.stamp, changed === 'both' ? 1.5 : 1);
+    }
+    part('from', fromCap, -width / 2 + 10, fromW, changed === 'from' || changed === 'both');
     const arrow = el('text', { x: -width / 2 + 22 + fromW, y: NUM_Y, 'text-anchor': 'middle', dy: '0.35em', class: 'addr-arrow' }, g);
     arrow.textContent = '→';
-    part(toCap, a.to, -width / 2 + 34 + fromW, toW, changed === 'to' || changed === 'both');
+    part('to', toCap, -width / 2 + 34 + fromW, toW, changed === 'to' || changed === 'both');
+    for (const drop of fallen) drop();
+  }
+
+  /** The anime bang behind a value landing: a yellow star and speed lines. */
+  private swapBurst(parent: SVGGElement, x: number, y: number, q: number, wide: number): void {
+    const g = el('g', { opacity: (1 - q).toFixed(3), transform: `translate(${x.toFixed(1)} ${y.toFixed(1)}) scale(${wide} 1)` }, parent);
+    const r = 28 + 24 * easeOut(q);
+    const pts: string[] = [];
+    for (let j = 0; j < 20; j++) {
+      const a = (j / 20) * Math.PI * 2 + 0.2;
+      const rr = j % 2 ? r * 0.55 : r;
+      pts.push(`${(Math.cos(a) * rr * 1.5).toFixed(1)},${(Math.sin(a) * rr).toFixed(1)}`);
+    }
+    el('polygon', { points: pts.join(' '), fill: BURST, class: 'burst-star' }, g);
+    for (let j = 0; j < 12; j++) {
+      const a = (j / 12) * Math.PI * 2 + 0.13;
+      const r1 = r * 1.05 + 4;
+      const r2 = r1 + 8 + 12 * easeOut(q);
+      el('line', { x1: Math.cos(a) * r1 * 1.5, y1: Math.sin(a) * r1, x2: Math.cos(a) * r2 * 1.5, y2: Math.sin(a) * r2, class: 'speed-line' }, g);
+    }
   }
 }
 

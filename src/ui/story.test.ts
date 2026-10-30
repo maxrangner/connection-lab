@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fetchWebPage, runScenario, type ManualFault } from '../sim';
 import { buildStory, cardLabel, dnsCardLabel, type Trip } from './story';
-import { addressBefore, buildTimeline, lockPose, packetPose, seenSoFar, stepTarget, trayAngle } from './timeline';
+import { addressBefore, buildTimeline, lockPose, packetPose, seenSoFar, stepTarget, swapMoment, trayAngle } from './timeline';
 
 const run = (manual: ManualFault[] = []) => buildStory(runScenario(fetchWebPage(), { seed: 1, faults: { randomLoss: 0, manual } }));
 const story = run();
@@ -97,7 +97,7 @@ describe('knocking a packet off a cable', () => {
   });
 });
 
-describe('stickers', () => {
+describe('setup options', () => {
   it('bigger page: the first website comes back in numbered parts', () => {
     const s = buildStory(runScenario(fetchWebPage({ site: 'info.cern.ch' }), { seed: 1, faults: { randomLoss: 0, manual: [] } }));
     expect(s.site).toBe('info.cern.ch');
@@ -456,5 +456,25 @@ describe('naming addresses', () => {
     expect(s.names['10.8.0.2']).toBe('Laptop');
     expect(s.names['203.0.113.7']).toBe('Home router');
     expect(s.names['104.20.23.154']).toBe('Web server');
+  });
+});
+
+describe('an address changing', () => {
+  it('swells, flips, lands and settles back to normal', () => {
+    expect(swapMoment(0).grow).toBeCloseTo(0);
+    expect(swapMoment(0.6).grow).toBeGreaterThan(0.9);
+    expect(swapMoment(1).grow).toBeCloseTo(0);
+    expect(swapMoment(0.3).flip).toBe(0);
+    expect(swapMoment(0.6).flip).toBe(1);
+    expect(swapMoment(1).stamp).toBe(1);
+  });
+
+  it('gets a sound at the home router and at the VPN box, and more time the first time', () => {
+    const s = buildStory(runScenario(fetchWebPage({ vpn: true }), { seed: 1, faults: { randomLoss: 0, manual: [] } }));
+    const tl = buildTimeline(s);
+    expect(tl.cues.filter((c) => c.sound === 'swap').length).toBeGreaterThanOrEqual(tl.segs.filter((x) => x.step.kind === 'nat').length);
+    const nats = tl.segs.filter((x) => x.step.kind === 'nat');
+    expect(nats[0]!.t1 - nats[0]!.t0).toBeCloseTo(2.6);
+    expect(nats[nats.length - 1]!.t1 - nats[nats.length - 1]!.t0).toBeGreaterThan(1.3);
   });
 });

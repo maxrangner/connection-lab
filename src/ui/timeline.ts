@@ -1,4 +1,4 @@
-import { clamp01, easeIn, easeInOut, easeOutBounce, lerpV, v3, type Vec3 } from './project';
+import { clamp01, easeIn, easeInOut, easeOutBack, easeOutBounce, lerpV, v3, type Vec3 } from './project';
 import type { Frame, Step, Story, Trip, Wrap } from './story';
 
 /**
@@ -48,7 +48,7 @@ export interface Seg {
 
 export interface Cue {
   t: number;
-  sound: 'snap' | 'sleeve' | 'thud' | 'flip' | 'bonk' | 'zap' | 'surprise' | 'pop' | 'chime' | 'lock' | 'unlock' | 'key' | 'snip';
+  sound: 'snap' | 'sleeve' | 'thud' | 'swap' | 'bonk' | 'zap' | 'surprise' | 'pop' | 'chime' | 'lock' | 'unlock' | 'key' | 'snip';
 }
 
 export interface Timeline {
@@ -91,7 +91,7 @@ const LEVEL_GAP = 1.15;
 /** How far from a device's centre the cable port sits. */
 const PORT = 2.4;
 /** Seconds of visual time per step, the first time it happens. */
-const DUR: Record<TStep['kind'], number> = { appear: 0.9, lock: 1.5, unlock: 1.3, wrap: 0.85, unwrap: 0.85, nat: 1.6, travel: 1.9, read: 1.2, lost: 0, wait: 2.8 };
+const DUR: Record<TStep['kind'], number> = { appear: 0.9, lock: 1.5, unlock: 1.3, wrap: 0.85, unwrap: 0.85, nat: 2.6, travel: 1.9, read: 1.2, lost: 0, wait: 2.8 };
 /** A link this slow (one-way seconds) is drawn as a radio hop up to a satellite. */
 export const SLOW_DELAY = 0.1;
 export const SKY_HEIGHT = 9;
@@ -125,7 +125,13 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   let streak = 0;
   const pace = (s: TStep, trip: Trip): number => {
     const tired = Math.max(0.35, 0.8 ** streak);
-    if (s.kind === 'appear' || s.kind === 'read' || s.kind === 'wait' || s.kind === 'nat') return tired;
+    // An address changing is a moment to watch, the first few times.
+    if (s.kind === 'nat') {
+      const m = seen.get('nat') ?? 0;
+      seen.set('nat', m + 1);
+      return (0.55 + 0.45 * 0.7 ** m) * tired;
+    }
+    if (s.kind === 'appear' || s.kind === 'read' || s.kind === 'wait') return tired;
     // The VPN box going on or coming off is a moment to watch, the first few times.
     if ((s.kind === 'wrap' || s.kind === 'unwrap') && s.layer === 'vpn') {
       const m = seen.get('vpn') ?? 0;
@@ -244,7 +250,7 @@ function addCues(cues: Cue[], seg: Seg, story: Story): void {
   if (s.kind === 'wrap') cues.push({ t: at(0.35 + 0.65 * 0.45), sound: s.layer === 'eth' ? 'sleeve' : s.layer === 'vpn' ? 'lock' : 'snap' });
   if (s.kind === 'unwrap' && s.layer === 'vpn') cues.push({ t: at(0.5), sound: 'unlock' });
   if (s.kind === 'unwrap' && s.layer === 'eth') cues.push({ t: at(0.35 + 0.65 * 0.62), sound: 'thud' });
-  if (s.kind === 'nat') cues.push({ t: at(0.5), sound: 'flip' });
+  if (s.kind === 'nat' || ((s.kind === 'wrap' || s.kind === 'unwrap') && s.addr)) cues.push({ t: at(0.44), sound: 'swap' });
   if (s.kind === 'lost' && seg.knock) cues.push({ t: seg.t0 + seg.knock.k * seg.knock.travel, sound: seg.knock.byYou ? 'bonk' : seg.knock.cut ? 'thud' : 'zap' });
   if (s.kind === 'lock') cues.push({ t: at(0.62), sound: 'lock' });
   if (s.kind === 'unlock') cues.push({ t: at(0.4), sound: 'unlock' });
@@ -496,4 +502,16 @@ export function stepTarget(tl: Timeline, from: number, dir: 1 | -1): number {
   const marks = [...new Set(tl.segs.map((s) => s.t0)), tl.total].sort((a, b) => a - b);
   if (dir > 0) return marks.find((m) => m > from + 0.01) ?? tl.total;
   return [...marks].reverse().find((m) => m < from - 0.2) ?? 0;
+}
+
+/**
+ * The big moment when an address changes, at progress k of a step: the tag swells (`grow`), the field flips over
+ * (`flip`, the new value shows from 0.5), then the new value lands with a bang and the old one falls away (`stamp`).
+ */
+export function swapMoment(k: number): { grow: number; flip: number; stamp: number } {
+  return {
+    grow: easeOutBack(clamp01((k - 0.1) / 0.16)) * (1 - easeIn(clamp01((k - 0.84) / 0.16))),
+    flip: clamp01((k - 0.36) / 0.16),
+    stamp: clamp01((k - 0.44) / 0.3),
+  };
 }
