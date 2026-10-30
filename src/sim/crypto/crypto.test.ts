@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { openRecords, decryptHttp, sessionStream } from '../proto/tls';
 import { TLS_FLIGHTS, TLS_REQUEST, TLS_SECRETS } from '../scenarios/tlsCapture_example_com';
-import { aes128GcmDecrypt, hkdfExpandLabel, hmacSha256, sha256 } from './crypto';
+import { aes128GcmDecrypt, chachaPolyOpen, chachaPolySeal, hkdfExpandLabel, hmacSha256, sha256 } from './crypto';
 
 const bytes = (h: string): Uint8Array => new Uint8Array((h.match(/../g) ?? []).map((x) => parseInt(x, 16)));
 const hex = (b: Uint8Array): string => [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
@@ -58,5 +58,26 @@ describe('the captured HTTPS session really decrypts', () => {
     const page = new TextDecoder().decode(decryptHttp(session, 'server', sessionStream(session, 'server')));
     expect(page.startsWith('HTTP/1.1 200 OK')).toBe(true);
     expect(page).toContain('<title>Example Domain</title>');
+  });
+});
+
+describe('ChaCha20-Poly1305 (RFC 8439 section 2.8.2)', () => {
+  const key = bytes('808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f');
+  const nonce = bytes('070000004041424344454647');
+  const aad = bytes('50515253c0c1c2c3c4c5c6c7');
+  const plain = ascii("Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.");
+  const sealed =
+    'd31a8d34648e60db7b86afbc53ef7ec2a4aded51296e08fea9e2b5a736ee62d63dbea45e8ca9671282fafb69da92728b1a71de0a9e060b2905d6a5b67ecd3b3692ddbd7f2d778b8c9803aee328091b58fab324e4fad675945585808b4831d7bc3ff4def08e4b7a9de576d26586cec64b6116' +
+    '1ae10b594f09e26a7e902ecbd0600691';
+
+  it('seals to the published bytes and opens them again', () => {
+    expect(hex(chachaPolySeal(key, nonce, aad, plain))).toBe(sealed);
+    expect(hex(chachaPolyOpen(key, nonce, aad, bytes(sealed))!)).toBe(hex(plain));
+  });
+
+  it('rejects a changed bit', () => {
+    const bad = bytes(sealed);
+    bad[7] = bad[7]! ^ 1;
+    expect(chachaPolyOpen(key, nonce, aad, bad)).toBeNull();
   });
 });

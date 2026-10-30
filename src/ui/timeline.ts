@@ -79,12 +79,14 @@ const POS: Record<string, { x: number; y: number }> = {
   router: { x: 16, y: 0 },
   'web-server': { x: 24, y: 0 },
   'dns-resolver': { x: 16, y: -8 },
+  // Branches off the ISP router the other way, towards the viewer.
+  'vpn-server': { x: 16, y: 8 },
 };
 
-export const DEVICE_TOP: Record<string, number> = { laptop: 1.7, phone: 2.0, 'home-router': 0.55, router: 0.8, 'web-server': 2.6, 'dns-resolver': 1.1 };
+export const DEVICE_TOP: Record<string, number> = { laptop: 1.7, phone: 2.0, 'home-router': 0.55, router: 0.8, 'web-server': 2.6, 'dns-resolver': 1.1, 'vpn-server': 1.3 };
 export const CABLE_Z = 0.55;
-/** Tray levels: 0 Ethernet, 1 IP, 2 transport, 3 app. */
-export const LEVEL: Record<Wrap | 'app', number> = { eth: 0, ip: 1, l4: 2, app: 3 };
+/** Tray levels: 0 Ethernet, 1 IP, 2 transport, 3 app. The VPN case goes on just above Ethernet. */
+export const LEVEL: Record<Wrap | 'app', number> = { eth: 0, vpn: 0.5, ip: 1, l4: 2, app: 3 };
 const LEVEL_GAP = 1.15;
 /** How far from a device's centre the cable port sits. */
 const PORT = 2.4;
@@ -196,7 +198,8 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
     t += 0.5;
   });
 
-  const isRouter = (device: string): boolean => (kind.get(device) ?? '').includes('router');
+  // Devices that only pass packets on, so they never open them further than IP.
+  const isRouter = (device: string): boolean => /router|vpn/.test(kind.get(device) ?? '');
   // Each end has the session key once it has read the other side's last open "hello": from the two hellos both
   // compute the same secret, so the two keys are the same.
   const keys = new Map<string, number>();
@@ -230,7 +233,8 @@ function arrivalFace(trip: Trip, device: string, arrived: Set<string>, filled: S
 function addCues(cues: Cue[], seg: Seg, story: Story): void {
   const s = seg.step;
   const at = (f: number): number => seg.t0 + (seg.t1 - seg.t0) * f;
-  if (s.kind === 'wrap') cues.push({ t: at(0.35 + 0.65 * 0.45), sound: s.layer === 'eth' ? 'sleeve' : 'snap' });
+  if (s.kind === 'wrap') cues.push({ t: at(0.35 + 0.65 * 0.45), sound: s.layer === 'eth' ? 'sleeve' : s.layer === 'vpn' ? 'lock' : 'snap' });
+  if (s.kind === 'unwrap' && s.layer === 'vpn') cues.push({ t: at(0.5), sound: 'unlock' });
   if (s.kind === 'unwrap' && s.layer === 'eth') cues.push({ t: at(0.35 + 0.65 * 0.62), sound: 'thud' });
   if (s.kind === 'nat') cues.push({ t: at(0.5), sound: 'flip' });
   if (s.kind === 'lost' && seg.knock) cues.push({ t: seg.t0 + seg.knock.k * seg.knock.travel, sound: seg.knock.byYou ? 'bonk' : seg.knock.cut ? 'thud' : 'zap' });
@@ -363,6 +367,7 @@ export function addressBefore(seg: Seg): { from: string; to: string } {
   for (const s of seg.trip.steps) {
     if (s === seg.step) break;
     if (s.kind === 'nat') a[s.which] = s.after;
+    if ((s.kind === 'wrap' || s.kind === 'unwrap') && s.addr) Object.assign(a, s.addr);
   }
   return a;
 }

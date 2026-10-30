@@ -4,7 +4,10 @@ import type { EventOf, SimEventType } from './events/SimEvent';
 import type { FaultPlan } from './faults';
 import { runScenario, type SimResult } from './run';
 import { ADDR, fetchWebPage, type FetchWebPageOptions } from './scenarios/fetchWebPage';
+import { parseIpv4 } from './proto/ipv4';
 import { parseWifi } from './proto/wifi';
+import { openWgData } from './proto/wireguard';
+import { tunnelKeys } from './stack/vpn';
 import { CERN_HTTP_RESPONSE_BASE64, CERN_IP } from './scenarios/infoCernCapture';
 
 const run = (opts: FetchWebPageOptions, faults: FaultPlan = { randomLoss: 0, manual: [] }, seed = 1): SimResult =>
@@ -197,5 +200,56 @@ describe('a cut cable', () => {
     const r = cutRun([{ link: 'lan', from: 0 }], { warmArp: true });
     expect(of(r, 'drop').map((d) => r.packets.get(d.packetId)!.kind)).toEqual(['dns', 'dns']);
     expect(of(r, 'app').find((e) => e.action === 'error')?.info?.reason).toBe('DNS lookup timed out');
+  });
+});
+
+describe('VPN (a WireGuard tunnel)', () => {
+  const r = run({ vpn: true });
+  const frames = (link: string) => of(r, 'tx').filter((e) => e.linkId === link).map((e) => r.pdus.get(e.frameId)!);
+
+  it('still looks up the address and loads the page, http and https, laptop and phone', () => {
+    for (const o of [{}, { https: true }, { from: 'phone' as const }, { site: 'info.cern.ch' as const }]) {
+      const x = run({ vpn: true, ...o });
+      expect(of(x, 'app').some((e) => e.action === 'done')).toBe(true);
+      expect(of(x, 'app').find((e) => e.action === 'dns-answer')).toBeTruthy();
+    }
+  });
+
+  it('on the home side and at the ISP every frame is just UDP to the VPN server', () => {
+    for (const link of ['lan', 'wan']) {
+      expect(frames(link).length).toBeGreaterThan(8);
+      for (const f of frames(link)) {
+        expect(f.layers.map((l) => l.protocol).slice(1).filter((p) => p !== 'arp')).toEqual(f.first === 'ethernet' && f.layers[1]?.protocol === 'arp' ? [] : ['ipv4', 'udp', 'wireguard']);
+      }
+    }
+  });
+
+  it('the real sealed bytes open with the session key: inside is a packet to the real destination', () => {
+    const f = frames('wan').find((x) => x.layers.some((l) => l.protocol === 'wireguard'))!;
+    const wg = f.layers.find((l) => l.protocol === 'wireguard')!;
+    const opened = openWgData(tunnelKeys(1).up, f.bytes.slice(wg.start, wg.end))!;
+    const ip = parseIpv4(opened, 0);
+    expect(ip.src).toBe(ADDR.vpn.tunnelIp);
+    expect(ip.dst).toBe(ADDR.resolver.ip);
+  });
+
+  it('past the VPN server packets are ordinary again, from its address, so the web server never sees the home address', () => {
+    const toServer = frames('bb2').filter((f) => f.layers.some((l) => l.protocol === 'http'));
+    expect(toServer.length).toBeGreaterThan(0);
+    for (const f of frames('bb2')) {
+      const ip = f.layers.find((l) => l.protocol === 'ipv4')!;
+      const addrs = ip.fields.filter((x) => /ipv4\.(src|dst)/.test(x.key)).map((x) => x.display);
+      expect(addrs).toContain(ADDR.vpn.ip);
+      expect(addrs).not.toContain(ADDR.homeWan.ip);
+    }
+  });
+
+  it('every WireGuard field has an explanation, and a lost sealed packet is resent', () => {
+    const f = frames('wan').find((x) => x.layers.some((l) => l.protocol === 'wireguard'))!;
+    for (const x of f.layers.find((l) => l.protocol === 'wireguard')!.fields) expect(x.explain.length).toBeGreaterThan(10);
+    const get = [...r.packets.values()].find((p) => p.tcp && p.tcp.len > 0)!;
+    const lost = run({ vpn: true }, { randomLoss: 0, manual: [{ packetId: get.id, linkId: 'wan' }] });
+    expect(of(lost, 'tcp:retransmit').length).toBeGreaterThan(0);
+    expect(of(lost, 'app').some((e) => e.action === 'done')).toBe(true);
   });
 });

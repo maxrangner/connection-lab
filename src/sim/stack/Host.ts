@@ -3,9 +3,11 @@ import type { IfaceSpec } from '../model';
 import { buildIpv4, IPPROTO_TCP, IPPROTO_UDP, parseIpv4 } from '../proto/ipv4';
 import { parseTcp, TCP_ACK, TCP_SYN } from '../proto/tcp';
 import type { Protocol } from '../proto/types';
-import { buildUdp, parseUdp } from '../proto/udp';
+import { buildUdp, parseUdp, UDP_HEADER_LEN } from '../proto/udp';
+import { WG_PORT } from '../proto/wireguard';
 import { Device } from './Device';
 import { TcpConnection, type TcpConnOptions, type TcpHandlers } from './tcp';
+import type { TunnelClient } from './vpn';
 
 export type UdpHandler = (from: { ip: Ip4; port: number }, data: Uint8Array, packetId: string, pduId: string) => void;
 
@@ -16,8 +18,28 @@ export class Host extends Device {
   private tcpConns = new Map<string, TcpConnection>();
   private ipId = this.rng.int(0, 0xffff);
 
+  /** With a VPN, everything this host makes goes through this tunnel. */
+  tunnel?: TunnelClient;
+
+  /** The address applications use: inside the tunnel if there is one. */
   get ip(): Ip4 {
+    return this.tunnel?.ip ?? this.realIp;
+  }
+
+  get realIp(): Ip4 {
     return this.spec.ifaces[0]!.ip;
+  }
+
+  override ownsIp(ip: Ip4): boolean {
+    return super.ownsIp(ip) || ip === this.tunnel?.ip;
+  }
+
+  sendOuter(ipBytes: Uint8Array, packetId: string): void {
+    this.sendIp(ipBytes, packetId);
+  }
+
+  deliver(iface: IfaceSpec, ipBytes: Uint8Array, packetId: string): void {
+    this.onIpv4(iface, ipBytes, packetId);
   }
 
   random32(): number {
@@ -95,12 +117,20 @@ export class Host extends Device {
       protocol: 'ipv4',
       pduId: sim.pdu(packetId, ip, 'ipv4', { appHint: app }),
     });
-    this.sendIp(ip, packetId);
+    if (this.tunnel) this.tunnel.send(ip, packetId);
+    else this.sendIp(ip, packetId);
   }
 
-  protected onIpv4(_iface: IfaceSpec, ipBytes: Uint8Array, packetId: string): void {
+  protected onIpv4(iface: IfaceSpec, ipBytes: Uint8Array, packetId: string): void {
     const sim = this.sim;
     const ip = parseIpv4(ipBytes, 0);
+    if (this.tunnel && ip.protocol === IPPROTO_UDP && ip.src === this.tunnel.server) {
+      const u = parseUdp(ipBytes, ip.headerLen);
+      if (u.srcPort === WG_PORT) {
+        this.tunnel.receive(iface, ipBytes.slice(ip.headerLen + UDP_HEADER_LEN, ip.headerLen + u.length), packetId);
+        return;
+      }
+    }
     if (!this.ownsIp(ip.dst)) {
       sim.emit({ type: 'drop', packetId, reason: 'not-for-me', deviceId: this.id });
       return;

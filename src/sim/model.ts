@@ -1,7 +1,7 @@
 import type { Ip4, Mac } from './bytes/addr';
 import type { TlsSession } from './proto/tls';
 
-export type DeviceKind = 'laptop' | 'phone' | 'home-router' | 'router' | 'dns-resolver' | 'web-server';
+export type DeviceKind = 'laptop' | 'phone' | 'home-router' | 'router' | 'dns-resolver' | 'web-server' | 'vpn-server';
 
 export interface IfaceSpec {
   /** Globally unique, e.g. "laptop.eth0". */
@@ -63,6 +63,8 @@ export interface DeviceSpec {
   apps: AppSpec[];
   /** Map position for the UI, in scene units. */
   layout: { x: number; y: number };
+  /** Send everything through a WireGuard tunnel to this server, using this inner address. */
+  tunnel?: { ip: Ip4; server: Ip4 };
   /** Linux defaults to 64. */
   initialTtl?: number;
 }

@@ -7,6 +7,7 @@ import { describeIpv4, IPPROTO_TCP, IPPROTO_UDP, parseIpv4 } from './ipv4';
 import { describeTcp, parseTcp } from './tcp';
 import { describeTls } from './tls';
 import { describeWifi, parseWifi } from './wifi';
+import { describeWireguard, WG_PORT } from './wireguard';
 import type { LayerPdu, Protocol } from './types';
 import { describeUdp, parseUdp } from './udp';
 
@@ -67,7 +68,9 @@ function walk(b: Uint8Array, proto: Protocol, o: number, end: number, ctx: Decod
       const u = parseUdp(b, o);
       const pdu = describeUdp(b, o, ctx.srcIp, ctx.dstIp);
       out.push(pdu);
-      if (u.payloadEnd > u.payloadStart && (u.srcPort === 53 || u.dstPort === 53 || ctx.appHint === 'dns')) {
+      if (u.payloadEnd > u.payloadStart && (u.srcPort === WG_PORT || u.dstPort === WG_PORT)) {
+        walk(b, 'wireguard', u.payloadStart, u.payloadEnd, ctx, out);
+      } else if (u.payloadEnd > u.payloadStart && (u.srcPort === 53 || u.dstPort === 53 || ctx.appHint === 'dns')) {
         walk(b, 'dns', u.payloadStart, u.payloadEnd, ctx, out);
       }
       return pdu.end;
@@ -85,6 +88,10 @@ function walk(b: Uint8Array, proto: Protocol, o: number, end: number, ctx: Decod
     }
     case 'dns': {
       out.push(describeDns(b, o, end));
+      return end;
+    }
+    case 'wireguard': {
+      out.push(describeWireguard(b, o, end));
       return end;
     }
     case 'tls': {

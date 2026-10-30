@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fetchWebPage, runScenario, type ManualFault } from '../sim';
 import { buildStory, cardLabel, dnsCardLabel, type Trip } from './story';
-import { buildTimeline, lockPose, packetPose, seenSoFar, stepTarget, trayAngle } from './timeline';
+import { addressBefore, buildTimeline, lockPose, packetPose, seenSoFar, stepTarget, trayAngle } from './timeline';
 
 const run = (manual: ManualFault[] = []) => buildStory(runScenario(fetchWebPage(), { seed: 1, faults: { randomLoss: 0, manual } }));
 const story = run();
@@ -399,5 +399,52 @@ describe('a cut cable in the story', () => {
     const lost = tl.segs.filter((x) => x.step.kind === 'lost');
     const trip = (i: number) => tl.segs.filter((x) => x.trip === lost[i]!.trip).reduce((d, x) => d + x.t1 - x.t0, 0);
     expect(trip(6)).toBeLessThan(trip(1));
+  });
+});
+
+describe('a VPN in the story', () => {
+  const s = buildStory(runScenario(fetchWebPage({ vpn: true }), { seed: 1, faults: { randomLoss: 0, manual: [] } }));
+  const get = s.trips.find((t) => t.card === 'GET /')!;
+  const res = s.trips.find((t) => t.card === '200 OK')!;
+  const kinds = (t: Trip): string[] => t.steps.map((x) => (x.kind === 'wrap' || x.kind === 'unwrap' ? `${x.kind}:${x.layer}` : x.kind === 'travel' ? `${x.from}>${x.to}` : x.kind));
+
+  it('seals at the laptop, opens at the VPN server, and goes on from there', () => {
+    expect(kinds(get)).toEqual([
+      'appear', 'wrap:l4', 'wrap:ip', 'wrap:vpn', 'wrap:eth', 'laptop>home',
+      'unwrap:eth', 'nat', 'wrap:eth', 'home>isp',
+      'unwrap:eth', 'wrap:eth', 'isp>vpn',
+      'unwrap:eth', 'unwrap:vpn', 'nat', 'wrap:eth', 'vpn>isp',
+      'unwrap:eth', 'wrap:eth', 'isp>server',
+      'unwrap:eth', 'unwrap:ip', 'unwrap:l4', 'read',
+    ]);
+    expect(get.tunnel).toBe(60); // outer IP 20, UDP 8, WireGuard 16, tag 16
+  });
+
+  it('the reply is sealed at the VPN server and opened at the laptop', () => {
+    const k = kinds(res);
+    expect(k.indexOf('wrap:vpn')).toBeGreaterThan(k.indexOf('server>isp'));
+    expect(k.indexOf('unwrap:vpn')).toBeGreaterThan(k.indexOf('home>laptop'));
+    expect(k[0]).toBe('appear');
+    expect(res.steps.filter((x) => x.kind === 'nat').map((x) => x.kind === 'nat' && x.device)).toEqual(['vpn', 'home']);
+  });
+
+  it('the address tag follows: inside, then the tunnel, then the VPN server sending it on', () => {
+    const tl = buildTimeline(s);
+    const on = (link: string) => addressBefore(tl.segs.find((x) => x.trip === get && x.step.kind === 'travel' && x.step.link === link)!);
+    expect(on('lan')).toEqual({ from: '192.168.1.23', to: '198.51.100.10' });
+    expect(on('wan')).toEqual({ from: '203.0.113.7', to: '198.51.100.10' });
+    expect(on('bb2')).toEqual({ from: '198.51.100.10', to: '104.20.23.154' });
+  });
+
+  it('a snoop on the home line or at the ISP sees only scrambled bytes to the VPN; past it, the plain request', () => {
+    const seen = (link: string) => {
+      const x = get.steps.find((y) => y.kind === 'travel' && y.link === link);
+      return x?.kind === 'travel' ? x.seen! : null;
+    };
+    expect(seen('wan')).toMatchObject({ kind: 'scrambled', to: '198.51.100.10' });
+    expect(seen('wan')!.lines.join()).not.toMatch(/GET|example/);
+    expect(seen('bb2')).toMatchObject({ kind: 'open', from: '198.51.100.10', lines: ['GET / HTTP/1.1', 'Host: example.com'] });
+    const dns = s.trips[0]!.steps.find((y) => y.kind === 'travel' && y.link === 'wan');
+    expect(dns?.kind === 'travel' && dns.seen?.kind).toBe('scrambled');
   });
 });

@@ -28,6 +28,8 @@ export const ADDR = {
   ispCustomer: { ip: '203.0.113.1', mac: '00:1b:21:3a:4c:01' },
   ispToResolver: { ip: '198.51.100.1', mac: '00:1b:21:3a:4c:02' },
   ispToServer: { ip: '198.51.100.5', mac: '00:1b:21:3a:4c:03' },
+  ispToVpn: { ip: '198.51.100.9', mac: '00:1b:21:3a:4c:04' },
+  vpn: { ip: '198.51.100.10', mac: '00:0c:29:5a:cc:03', tunnelIp: '10.8.0.2' },
   resolver: { ip: '1.1.1.1', mac: '00:0c:29:1d:aa:01' },
   server: { ip: CAPTURED_FROM_IP, mac: '00:0c:29:7e:bb:02' },
 } as const;
@@ -52,6 +54,11 @@ export interface FetchWebPageOptions {
   slow?: boolean;
   /** HTTPS: the same page over a real captured TLS 1.3 session, so everything after the hellos is encrypted. */
   https?: boolean;
+  /**
+   * A WireGuard VPN: every packet of the device goes sealed to the VPN server, which sends it on from its own address.
+   * Packets are smaller inside a tunnel: MSS 1380, as for WireGuard's usual MTU of 1420.
+   */
+  vpn?: boolean;
   /** The device and its home router already know each other's MAC addresses (ARP caches stay warm for a while). */
   warmArp?: boolean;
   /** Which device opens the page: the laptop on its Ethernet cable, or the phone over Wi-Fi. */
@@ -74,6 +81,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
   const warm = revisit || !!opts.warmArp;
   const from = opts.from ?? 'laptop';
   const browser = (gateway: { ip: string; mac: string }) => ({
+    ...(opts.vpn ? { tunnel: { ip: ADDR.vpn.tunnelIp, server: ADDR.vpn.ip } } : {}),
     ...(warm ? { arp: { [gateway.ip]: gateway.mac } } : {}),
     apps: [
       {
@@ -92,7 +100,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
     id: 'fetch-web-page',
     title: `Fetch ${url}`,
     startDevice: from,
-    tcp: { clientMss: mss, serverMss: 1460 },
+    tcp: { clientMss: opts.vpn ? 1380 : mss, serverMss: opts.vpn ? 1380 : 1460 },
     devices: [
       {
         id: 'laptop',
@@ -153,10 +161,12 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           { id: 'isp.cust', name: 'cust0', mac: ADDR.ispCustomer.mac, ip: ADDR.ispCustomer.ip, prefixLen: 24 },
           { id: 'isp.p1', name: 'peer1', mac: ADDR.ispToResolver.mac, ip: ADDR.ispToResolver.ip, prefixLen: 30 },
           { id: 'isp.p2', name: 'peer2', mac: ADDR.ispToServer.mac, ip: ADDR.ispToServer.ip, prefixLen: 30 },
+          { id: 'isp.p3', name: 'peer3', mac: ADDR.ispToVpn.mac, ip: ADDR.ispToVpn.ip, prefixLen: 30 },
         ],
         routes: [
           { network: '203.0.113.0', prefixLen: 24, iface: 'isp.cust' },
           { network: '1.1.1.0', prefixLen: 24, iface: 'isp.p1' },
+          { network: ADDR.vpn.ip, prefixLen: 32, iface: 'isp.p3' },
           // Real Cloudflare prefixes containing example.com's addresses.
           { network: '104.16.0.0', prefixLen: 13, iface: 'isp.p2' },
           { network: '172.64.0.0', prefixLen: 13, iface: 'isp.p2' },
@@ -166,8 +176,20 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
         arp: {
           [ADDR.homeWan.ip]: ADDR.homeWan.mac,
           [ADDR.resolver.ip]: ADDR.resolver.mac,
+          [ADDR.vpn.ip]: ADDR.vpn.mac,
           [server.ip]: server.mac,
         },
+        apps: [],
+      },
+      {
+        id: 'vpn',
+        label: 'VPN server',
+        sublabel: ADDR.vpn.ip,
+        kind: 'vpn-server',
+        layout: { x: 1040, y: 735 },
+        ifaces: [{ id: 'vpn.eth0', name: 'eth0', mac: ADDR.vpn.mac, ip: ADDR.vpn.ip, prefixLen: 32 }],
+        routes: [{ network: '0.0.0.0', prefixLen: 0, via: ADDR.ispToVpn.ip, iface: 'vpn.eth0' }],
+        arp: { [ADDR.ispToVpn.ip]: ADDR.ispToVpn.mac },
         apps: [],
       },
       {
@@ -209,6 +231,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
         ? { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: 25e6, delay: 0.28, label: 'Satellite to ISP · 25 Mbit/s · 280 ms', name: 'the satellite link' }
         : { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: 1e9, delay: 0.002, label: 'Fiber to ISP · 1 Gbit/s · 2 ms', name: 'the fiber line to the ISP' },
       { id: 'bb1', a: 'isp.p1', b: 'resolver.eth0', bitsPerSecond: 1e10, delay: 0.003, label: 'Backbone · 10 Gbit/s · 3 ms', name: 'a backbone link' },
+      { id: 'bb3', a: 'isp.p3', b: 'vpn.eth0', bitsPerSecond: 1e10, delay: 0.005, label: 'Backbone · 10 Gbit/s · 5 ms', name: 'a backbone link' },
       { id: 'bb2', a: 'isp.p2', b: 'server.eth0', bitsPerSecond: 1e10, delay: 0.004, label: 'Backbone · 10 Gbit/s · 4 ms', name: 'a backbone link' },
     ],
   };

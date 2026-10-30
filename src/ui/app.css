@@ -756,3 +756,24 @@ body {
 .grab-area {
   fill: transparent;
 }
+
+/* The VPN: a shield you stand on its spot; without it the server is only a faint shape */
+.shield {
+  fill: #2e5e6e;
+  stroke: #1d3f4b;
+  stroke-width: 2.5;
+  stroke-linejoin: round;
+}
+
+.shield-hole {
+  fill: #e6b93a;
+}
+
+.device.absent {
+  opacity: 0.16;
+  filter: grayscale(1);
+}
+
+.link.absent {
+  display: none;
+}

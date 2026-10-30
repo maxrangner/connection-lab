@@ -7,6 +7,7 @@ export { fetchWebPage, ADDR } from './scenarios/fetchWebPage';
 export { CAPTURED_AT } from './scenarios/exampleComCapture';
 export { PROTOCOL_LAYER, type Field, type LayerNum, type LayerPdu, type Protocol } from './proto/types';
 export { hexBytes, preview } from './bytes/bytes';
+export { WG_TAG_LEN } from './proto/wireguard';
 export { ETH_PREAMBLE } from './proto/ethernet';
 export { flagNames, TCP_ACK, TCP_FIN, TCP_SYN } from './proto/tcp';
 export { clientHelloSni, openRecords, sessionStream, TLS_ALERT, TLS_APPLICATION_DATA, TLS_HANDSHAKE, type OpenedRecord, type TlsSession } from './proto/tls';

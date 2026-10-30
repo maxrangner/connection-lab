@@ -218,3 +218,98 @@ export function aes128GcmDecrypt(key: Uint8Array, nonce: Uint8Array, aad: Uint8A
   }
   return out;
 }
+
+// ---------- ChaCha20-Poly1305 (RFC 8439), the cipher WireGuard uses ----------
+
+function chachaBlock(key: Uint8Array, counter: number, nonce: Uint8Array): Uint8Array {
+  const k = new DataView(key.buffer, key.byteOffset, 32);
+  const n = new DataView(nonce.buffer, nonce.byteOffset, 12);
+  const init = new Uint32Array(16);
+  init.set([0x61707865, 0x3320646e, 0x79622d32, 0x6b206574]);
+  for (let i = 0; i < 8; i++) init[4 + i] = k.getUint32(i * 4, true);
+  init[12] = counter;
+  for (let i = 0; i < 3; i++) init[13 + i] = n.getUint32(i * 4, true);
+  const x = init.slice();
+  const rotl = (v: number, c: number): number => (v << c) | (v >>> (32 - c));
+  const quarter = (a: number, b: number, c: number, d: number): void => {
+    x[a] = (x[a]! + x[b]!) >>> 0;
+    x[d] = rotl(x[d]! ^ x[a]!, 16);
+    x[c] = (x[c]! + x[d]!) >>> 0;
+    x[b] = rotl(x[b]! ^ x[c]!, 12);
+    x[a] = (x[a]! + x[b]!) >>> 0;
+    x[d] = rotl(x[d]! ^ x[a]!, 8);
+    x[c] = (x[c]! + x[d]!) >>> 0;
+    x[b] = rotl(x[b]! ^ x[c]!, 7);
+  };
+  for (let i = 0; i < 10; i++) {
+    quarter(0, 4, 8, 12);
+    quarter(1, 5, 9, 13);
+    quarter(2, 6, 10, 14);
+    quarter(3, 7, 11, 15);
+    quarter(0, 5, 10, 15);
+    quarter(1, 6, 11, 12);
+    quarter(2, 7, 8, 13);
+    quarter(3, 4, 9, 14);
+  }
+  const out = new Uint8Array(64);
+  const v = new DataView(out.buffer);
+  for (let i = 0; i < 16; i++) v.setUint32(i * 4, (x[i]! + init[i]!) >>> 0, true);
+  return out;
+}
+
+function chachaXor(key: Uint8Array, nonce: Uint8Array, data: Uint8Array): Uint8Array {
+  const out = new Uint8Array(data.length);
+  for (let o = 0, counter = 1; o < data.length; o += 64, counter++) {
+    const ks = chachaBlock(key, counter, nonce);
+    for (let i = 0; i < 64 && o + i < data.length; i++) out[o + i] = data[o + i]! ^ ks[i]!;
+  }
+  return out;
+}
+
+function poly1305(key: Uint8Array, msg: Uint8Array): Uint8Array {
+  const le = (b: Uint8Array): bigint => b.reduceRight((n, x) => (n << 8n) | BigInt(x), 0n);
+  const r = le(key.subarray(0, 16)) & 0x0ffffffc0ffffffc0ffffffc0fffffffn;
+  const s = le(key.subarray(16, 32));
+  const p = (1n << 130n) - 5n;
+  let a = 0n;
+  for (let o = 0; o < msg.length; o += 16) {
+    const block = msg.subarray(o, o + 16);
+    a = ((a + le(block) + (1n << BigInt(block.length * 8))) * r) % p;
+  }
+  let tag = (a + s) & ((1n << 128n) - 1n);
+  const out = new Uint8Array(16);
+  for (let i = 0; i < 16; i++) {
+    out[i] = Number(tag & 0xffn);
+    tag >>= 8n;
+  }
+  return out;
+}
+
+function aeadTag(key: Uint8Array, nonce: Uint8Array, aad: Uint8Array, ct: Uint8Array): Uint8Array {
+  const pad = (n: number): number => (16 - (n % 16)) % 16;
+  const mac = new Uint8Array(aad.length + pad(aad.length) + ct.length + pad(ct.length) + 16);
+  mac.set(aad);
+  const o = aad.length + pad(aad.length);
+  mac.set(ct, o);
+  const v = new DataView(mac.buffer);
+  v.setUint32(mac.length - 16, aad.length, true);
+  v.setUint32(mac.length - 8, ct.length, true);
+  return poly1305(chachaBlock(key, 0, nonce).subarray(0, 32), mac);
+}
+
+export function chachaPolySeal(key: Uint8Array, nonce: Uint8Array, aad: Uint8Array, plain: Uint8Array): Uint8Array {
+  const ct = chachaXor(key, nonce, plain);
+  const out = new Uint8Array(ct.length + 16);
+  out.set(ct);
+  out.set(aeadTag(key, nonce, aad, ct), ct.length);
+  return out;
+}
+
+/** Returns null when the tag does not match (tampered, or the wrong key). */
+export function chachaPolyOpen(key: Uint8Array, nonce: Uint8Array, aad: Uint8Array, sealed: Uint8Array): Uint8Array | null {
+  const ct = sealed.subarray(0, sealed.length - 16);
+  const tag = sealed.subarray(sealed.length - 16);
+  const want = aeadTag(key, nonce, aad, ct);
+  if (want.some((b, i) => b !== tag[i])) return null;
+  return chachaXor(key, nonce, ct);
+}

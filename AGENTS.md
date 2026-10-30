@@ -4,7 +4,7 @@ Guidance for AI agents and humans working on this repo. Read this before changin
 
 ## What this is
 
-An interactive web page that shows what really happens when a laptop fetches `http://example.com/`. The viewer drags a site card onto the laptop; a **protocol-accurate simulation** runs (ARP → DNS over UDP → TCP handshake → HTTP GET → response → FIN teardown) across a small network of isometric devices (laptop on an Ethernet cable or phone on Wi-Fi → home router with NAT → ISP router → DNS resolver / web server), and the page follows the packets a learner needs in chapters: **Find the address** (DNS), **Say hello** (SYN, SYN-ACK, ACK), **Agree on a secret** (TLS 1.3 handshake, HTTPS only), **Get the page** (GET, 200 OK). Chapter numbers follow what a run actually has.
+An interactive web page that shows what really happens when a laptop fetches `http://example.com/`. The viewer drags a site card onto the laptop; a **protocol-accurate simulation** runs (ARP → DNS over UDP → TCP handshake → HTTP GET → response → FIN teardown) across a small network of isometric devices (laptop on an Ethernet cable or phone on Wi-Fi → home router with NAT → ISP router → DNS resolver / web server, optionally through a VPN server), and the page follows the packets a learner needs in chapters: **Find the address** (DNS), **Say hello** (SYN, SYN-ACK, ACK), **Agree on a secret** (TLS 1.3 handshake, HTTPS only), **Get the page** (GET, 200 OK). Chapter numbers follow what a run actually has.
 
 Audience: curious learners up to CS-student level. **Simple, fun and educational; playful interactions; never overwhelming.** Learning happens by watching: no narration, no explanatory pop-ups or captions, only short labels on things (device names, "TCP", an address). When in doubt, show less.
 
@@ -49,7 +49,8 @@ src/sim/                     headless protocol simulation (no DOM)
   proto/                     one file per protocol: build*, parse*, describe* (fields with offsets + explanations)
   proto/wifi.ts              IEEE 802.11 data frames (To DS / From DS, three addresses, LLC/SNAP, FCS) for the phone's Wi-Fi hop
   proto/tls.ts               TLS 1.3 records: split, open with a session's keys (handshake keys until Finished, then app keys), describe
-  crypto/crypto.ts           SHA-256, HMAC, HKDF-Expand-Label, AES-128-GCM decrypt (synchronous, plain TS; tested against NIST/RFC vectors)
+  crypto/crypto.ts           SHA-256, HMAC, HKDF-Expand-Label, AES-128-GCM decrypt, ChaCha20-Poly1305 (synchronous, plain TS; tested against NIST/RFC vectors)
+  proto/wireguard.ts         WireGuard transport messages: build, open, describe (ChaCha20-Poly1305 in crypto/crypto.ts, RFC 8439 vectors)
   proto/decode.ts            decodePdu(bytes, firstProtocol) → LayerPdu[] (outermost first)
   stack/World.ts             World + Link (serialization + propagation delay, fault drops)
   stack/Device.ts            shared Ethernet/ARP/IPv4 routing for all devices
@@ -57,6 +58,7 @@ src/sim/                     headless protocol simulation (no DOM)
   stack/Router.ts            forwarding, TTL, NAT (natRewrite recomputes checksums)
   stack/tcp.ts               TCP state machine, RFC 6298 RTO, dup ACKs, SACK, FIN teardown
   stack/apps.ts              browser + DNS stub, DNS resolver, HTTP server
+  stack/vpn.ts               WireGuard tunnel: TunnelClient on the device, VpnServer that opens packets, NATs them to its own address and seals replies
   stack/https.ts             HTTPS over a captured TLS session: both ends replay their real flights in turn and decrypt the other side
   scenarios/                 scenario data (topology, addresses, layout) + captured real bytes
   faults.ts                  FaultPlan: random loss keyed by hash, manual "lose this packet"
@@ -72,7 +74,7 @@ src/ui/                      presentation (vanilla DOM + SVG, no framework, no a
                              address tag, peek chips, impact burst, timer and "!", laptop screen; cameras (overview/follow)
   sound.ts                   synthesized effects (WebAudio), muted with one button
   stickers.ts                Secure and Bigger page stickers; stick onto the card (or tap)
-  props.ts                   things on the table you put to work by hand: the storm cloud and the satellite
+  props.ts                   things on the table you put to work by hand: cloud, spyglass, scissors, satellite, VPN shield
   project.ts, prims.ts       2:1 isometric projection and easing; extruded boxes, cylinders, tiles, lines; shade.ts face colours
   svg.ts                     SVG helpers
   app.css                    all styling (warm off-white table, layer colours)
@@ -91,6 +93,9 @@ tests/fixtures/              raw captured bytes
    - **Second visit:** drag the card in again and the device still remembers the address (scenario option `revisit`), so it skips the lookup and ARP. It lasts for the DNS record's real TTL (`Story.dnsTtl`), per device and site. Tap a remembered screen between runs to forget. There is no sticker for this.
    - **Stickers on the card:** **Secure** (HTTPS) and **Bigger page** (the first website, whose reply needs numbered packets that slot into a rack beside the device before the page shows).
    - **Cloud** (`Prop`): waits beside the buttons, always in reach. Put it on any line and only that line gets random loss, shown as crackling along the link's real path (`linkWorld`), up the beams on a satellite hop; a packet the storm takes gets a lightning bolt and a zap. Drop it on another line to move the storm; tap it, or the faint outline it leaves by the buttons, to end it. Works any time: mid-run, `seenSoFar(tl, v)` freezes every frame that has set off (`FaultPlan.decided`) and the storm applies from that sim time on (`FaultPlan.lossWindows`, one line per window). Each run draws new weather.
+   - **Spyglass** (`lineTool`): put it on any line. A note shows what anyone on that line can read from each passing frame, computed from the real bytes with no keys (`Seen`, `seenOn`): addresses and plain HTTP or DNS; with HTTPS only scrambled bytes, except the site name from the ClientHello's SNI extension (`clientHelloSni`); with a VPN only scrambled bytes to the VPN server. Changes nothing about the run.
+   - **Scissors** (`lineTool`, cables only; radio cannot be cut): every frame sent on that cable is lost (`FaultPlan.cuts`, drop reason `cut`), also mid-run, when a packet riding it falls in. Resends back off for real (1, 2, 4 ... s, 60 s at most), each with a longer ring and each trip faster than the last, until the sender gives up or you mend the cable by tapping the scissors. A cable already cut at the start warms the ARP caches (`warmArp`) so the first thing to fall is a packet you can see.
+   - **Shield** (`Prop`): stand it on the VPN server's faint spot, between runs only. Scenario option `vpn`: every packet of the device goes into a WireGuard tunnel to the VPN server, DNS too. The story has `wrap`/`unwrap` steps with layer `vpn` (they carry the addresses showing from there on, for `addressBefore`). Inside the dark case the IP, transport and card pieces are sealed: no labels, and peeking shows only sizes. Past the VPN server the packet is ordinary again, sent from its address.
    - **Satellite** (`Prop`): put it on the line to the ISP, between runs only (it would change the past): scenario option `slow`, a geostationary link, 280 ms each way, 25 Mbit/s, drawn as a hop the packet climbs (`Timeline.sky`).
    - **Packets:** tap one riding a cable to knock it off (anime burst, tumble, the resender's timer, "!", retry); tap it anywhere else, or paused, to pop it open with real sizes.
    - **Step buttons / arrow keys:** one action at a time (`stepTarget`). The animation really plays, in 0.22–0.5 s and without sounds, then carries on as it was, playing or paused.
@@ -122,5 +127,6 @@ To check visuals, run `npm run dev`, then `node scripts/screenshot.mjs` (desktop
 - The laptop behaves like Linux: TTL 64, ephemeral ports 32768–60999, SYN options MSS/SACK-permitted/timestamps/NOP/window scale 7, glibc DNS timeout 5 s × 2 attempts. TCP RTO follows RFC 6298 (1 s minimum).
 - Under random loss the DNS lookup often fails: like glibc, the stub resolver sends the question at most twice, 5 s apart. That is the real behaviour, not a bug.
 - HTTPS replays a captured session, so its random values, certificate and keys are the real ones from the capture day; the handshake secrets are taken from the key log rather than re-derived from the ECDHE exchange. Cipher suite TLS_AES_128_GCM_SHA256. The card says "hello" for ClientHello/ServerHello, "certificate", "signature" (CertificateVerify), "done" (Finished), "ticket" (NewSessionTicket), "bye" (close_notify).
+- The VPN is real WireGuard transport messages (ChaCha20-Poly1305, padded to 16 bytes), but the tunnel is already up: the Noise handshake is not shown and the session keys come from the seeded Rng. MSS is 1380 in a tunnel, as for WireGuard's usual MTU of 1420. Sim tests open the sealed bytes from the ISP line with the session key.
 - The phone's Wi-Fi is an open network: real home Wi-Fi encrypts frame bodies (WPA2/WPA3 adds a CCMP header and an 8-byte MIC). No QoS field and no link-layer ACK frames are shown. A real home router bridges its Wi-Fi and Ethernet ports into one network with one address; the sim models that bridge as two interfaces sharing 192.168.1.1 plus a host route to the phone. The phone sends the same captured request bytes as the laptop.
 - Simplifications to state in the UI: the real internet path has ~10 routers, we show one ISP router; the resolver answers from cache (no recursive lookup shown); the LAN is wired Ethernet (Wi-Fi uses 802.11 framing); no IPv6, no TLS in this scenario; ACKs are sent immediately (Linux "quickack" at connection start), not delayed.

@@ -4,6 +4,7 @@ import { NO_FAULTS, type FaultPlan } from './faults';
 import type { Scenario } from './model';
 import { startBrowser, startDnsServer, startHttpServer } from './stack/apps';
 import { startHttpsServer } from './stack/https';
+import { TunnelClient, VpnServer } from './stack/vpn';
 import type { Device } from './stack/Device';
 import { Host } from './stack/Host';
 import { Router } from './stack/Router';
@@ -31,7 +32,8 @@ export function runScenario(scenario: Scenario, opts: RunOptions): SimResult {
   const world = new World(scenario, opts.seed, faults);
   for (const spec of scenario.devices) {
     const isRouter = spec.kind === 'router' || spec.kind === 'home-router';
-    const dev: Device = isRouter ? new Router(world, spec) : new Host(world, spec);
+    const dev: Device = isRouter ? new Router(world, spec) : spec.kind === 'vpn-server' ? new VpnServer(world, spec) : new Host(world, spec);
+    if (dev instanceof Host && spec.tunnel) dev.tunnel = new TunnelClient(dev, spec.tunnel.ip, spec.tunnel.server);
     world.devices.set(spec.id, dev);
     for (const i of spec.ifaces) world.ifaceOwner.set(i.id, dev);
   }

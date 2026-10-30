@@ -59,6 +59,9 @@ export type SimEventPayload =
   | { type: 'forward'; deviceId: string; packetId: string; ttlBefore: number; ttlAfter: number; pduId: string }
   | { type: 'nat:add'; deviceId: string; entry: NatEntry }
   | { type: 'nat:translate'; deviceId: string; packetId: string; direction: 'out' | 'in'; before: { ip: Ip4; port: number }; after: { ip: Ip4; port: number }; pduId: string }
+  /** A whole IP packet went into (wrap) or came out of (unwrap) the VPN tunnel; the addresses are the ones it shows now. */
+  | { type: 'tunnel:wrap'; deviceId: string; packetId: string; pduId: string; addr: { src: Ip4; dst: Ip4 } }
+  | { type: 'tunnel:unwrap'; deviceId: string; packetId: string; pduId: string; addr: { src: Ip4; dst: Ip4 } }
   | { type: 'tx'; linkId: string; fromDevice: string; fromIface: string; toDevice: string; toIface: string; packetId: string; frameId: string; start: number; txEnd: number; arrive: number; wireBytes: number }
   | { type: 'rx'; deviceId: string; iface: string; linkId: string; packetId: string; frameId: string }
   | { type: 'drop'; packetId: string; reason: DropReason; deviceId?: string; linkId?: string; frameId?: string }

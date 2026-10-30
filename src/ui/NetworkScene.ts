@@ -5,7 +5,7 @@ import { shade } from './shade';
 import type { Seen, Story, Trip, Wrap } from './story';
 import { addressBefore, DEVICE_TOP, FACE_EMOJI, frameAt, LEVEL, lockPose, packetPos, packetPose, segAt, trayOpacity, wrapsBefore, type LockPose, type Seg, type Timeline } from './timeline';
 
-export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', eth: '#e08b33', wifi: '#2a9d8f' } as const;
+export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', vpn: '#2e5e6e', eth: '#e08b33', wifi: '#2a9d8f' } as const;
 const DEVICE = '#d9d0c2';
 /** A locked (encrypted) card: dark, under a padlock. */
 const LOCKED = '#3d4654';
@@ -19,6 +19,7 @@ function mix(a: string, b: string, t: number): string {
 
 const BURST = '#ffd84a';
 const WAIT = '#c2562f';
+const sealedInside = (key: PartKey): boolean => key === 'ip' || key === 'l4' || key === 'card';
 /** How far from a device its satellite dish stands. */
 const DISH = 2.4;
 
@@ -43,13 +44,13 @@ const NO_KEY: LockPose = { show: false, drop: 0, open: 0, op: 1, dark: 0, key: n
 /** Header bytes → tiles along the packet. The data card is not to scale (it would dwarf the headers). */
 const TILES_PER_BYTE = 0.04;
 type Layer = Wrap | 'app';
-const SECTION: Record<Layer, { d: number; h: number }> = { app: { d: 1.0, h: 0.72 }, l4: { d: 1.18, h: 0.88 }, ip: { d: 1.34, h: 1.02 }, eth: { d: 1.62, h: 1.18 } };
+const SECTION: Record<Layer, { d: number; h: number }> = { app: { d: 1.0, h: 0.72 }, l4: { d: 1.18, h: 0.88 }, ip: { d: 1.34, h: 1.02 }, vpn: { d: 1.48, h: 1.1 }, eth: { d: 1.62, h: 1.18 } };
 
 type L2 = 'ethernet' | 'wifi';
 const colorOf = (layer: Layer, trip: Trip, l2: L2 = 'ethernet'): string =>
   layer === 'l4' ? COLOR[trip.l4] : layer === 'eth' && l2 === 'wifi' ? COLOR.wifi : COLOR[layer];
 const layerName = (layer: Layer, trip: Trip, l2: L2 = 'ethernet'): string =>
-  ({ app: 'App', l4: trip.l4 === 'udp' ? 'UDP' : 'TCP', ip: 'IP', eth: l2 === 'wifi' ? 'Wi-Fi' : 'Ethernet' })[layer];
+  ({ app: 'App', l4: trip.l4 === 'udp' ? 'UDP' : 'TCP', ip: 'IP', vpn: 'VPN', eth: l2 === 'wifi' ? 'Wi-Fi' : 'Ethernet' })[layer];
 const cardFont = (label: string): number => (label.length <= 7 ? 13 : label.length <= 14 ? 10.5 : 9);
 const cardLen = (trip: Trip): number => {
   const label = trip.card ?? '';
@@ -60,7 +61,7 @@ const cardLen = (trip: Trip): number => {
 const faceTf = (p: { sx: number; sy: number }, face: '+y' | '+x'): string =>
   `matrix(1 ${face === '+y' ? 0.5 : -0.5} 0 1 ${p.sx.toFixed(1)} ${p.sy.toFixed(1)})`;
 
-type PartKey = 'ethH' | 'ip' | 'l4' | 'card' | 'ethT';
+type PartKey = 'ethH' | 'vpn' | 'ip' | 'l4' | 'card' | 'ethT';
 
 interface Part {
   key: PartKey;
@@ -94,6 +95,7 @@ interface Pose {
 
 interface DeviceView {
   id: string;
+  kind: string;
   g: SVGGElement;
   trays: SVGGElement;
   l4Name: SVGTextElement | null;
@@ -197,7 +199,7 @@ export class NetworkScene {
       const s = iso(p.x, p.y + 1.9, 0);
       const name = el('text', { class: 'device-name', 'text-anchor': 'middle', x: s.sx.toFixed(1), y: (s.sy + 26).toFixed(1) }, g);
       name.textContent = d.label;
-      this.devices.push({ id: d.id, g, trays, l4Name, l2Tray, l2Name });
+      this.devices.push({ id: d.id, kind: d.kind, g, trays, l4Name, l2Tray, l2Name });
     }
     this.fit();
     this.setStory(story, tl);
@@ -338,6 +340,22 @@ export class NetworkScene {
       }
       this.cableViews.push({ g, a: l.a, b: l.b });
     }
+  }
+
+  private linkShown(device: string): boolean {
+    return this.tl.kind.get(device) !== 'vpn-server' || this.story.vpn;
+  }
+
+  /** Is this link really on the table right now? */
+  hasLink(id: string): boolean {
+    const l = this.story.links.find((x) => x.id === id);
+    return !!l && this.linkShown(l.a) && this.linkShown(l.b);
+  }
+
+  /** The top of a device, for something standing on it. */
+  deviceTop(id: string): { sx: number; sy: number } {
+    const d = this.tl.pos.get(id) ?? { x: 0, y: 0 };
+    return iso(d.x, d.y, (DEVICE_TOP[this.tl.kind.get(id) ?? ''] ?? 1) + 0.9);
   }
 
   /** Which cable is cut, if any. */
@@ -623,6 +641,11 @@ export class NetworkScene {
       case 'router':
         cylinder(g, { x, y, z: 0, r: 1.15, h: 0.8, ...neutral });
         return null;
+      case 'vpn-server': {
+        box(g, { x: x - 1.0, y: y - 0.8, z: 0, w: 2.0, d: 1.6, h: 1.3, ...neutral });
+        for (let i = 0; i < 3; i++) line(g, v3(x - 0.7, y + 0.8, 1.0 - i * 0.3), v3(x + 0.7, y + 0.8, 1.0 - i * 0.3), { class: 'slot' });
+        return null;
+      }
       case 'dns-resolver': {
         // A squat cabinet with a fat address book on top.
         box(g, { x: x - 1.0, y: y - 0.8, z: 0, w: 2.0, d: 1.6, h: 0.75, ...neutral });
@@ -663,8 +686,17 @@ export class NetworkScene {
     const hit = segAt(tl, v);
     // Once a run starts, whatever it doesn't use steps back.
     const greying = v >= 0;
-    for (const d of this.devices) d.g.classList.toggle('unused', greying && !this.used.has(d.id));
-    for (const c of this.cableViews) c.g.classList.toggle('unused', greying && (!this.used.has(c.a) || !this.used.has(c.b)));
+    for (const d of this.devices) {
+      // Without a VPN its server is just a faint shape showing where it can go.
+      const absent = d.kind === 'vpn-server' && !this.story.vpn;
+      d.g.classList.toggle('absent', absent);
+      d.g.classList.toggle('unused', !absent && greying && !this.used.has(d.id));
+    }
+    for (const c of this.cableViews) {
+      const absent = !this.linkShown(c.a) || !this.linkShown(c.b);
+      c.g.classList.toggle('absent', absent);
+      c.g.classList.toggle('unused', greying && (!this.used.has(c.a) || !this.used.has(c.b)));
+    }
     for (const d of this.devices) {
       d.trays.setAttribute('opacity', trayOpacity(tl, d.id, v).toFixed(3));
       d.g.setAttribute('transform', `translate(0 ${(-this.hop(d.id, v) * U).toFixed(2)})`);
@@ -782,6 +814,8 @@ export class NetworkScene {
     this.tags.replaceChildren();
     this.fx.replaceChildren();
     this.keys.replaceChildren();
+    // The spy's note makes way for the size chips.
+    this.spyNote.style.display = peek > 0.05 ? 'none' : '';
     this.keyhole = null;
     const hit = segAt(this.tl, v);
     if (!hit) return;
@@ -952,6 +986,8 @@ export class NetworkScene {
     });
 
     const { pos } = pose;
+    const tunnelCase = parts.find((p) => p.key === 'vpn');
+    const tunnelDark = tunnelCase ? tunnelCase.f * tunnelCase.op : 0;
     const dir = { x: Math.cos(pose.angle), y: Math.sin(pose.angle) };
     const across = { x: -dir.y, y: dir.x };
     const at = (uu: number): Vec3 => v3(pos.x + dir.x * uu, pos.y + dir.y * uu, pos.z);
@@ -992,11 +1028,14 @@ export class NetworkScene {
       if (along < 0.005) continue;
       const centre = at((u0 + u1) / 2 + p.slide);
       const z = pos.z - h / 2 + p.lift + (p.key === 'card' ? wiggle : 0);
-      const color = p.key === 'card' && this.lock > 0 ? mix(COLOR.app, LOCKED, this.lock) : colorOf(p.layer, trip, this.l2);
+      const base = p.key === 'card' && this.lock > 0 ? mix(COLOR.app, LOCKED, this.lock) : colorOf(p.layer, trip, this.l2);
+      // Everything inside the VPN case is sealed, its addresses too.
+      const sealed = sealedInside(p.key) ? tunnelDark : 0;
+      const color = sealed > 0 ? mix(base, LOCKED, sealed) : base;
       const g = el('g', { opacity: p.op.toFixed(3), class: `part part-${p.layer}` }, g0);
       rbox(g, { cx: centre.x, cy: centre.y, z, len: along, wid: d, h, angle: pose.angle, color });
       // Name printed on the long side facing the viewer, if there is room for it.
-      const label = p.key === 'card' ? this.cardText(trip) : p.key === 'ip' ? 'IP' : p.key === 'l4' ? trip.l4Label : '';
+      const label = sealed > 0.5 ? '' : p.key === 'card' ? this.cardText(trip) : p.key === 'ip' ? 'IP' : p.key === 'l4' ? trip.l4Label : p.key === 'vpn' ? 'VPN' : '';
       const font = p.key === 'card' ? cardFont(label) : 10;
       const onSide = label && p.f > 0.6 ? faceText(dir, v3(centre.x + side.x * (d / 2), centre.y + side.y * (d / 2), z + h / 2)) : null;
       if (label && onSide && along * U * onSide.ex > label.length * font * 0.62 + 4) {
@@ -1135,6 +1174,7 @@ export class NetworkScene {
     const L = TILES_PER_BYTE;
     const list = [
       mk('ethH', 'eth', frame.head, frame.head * L),
+      ...(trip.tunnel ? [mk('vpn', 'vpn', trip.tunnel, trip.tunnel * L)] : []),
       mk('ip', 'ip', trip.header.ip, trip.header.ip * L),
       mk('l4', 'l4', trip.header.l4, trip.header.l4 * L),
     ];
@@ -1150,7 +1190,8 @@ export class NetworkScene {
   private sizeChips(items: { p: Part; top: Vec3 }[], trip: Trip, op: number): void {
     const chips = items
       .map(({ p, top }) => {
-        const name = p.key === 'card' ? (this.lock > 0.5 ? `🔒 ${this.cardText(trip)}`.trim() : this.cardText(trip)) : p.key === 'ethT' ? '' : p.key === 'l4' ? trip.l4Label : layerName(p.layer, trip, this.l2);
+        const hidden = sealedInside(p.key) && !!items.find((x) => x.p.key === 'vpn');
+        const name = hidden ? '🔒' : p.key === 'card' ? (this.lock > 0.5 ? `🔒 ${this.cardText(trip)}`.trim() : this.cardText(trip)) : p.key === 'ethT' ? '' : p.key === 'l4' ? trip.l4Label : layerName(p.layer, trip, this.l2);
         const text = name ? `${name} · ${p.bytes} B` : `${p.bytes} B`;
         return { p, a: iso(top.x, top.y, top.z), text, w: text.length * 6.6 + 14, x: 0 };
       })

@@ -181,3 +181,10 @@ export function drawScissors(g: SVGGElement): void {
   }
   el('circle', { cx: 0, cy: 0, r: 2.5, class: 'scissor-pin' }, g);
 }
+
+/** A shield with a keyhole: the VPN. */
+export function drawShield(g: SVGGElement): void {
+  el('path', { d: 'M0 -26 L22 -18 V2 C22 16 10 24 0 29 C-10 24 -22 16 -22 2 V-18 Z', class: 'shield' }, g);
+  el('circle', { cx: 0, cy: -4, r: 5, class: 'shield-hole' }, g);
+  el('rect', { x: -2, y: -4, width: 4, height: 13, class: 'shield-hole' }, g);
+}

@@ -3,7 +3,7 @@ import { fetchWebPage, runScenario, type Cut, type LossWindow, type ManualFault 
 import { el } from './svg';
 import { clamp01, easeInOut, easeOutBack, iso, lerp } from './project';
 import { NetworkScene, type Camera } from './NetworkScene';
-import { drawCloud, drawSatellite, drawScissors, drawSpyglass, Prop, rain, type PropSpec } from './props';
+import { drawCloud, drawSatellite, drawScissors, drawShield, drawSpyglass, Prop, rain, type PropSpec } from './props';
 import { Sound } from './sound';
 import { Stickers, type Features } from './stickers';
 import { buildStory, type Chapter, type Story } from './story';
@@ -29,19 +29,22 @@ let spyLine: string | null = null;
 let cutLine: string | null = null;
 /** The line to the ISP goes through a satellite. Set before a run: it would change what has already happened. */
 let slow = false;
+/** Traffic goes through the VPN server. Set before a run, like the satellite. */
+let vpn = false;
 try {
-  const saved = JSON.parse(localStorage.getItem('net.features') ?? '{}') as Partial<Features> & { stormLine?: string | null; spyLine?: string | null; cutLine?: string | null; slow?: boolean };
+  const saved = JSON.parse(localStorage.getItem('net.features') ?? '{}') as Partial<Features> & { stormLine?: string | null; spyLine?: string | null; cutLine?: string | null; slow?: boolean; vpn?: boolean };
   features = { https: !!saved.https, big: !!saved.big };
   stormLine = saved.stormLine ?? null;
   spyLine = saved.spyLine ?? null;
   cutLine = saved.cutLine ?? null;
   slow = !!saved.slow;
+  vpn = !!saved.vpn;
 } catch {
   // Nothing remembered; start plain.
 }
 function remember(): void {
   try {
-    localStorage.setItem('net.features', JSON.stringify({ ...features, stormLine, spyLine, cutLine, slow }));
+    localStorage.setItem('net.features', JSON.stringify({ ...features, stormLine, spyLine, cutLine, slow, vpn }));
   } catch {
     // Not remembered; fine.
   }
@@ -73,7 +76,7 @@ function remembers(): boolean {
   return !!k && k.site === siteName() && performance.now() < k.until;
 }
 function simulate(): void {
-  const scenario = fetchWebPage({ site: siteName(), revisit, slow, https: features.https, from: client, warmArp });
+  const scenario = fetchWebPage({ site: siteName(), revisit, slow, vpn, https: features.https, from: client, warmArp });
   const plan = { randomLoss: STORM_LOSS, lossWindows: stormWindows, decided, cuts, manual: faults };
   // Long enough for TCP to give up on a dead line (15 resends, backing off to a minute apart).
   story = buildStory(runScenario(scenario, { seed: stormSeed, faults: plan, maxTime: 1000 }));
@@ -154,6 +157,7 @@ function lineNear(p: { sx: number; sy: number }, cablesOnly = false): string | n
   let best: string | null = null;
   let bestD = 80;
   for (const l of story.links) {
+    if (!scene.hasLink(l.id)) continue;
     if (cablesOnly && (l.medium !== 'cable' || tl.sky.has(l.id))) continue;
     const d = toLink(p, l.id);
     if (d < bestD) {
@@ -275,7 +279,36 @@ const satellite = new Prop(
   },
   slow,
 );
-scene.setOnTable([home, { sx: home.sx - 110, sy: home.sy + 50 }, { sx: home.sx - 170, sy: home.sy - 110 }, iso(-6, -3, 4.6), { sx: iso(-6, -3, 3).sx - 60, sy: iso(-6, -3, 3).sy }]);
+scene.setOnTable([home, { sx: home.sx - 110, sy: home.sy + 50 }, { sx: home.sx - 170, sy: home.sy - 110 }, iso(-3, -5, 4.6), iso(-6, -3, 4.6), { sx: iso(-6, -3, 3).sx - 60, sy: iso(-6, -3, 3).sy }]);
+
+const VPN_LINK = 'bb3';
+// The shield: stand it on the VPN server's spot and everything goes through the tunnel. Only before a run.
+const vpnSpot = (): { sx: number; sy: number } => scene.deviceTop('vpn');
+const shield = new Prop(
+  svg,
+  {
+    label: 'VPN',
+    cls: 'vpn-prop',
+    draw: drawShield,
+    parked: () => iso(-3, -5, 3),
+    active: vpnSpot,
+    hits: (p) => near(p, vpnSpot(), 130),
+    canMove: canSetUp,
+    hidden: () => !vpn && (mode === 'play' || mode === 'drop'),
+    onChange: (on) => {
+      vpn = on;
+      // Its cable goes with it.
+      if (!on) {
+        if (stormLine === VPN_LINK) setStormLine(null);
+        if (spyLine === VPN_LINK) setSpyLine(null);
+        if (cutLine === VPN_LINK) setCutLine(null);
+      }
+      preview();
+      sound.play('lock');
+    },
+  },
+  vpn,
+);
 
 const CHAPTERS: Record<Chapter, string> = { dns: 'Find the address', hello: 'Say hello', secret: 'Agree on a secret', page: 'Get the page' };
 /** Chapter number in this run (a second visit skips the address, HTTPS adds the secret). */
@@ -560,6 +593,7 @@ function reset(): void {
   stickers.set('https', false);
   stickers.set('big', false);
   satellite.set(false);
+  shield.set(false);
   preview();
   sound.play('thud');
 }
@@ -658,6 +692,7 @@ function frame(now: number): void {
   spyglass.update(dt, clock);
   scissors.update(dt, clock);
   satellite.update(dt, clock);
+  shield.update(dt, clock);
   scene.renderStorm(clock);
 
   // The camera eases between the whole network (between runs) and a close follow of the packet,
@@ -740,10 +775,11 @@ if (import.meta.env.DEV) {
         return tl.reactions;
       },
       /** Start a run straight away with these things on the table (for screenshots). */
-      start(f: Partial<Features> & { storm?: string; spy?: string; cut?: string; slow?: boolean; again?: boolean; from?: Client }): void {
+      start(f: Partial<Features> & { storm?: string; spy?: string; cut?: string; slow?: boolean; vpn?: boolean; again?: boolean; from?: Client }): void {
         client = f.from ?? 'laptop';
         for (const k of ['https', 'big'] as const) stickers.set(k, !!f[k]);
         satellite.set(!!f.slow);
+        shield.set(!!f.vpn);
         setStormLine(f.storm ?? null);
         setSpyLine(f.spy ?? null);
         setCutLine(f.cut ?? null);

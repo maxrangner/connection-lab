@@ -15,6 +15,7 @@ import {
   type SimEvent,
   type SimResult,
   type TlsSession,
+  WG_TAG_LEN,
 } from '../sim';
 
 /**
@@ -29,8 +30,8 @@ import {
  * is simply the next trip.
  */
 
-/** Pieces that go around the data: transport (TCP or UDP), IP, and the link layer's frame (Ethernet or Wi-Fi). */
-export type Wrap = 'l4' | 'ip' | 'eth';
+/** Pieces that go around the data: transport (TCP or UDP), IP, the VPN case, and the link layer's frame (Ethernet or Wi-Fi). */
+export type Wrap = 'l4' | 'ip' | 'vpn' | 'eth';
 /**
  * What a snoop on a line can read from the real bytes of a frame. `open`: plain text; `name`: scrambled, except for
  * the site name; `scrambled`: only unreadable bytes; `empty`: no content at all.
@@ -52,8 +53,8 @@ export type Chapter = 'dns' | 'hello' | 'secret' | 'page';
 
 export type Step =
   | { kind: 'appear'; device: string }
-  | { kind: 'wrap'; device: string; layer: Wrap; /** For the frame (layer 'eth'): which kind and its sizes. */ frame?: Frame }
-  | { kind: 'unwrap'; device: string; layer: Wrap; frame?: Frame }
+  | { kind: 'wrap'; device: string; layer: Wrap; /** For the frame (layer 'eth'): which kind and its sizes. */ frame?: Frame; /** For the VPN case: the addresses showing from here on. */ addr?: { from: string; to: string } }
+  | { kind: 'unwrap'; device: string; layer: Wrap; frame?: Frame; addr?: { from: string; to: string } }
   | { kind: 'nat'; device: string; which: 'from' | 'to'; before: string; after: string }
   | { kind: 'travel'; from: string; to: string; link: string; /** Sim time the frame was sent. */ at: number; /** What anyone on this line could read. */ seen?: Seen }
   /** Knocked off the cable on the way from `from` to `to`. */
@@ -78,9 +79,11 @@ export interface Trip {
   /** What the transport collar says: "TCP", "UDP", or the flags of an empty segment ("SYN-ACK"). */
   l4Label: string;
   /** Header bytes per wrap, and the Ethernet trailer (FCS). */
-  header: Record<Wrap, number>;
+  header: Record<Exclude<Wrap, 'vpn'>, number>;
+  /** What the VPN case adds: outer IP, UDP and WireGuard header plus its tag; 0 without a VPN on this trip. */
+  tunnel: number;
   trailer: number;
-  /** IP addresses as the sender wrote them. */
+  /** IP addresses as the sender wrote them, before any VPN case. */
   from: string;
   to: string;
   steps: Step[];
@@ -100,6 +103,8 @@ export interface Story {
   site: string;
   /** The device the page is opened on (laptop or phone). */
   client: string;
+  /** All traffic goes through the VPN server. */
+  vpn: boolean;
   devices: { id: string; label: string; kind: string }[];
   /** Cables, with their one-way delay in seconds. */
   links: { id: string; a: string; b: string; delay: number; medium: 'cable' | 'wifi' }[];
@@ -167,6 +172,8 @@ function seenOn(pdu: PduSnapshot | undefined, p: PacketInfo): Seen | undefined {
     const name = clientHelloSni(data);
     return name ? { ...base, lines: [name, hexStart(data)], kind: 'name' } : { ...base, lines: [hexStart(data)], kind: 'scrambled' };
   }
+  const wg = layer(pdu, 'wireguard');
+  if (wg) return { ...base, lines: [hexStart(pdu.bytes.subarray(wg.headerEnd, wg.end))], kind: 'scrambled' };
   const tcp = layer(pdu, 'tcp');
   if (tcp && tcp.payloadEnd > tcp.headerEnd) return { ...base, lines: readable(pdu.bytes.subarray(tcp.headerEnd, tcp.payloadEnd)), kind: 'open' };
   return { ...base, lines: tcp ? [flagNames(p.tcp?.flags ?? 0).replace(/, /g, '-')] : [], kind: 'empty' };
@@ -201,6 +208,9 @@ function chosen(r: SimResult): PacketInfo[] {
 function trip(r: SimResult, p: PacketInfo, retried: Set<string>, client: string): Trip | null {
   const steps: Step[] = [];
   let frame: PduSnapshot | undefined;
+  /** The packet as the sender first made it, before any VPN sealed it. */
+  let inner: PduSnapshot | undefined;
+  let tunnel = 0;
   let lost = false;
   let firstSeq = -1;
   let done = false;
@@ -212,6 +222,7 @@ function trip(r: SimResult, p: PacketInfo, retried: Set<string>, client: string)
     if (firstSeq < 0) firstSeq = e.seq;
     switch (e.type) {
       case 'encapsulate': {
+        if (e.layer === 3) inner ??= r.pdus.get(e.pduId);
         const w = WRAP_OF_LAYER[e.layer];
         if (w === 'eth') {
           const pdu = r.pdus.get(e.pduId);
@@ -228,6 +239,15 @@ function trip(r: SimResult, p: PacketInfo, retried: Set<string>, client: string)
         if (w === 'l4') done = true;
         break;
       }
+      case 'tunnel:wrap': {
+        const wg = layer(r.pdus.get(e.pduId)!, 'wireguard');
+        tunnel = (wg?.headerEnd ?? 0) + WG_TAG_LEN;
+        steps.push({ kind: 'wrap', device: e.deviceId, layer: 'vpn', addr: { from: e.addr.src, to: e.addr.dst } });
+        break;
+      }
+      case 'tunnel:unwrap':
+        steps.push({ kind: 'unwrap', device: e.deviceId, layer: 'vpn', addr: { from: e.addr.src, to: e.addr.dst } });
+        break;
       case 'nat:translate':
         steps.push({
           kind: 'nat',
@@ -255,9 +275,10 @@ function trip(r: SimResult, p: PacketInfo, retried: Set<string>, client: string)
   if (!frame || !steps.some((s) => s.kind === 'travel' || s.kind === 'lost')) return null;
 
   const eth = layer(frame, 'ethernet') ?? layer(frame, 'wifi')!;
-  const ip = layer(frame, 'ipv4')!;
-  const l4 = layer(frame, 'tcp') ?? layer(frame, 'udp')!;
-  const app = layer(frame, 'http') ?? layer(frame, 'dns');
+  const packet = inner ?? frame;
+  const ip = layer(packet, 'ipv4')!;
+  const l4 = layer(packet, 'tcp') ?? layer(packet, 'udp')!;
+  const app = layer(packet, 'http') ?? layer(packet, 'dns');
   const dataBytes = l4.payloadEnd - l4.headerEnd;
   const card = dataBytes > 0 ? (app ? (app.protocol === 'http' ? cardLabel(app.summary) : dnsCardLabel(app.summary)) : 'data') : null;
   const isTcp = l4.protocol === 'tcp';
@@ -269,7 +290,7 @@ function trip(r: SimResult, p: PacketInfo, retried: Set<string>, client: string)
 
   const flags = p.tcp?.flags ?? 0;
   const retry = !!p.retransmitOf || (p.kind === 'dns' && retried.has(`${origin}|dns`));
-  if (p.kind === 'dns' && !frame.layers.some((x) => x.summary.startsWith('DNS response'))) retried.add(`${origin}|dns`);
+  if (p.kind === 'dns' && !packet.layers.some((x) => x.summary.startsWith('DNS response'))) retried.add(`${origin}|dns`);
   return {
     packetId: p.id,
     chapter: p.kind === 'dns' ? 'dns' : dataBytes > 0 ? 'page' : 'hello',
@@ -281,6 +302,7 @@ function trip(r: SimResult, p: PacketInfo, retried: Set<string>, client: string)
     l4: isTcp ? 'tcp' : 'udp',
     l4Label: isTcp ? (dataBytes > 0 ? 'TCP' : flagNames(flags).replace(/, /g, '-')) : 'UDP',
     header: { eth: eth.headerEnd - eth.start, ip: ip.headerEnd - ip.start, l4: l4.headerEnd - l4.start },
+    tunnel,
     trailer: eth.end - eth.payloadEnd,
     from: field(ip, 'ipv4.src'),
     to: field(ip, 'ipv4.dst'),
@@ -329,6 +351,7 @@ export function buildStory(r: SimResult): Story {
     })),
     site: url ? new URL(url).hostname : '',
     client,
+    vpn: r.scenario.devices.some((d) => d.tunnel),
     trips,
     pageTitle: pageTitle(r),
     dnsAnswer: dnsAnswer(r),
