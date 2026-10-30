@@ -12,7 +12,7 @@ import { buildTimeline, chapterAt, seenSoFar, stepTarget, type Timeline } from '
 /**
  * "Get example.com". Drag the site card onto the laptop or the phone. The bar below holds the playback buttons, and
  * popups for the speed, the tools you click lines with, and the setup of the next run.
- * Tap a packet on a cable to knock it off; tap it anywhere else to pop it open. When a run ends the card comes back.
+ * Tap a packet to pop it open. When a run ends the card comes back.
  */
 
 /** A share of the frames on a stormy line is lost. */
@@ -49,10 +49,10 @@ function remember(): void {
     // Not remembered; fine.
   }
 }
-/** Packets the viewer knocked off, and how far along their cable they were (only for drawing the fall). */
+/** Packets that fell when their cable was cut, and how far along it they were (only for drawing the fall). */
 const faults: ManualFault[] = [];
 const knocks = new Map<string, number>();
-/** Each run gets its own weather; knocking a packet off or changing a storm re-runs with the same weather. */
+/** Each run gets its own weather; cutting a cable or changing a storm re-runs with the same weather. */
 let stormSeed = 1;
 /** When (sim time) the storm was on during this run, and what the viewer has already seen happen. */
 let stormWindows: LossWindow[] = [];
@@ -197,7 +197,7 @@ function toggleCut(line: string): void {
   else cutLines.delete(line);
   remember();
   if (mode === 'play') {
-    const riding = on ? scene.knockable(v) : null;
+    const riding = on ? scene.onCable(v) : null;
     if (riding?.link === line) {
       faults.push({ packetId: riding.trip.packetId, linkId: riding.link });
       knocks.set(`${riding.trip.packetId}@${riding.link}`, riding.k);
@@ -309,7 +309,6 @@ chapter.addEventListener('click', () => {
     item.classList.toggle('current', ch === shownChapter);
     item.addEventListener('click', () => {
       v = s.t0;
-      cueDone = v;
       seek = null;
       paused = false;
       peek = peekTarget = 0;
@@ -380,6 +379,7 @@ followBtn.className = 'follow';
 followBtn.setAttribute('aria-label', 'Follow the packet');
 followBtn.addEventListener('click', () => {
   camFree = false;
+  showAll = mode !== 'play';
 });
 root.appendChild(followBtn);
 // A popup only has to move when the bar does.
@@ -408,8 +408,8 @@ cam = scene.overviewCamera();
 let snapCamera = false;
 /** Set once the viewer pans or zooms by hand; the camera stops following until they ask again. */
 let camFree = false;
-/** Sounds already played up to this visual time (so a knock doesn't bonk twice). */
-let cueDone = 0;
+/** "Show all" was pressed: between runs the camera keeps the whole network in view until the next run. */
+let showAll = false;
 revisit = remembers();
 showFeatures();
 cardPop = 9;
@@ -462,24 +462,11 @@ card.addEventListener('pointerup', () => {
   }
 });
 
-// Tap a packet out on a cable to knock it off; anywhere else, tap it to pop it open.
+// Tap a packet to pop it open.
 scene.packet.addEventListener('pointerdown', () => {
   if (tool || mode !== 'play' || v >= tl.total) return;
-  const target = !paused && !peekTarget && !seek ? scene.knockable(v) : null;
-  if (target) knock(target);
-  else if (scene.peekable(v)) peekTarget = peekTarget ? 0 : 1;
+  if (scene.peekable(v)) peekTarget = peekTarget ? 0 : 1;
 });
-
-function knock(target: NonNullable<ReturnType<NetworkScene['knockable']>>): void {
-  faults.push({ packetId: target.trip.packetId, linkId: target.link });
-  knocks.set(`${target.trip.packetId}@${target.link}`, target.k);
-  // Re-run the simulation with this frame lost. Everything before this moment comes out the same,
-  // so the picture continues seamlessly from here.
-  simulate();
-  scene.setStory(story, tl);
-  sound.play('bonk');
-  cueDone = v + 0.05;
-}
 
 // Pan and zoom by hand: drag the stage, pinch, or use the wheel. Any of these lets go of the follow camera.
 const pointers = new Map<number, { x: number; y: number }>();
@@ -617,6 +604,7 @@ function reset(): void {
   peek = peekTarget = 0;
   doneFor = 0;
   camFree = false;
+  showAll = false;
   faults.length = 0;
   knocks.clear();
   decided = {};
@@ -649,7 +637,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'ArrowLeft') step(-1);
 });
 
-/** The card has gone into the device: run the simulation with what is on the table, fresh weather and no knocks. */
+/** The card has gone into the device: run the simulation with what is on the table and fresh weather. */
 function beginRun(): void {
   faults.length = 0;
   knocks.clear();
@@ -664,11 +652,11 @@ function beginRun(): void {
   showFeatures();
   mode = 'play';
   v = 0;
-  cueDone = 0;
   seek = null;
   doneFor = 0;
   paused = false;
   peek = peekTarget = 0;
+  showAll = false;
 }
 
 /** The run is over: the device remembers the address until its TTL runs out, and the card floats back. */
@@ -707,11 +695,10 @@ function frame(now: number): void {
       seek.t += dt;
       const k = clamp01(seek.t / seek.dur);
       v = lerp(seek.from, seek.to, k);
-      cueDone = v;
       if (k >= 1) seek = null;
     } else if (!paused && !peekTarget) {
       const next = Math.min(tl.total, v + dt * speed);
-      for (const c of tl.cues) if (c.t > Math.max(v, cueDone) && c.t <= next) sound.play(c.sound);
+      for (const c of tl.cues) if (c.t > v && c.t <= next) sound.play(c.sound);
       v = next;
     }
     // A step can land where there is no packet to hold open (a lookup, a timer): carry on.
@@ -739,7 +726,7 @@ function frame(now: number): void {
   // The camera eases between the whole network (between runs) and a close follow of the packet,
   // unless the viewer has taken it over.
   if (!camFree) {
-    const target = mode === 'play' ? scene.followCamera(v) : scene.overviewCamera();
+    const target = mode === 'play' ? scene.followCamera(v) : showAll ? scene.wholeCamera() : scene.overviewCamera();
     const ease = snapCamera ? 1 : Math.min(1, dt * (seek ? 6 : 3.5));
     cam = { cx: lerp(cam.cx, target.cx, ease), cy: lerp(cam.cy, target.cy, ease), scale: lerp(cam.scale, target.scale, ease) };
   }
@@ -749,7 +736,6 @@ function frame(now: number): void {
   const shown = mode === 'play' ? v : idleV;
   scene.render(shown);
   scene.drawPacket(shown, peek, pill && pillOpen > 0.02 ? { key: pill, k: pillOpen } : null);
-  scene.packet.classList.toggle('knockable', mode === 'play' && !paused && !peekTarget && !seek && !!scene.knockable(v));
 
   const ch = mode === 'play' ? chapterAt(tl, v) : null;
   if (ch !== shownChapter) {
@@ -812,14 +798,6 @@ if (import.meta.env.DEV) {
       },
       get lines() {
         return { storm: [...stormLines], cut: [...cutLines] };
-      },
-      /** Knock off whatever packet is on a cable at visual time t. */
-      knock(t: number): boolean {
-        mode = 'play';
-        v = t;
-        const target = scene.knockable(v);
-        if (target) knock(target);
-        return !!target;
       },
       get reactions() {
         return tl.reactions;

@@ -175,10 +175,10 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
           break;
         case 'lost': {
           const travel = DUR.travel * pace({ ...step, kind: 'travel' }, trip) * linkPace(step.link);
-          // Knocked by the viewer: where they tapped. Lost by itself (a stormy cable): halfway along.
-          const tapped = knocks.get(`${trip.packetId}@${step.link}`);
-          const k = tapped ?? 0.5;
-          seg.knock = { k, travel, byYou: tapped !== undefined, cut: !!step.cut };
+          // Cut under it by the viewer: where it was. Lost by itself (a stormy or dead cable): halfway along.
+          const caught = knocks.get(`${trip.packetId}@${step.link}`);
+          const k = caught ?? 0.5;
+          seg.knock = { k, travel, byYou: caught !== undefined, cut: !!step.cut };
           d = k * travel + TUMBLE;
           seg.p1 = travelPath(pos, trayZ, step.from, step.to, k, sky.get(step.link) ?? 0, air.has(step.link));
           break;

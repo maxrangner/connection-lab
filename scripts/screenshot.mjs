@@ -46,18 +46,22 @@ for (const [idx, k, peek, name] of shots) {
   await page.screenshot({ path: `${out}/${String(i++).padStart(2, '0')}-${name}.png` });
 }
 
-// Knock the GET off the cable to the ISP and follow what happens.
+// Cut the cable to the ISP under the GET, mend it, and follow what happens.
 if (!process.env.SHOTS) {
   const getWan = pick((s) => s.chapter === 'page' && s.kind === 'travel', 1);
   const kv = segs[getWan].t0 + (segs[getWan].t1 - segs[getWan].t0) * 0.5;
-  await page.evaluate((v) => window.__net.knock(v), kv);
+  await page.evaluate((v) => {
+    window.__net.seek(v);
+    window.__net.cut('wan');
+    window.__net.cut('wan');
+  }, kv);
   const after = await page.evaluate(() => window.__net.segs);
   const lost = after.find((s) => s.kind === 'lost');
   const wait = after.find((s) => s.kind === 'wait');
   const moments = [
-    [kv + 0.12, 'knock-burst'],
-    [kv + 0.45, 'knock-flying'],
-    [kv + 1.2, 'knock-apart'],
+    [kv + 0.12, 'fall-burst'],
+    [kv + 0.45, 'fall-flying'],
+    [kv + 1.2, 'fall-apart'],
     [wait.t0 + (wait.t1 - wait.t0) * 0.6, 'timer'],
     [wait.t1 - 0.3, 'surprise'],
     [wait.t1 + 1.6, 'retry'],

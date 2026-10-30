@@ -214,7 +214,7 @@ export class NetworkScene {
     this.setStory(story, tl);
   }
 
-  /** Swap in a re-simulated story (after a knock). Devices and cables stay; what's on the laptop screen may change. */
+  /** Swap in a re-simulated story (after a cut or a storm). Devices and cables stay; what's on the laptop screen may change. */
   setStory(story: Story, tl: Timeline): void {
     this.story = story;
     this.tl = tl;
@@ -556,15 +556,20 @@ export class NetworkScene {
     return { min: this.baseScale() * 0.6, max: this.followScale() * 4 };
   }
 
-  /** Whole network in view; on a tall phone screen, closer on the laptop and the card so they are big enough to drag. */
-  overviewCamera(): Camera {
+  /** The whole network in view, however narrow the screen. */
+  wholeCamera(): Camera {
     const o = this.overview;
+    return { cx: o.x + o.w / 2, cy: o.y + o.h / 2, scale: this.baseScale() };
+  }
+
+  /** Between runs: the whole network, or on a tall phone screen closer on the laptop and the card so they are big enough to drag. */
+  overviewCamera(): Camera {
     const cw = this.svg.clientWidth || 1;
     const ch = this.svg.clientHeight || 1;
     if (ch > cw * 1.2) {
       return { cx: -20, cy: 60, scale: Math.max(this.baseScale(), cw / 560) };
     }
-    return { cx: o.x + o.w / 2, cy: o.y + o.h / 2, scale: this.baseScale() };
+    return this.wholeCamera();
   }
 
   /** Close on the packet (or the device it is at) at visual time v. */
@@ -812,8 +817,8 @@ export class NetworkScene {
     return 0;
   }
 
-  /** The travelling packet's progress along its cable, if it can be knocked off right now. */
-  knockable(v: number): { trip: Trip; link: string; k: number } | null {
+  /** The travelling packet's progress along its cable, if it is out there right now. */
+  onCable(v: number): { trip: Trip; link: string; k: number } | null {
     const hit = segAt(this.tl, v);
     if (!hit || hit.seg.step.kind !== 'travel') return null;
     // Only while it is out on the cable, not while it is still dropping out of a tray.
@@ -1325,18 +1330,16 @@ export class NetworkScene {
     const arrow = el('text', { x: -width / 2 + 22 + fromW, y: NUM_Y, 'text-anchor': 'middle', dy: '0.35em', class: 'addr-arrow' }, g);
     arrow.textContent = '→';
     part('to', toCap, -width / 2 + 34 + fromW, toW, changed === 'to' || changed === 'both');
-    // A soft ring and a few sparkles around the fresh label, or around the whole tag when both change.
+    // A few sparkles around the fresh label, or around the whole tag when both change.
     if (changed && m.stamp > 0 && m.stamp < 1) {
       const x = changed === 'both' ? 0 : changed === 'from' ? -width / 2 + 10 + fromW / 2 : width / 2 - 10 - toW / 2;
       this.freshLabel(g, x, changed === 'both' ? 0 : NUM_Y, changed === 'both' ? width : changed === 'from' ? fromW : toW, m.stamp);
     }
   }
 
-  /** The fresh label settling: a ring spreading out from it and a few sparkles. Routine work, not an accident. */
+  /** The fresh label settling: a few sparkles spreading out from it. Routine work, not an accident. */
   private freshLabel(parent: SVGGElement, x: number, y: number, w: number, q: number): void {
     const g = el('g', { opacity: (1 - easeIn(q)).toFixed(3), transform: `translate(${x.toFixed(1)} ${y.toFixed(1)})` }, parent);
-    const out = 14 * easeOut(q);
-    el('rect', { x: -w / 2 - 6 - out, y: -13 - out, width: w + 12 + out * 2, height: 26 + out * 2, rx: 8 + out, class: 'swap-ring' }, g);
     const size = 7 * Math.sin(Math.min(1, q * 1.4) * Math.PI);
     for (let i = 0; i < 6; i++) {
       const a = (i / 6) * Math.PI * 2 + 0.5;

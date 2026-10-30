@@ -270,10 +270,6 @@ body {
   opacity: 0.55;
 }
 
-.packet.knockable {
-  cursor: crosshair;
-}
-
 /* Chapter name, top left */
 .chapter {
   position: fixed;
@@ -928,12 +924,6 @@ body {
 
 .addr-old .addr-text {
   fill: var(--ink-soft);
-}
-
-.swap-ring {
-  fill: none;
-  stroke: var(--swap);
-  stroke-width: 2.5;
 }
 
 .swap-spark {
