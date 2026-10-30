@@ -3,6 +3,7 @@ import type { SimEvent } from './events/SimEvent';
 import { NO_FAULTS, type FaultPlan } from './faults';
 import type { Scenario } from './model';
 import { startBrowser, startDnsServer, startHttpServer } from './stack/apps';
+import { startHttpsServer } from './stack/https';
 import type { Device } from './stack/Device';
 import { Host } from './stack/Host';
 import { Router } from './stack/Router';
@@ -46,7 +47,10 @@ export function runScenario(scenario: Scenario, opts: RunOptions): SimResult {
     if (!(dev instanceof Host)) continue;
     for (const app of spec.apps) {
       if (app.kind === 'dns-server') startDnsServer(dev, app);
-      else if (app.kind === 'http-server') startHttpServer(dev, app, scenario.tcp.serverMss);
+      else if (app.kind === 'http-server') {
+        startHttpServer(dev, app, scenario.tcp.serverMss);
+        if (app.tls) startHttpsServer(dev, app.tls, app.processing, scenario.tcp.serverMss);
+      }
     }
   }
   const start = world.devices.get(scenario.startDevice);

@@ -16,12 +16,12 @@ import { buildTimeline, chapterAt, seenSoFar, type Timeline } from './timeline';
 /** Stormy weather happens on the internet side; the home cable stays calm. */
 const STORM_LINKS = ['wan', 'bb1', 'bb2'];
 const STORM_LOSS = 0.15;
-let features: Features = { big: false, again: false, slow: false };
+let features: Features = { https: false, big: false, again: false, slow: false };
 /** Stormy weather is a switch you can flip any time, before or during a run. */
 let stormy = false;
 try {
   const saved = JSON.parse(localStorage.getItem('net.features') ?? '{}') as Partial<Features> & { storm?: boolean };
-  features = { big: !!saved.big, again: !!saved.again, slow: !!saved.slow };
+  features = { https: !!saved.https, big: !!saved.big, again: !!saved.again, slow: !!saved.slow };
   stormy = !!saved.storm;
 } catch {
   // Nothing remembered; start plain.
@@ -46,7 +46,7 @@ let tl: Timeline;
 /** Which device the card was dropped on: the laptop (Ethernet cable) or the phone (Wi-Fi). */
 let client: 'laptop' | 'phone' = 'laptop';
 function simulate(): void {
-  const scenario = fetchWebPage({ site: features.big ? 'info.cern.ch' : 'example.com', revisit: features.again, slow: features.slow, from: client });
+  const scenario = fetchWebPage({ site: features.big ? 'info.cern.ch' : 'example.com', revisit: features.again, slow: features.slow, https: features.https, from: client });
   const plan = { randomLoss: STORM_LOSS, lossyLinks: STORM_LINKS, lossWindows: stormWindows, decided, manual: faults };
   story = buildStory(runScenario(scenario, { seed: stormSeed, faults: plan }));
   tl = buildTimeline(story, knocks);
@@ -88,7 +88,7 @@ const stickers = new Stickers(svg, features, (f) => {
   sound.play('snap');
 });
 function showFeatures(): void {
-  const site = features.big ? 'info.cern.ch' : 'example.com';
+  const site = `${features.https ? '🔒 ' : ''}${features.big ? 'info.cern.ch' : 'example.com'}`;
   if (cardText.textContent !== site) {
     cardText.textContent = site;
     cardPop = 0;
@@ -98,7 +98,13 @@ function showFeatures(): void {
 showFeatures();
 cardPop = 9;
 
-const CHAPTERS: Record<Chapter, [string, string]> = { dns: ['1', 'Find the address'], hello: ['2', 'Say hello'], page: ['3', 'Get the page'] };
+const CHAPTERS: Record<Chapter, string> = { dns: 'Find the address', hello: 'Say hello', secret: 'Agree on a secret', page: 'Get the page' };
+/** Chapter number in this run (a revisit skips the address, HTTPS adds the secret). */
+function chapterNumber(ch: Chapter): number {
+  const order: Chapter[] = [];
+  for (const s of tl.segs) if (!order.includes(s.trip.chapter)) order.push(s.trip.chapter);
+  return order.indexOf(ch) + 1;
+}
 const chapter = document.createElement('button');
 chapter.className = 'chapter';
 chapter.hidden = true;
@@ -122,7 +128,8 @@ chapter.addEventListener('click', () => {
     const ch = s.trip.chapter;
     if (seen.has(ch)) continue;
     seen.add(ch);
-    const [n, name] = CHAPTERS[ch];
+    const n = chapterNumber(ch);
+    const name = CHAPTERS[ch];
     const item = document.createElement('button');
     item.innerHTML = `<span class="chapter-num">${n}</span><span>${name}</span>`;
     item.classList.toggle('current', ch === shownChapter);
@@ -429,7 +436,8 @@ function frame(now: number): void {
     chapter.hidden = !ch;
     if (!ch) chapterMenu.hidden = true;
     if (ch) {
-      const [n, name] = CHAPTERS[ch];
+      const n = chapterNumber(ch);
+    const name = CHAPTERS[ch];
       chapter.innerHTML = `<span class="chapter-num">${n}</span><span>${name}</span>`;
       chapter.classList.remove('enter');
       void chapter.offsetWidth;
@@ -488,7 +496,7 @@ if (import.meta.env.DEV) {
       /** Start a run straight away with these stickers (for screenshots). */
       start(f: Partial<Features> & { storm?: boolean; from?: 'laptop' | 'phone' }): void {
         client = f.from ?? 'laptop';
-        for (const k of ['big', 'again', 'slow'] as const) stickers.set(k, !!f[k]);
+        for (const k of ['https', 'big', 'again', 'slow'] as const) stickers.set(k, !!f[k]);
         if (!!f.storm !== stormy) toggleStorm();
         beginRun();
         stormSeed = 1;

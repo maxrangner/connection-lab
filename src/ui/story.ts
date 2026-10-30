@@ -1,4 +1,20 @@
-import { flagNames, TCP_ACK, TCP_FIN, TCP_SYN, type LayerPdu, type PacketInfo, type PduSnapshot, type SimEvent, type SimResult } from '../sim';
+import {
+  flagNames,
+  openRecords,
+  sessionStream,
+  TCP_ACK,
+  TCP_FIN,
+  TCP_SYN,
+  TLS_ALERT,
+  TLS_APPLICATION_DATA,
+  type LayerPdu,
+  type OpenedRecord,
+  type PacketInfo,
+  type PduSnapshot,
+  type SimEvent,
+  type SimResult,
+  type TlsSession,
+} from '../sim';
 
 /**
  * The simple story: the packets a learner needs to follow, in order. Everything is read from the real event
@@ -20,7 +36,7 @@ export interface Frame {
   head: number;
   tail: number;
 }
-export type Chapter = 'dns' | 'hello' | 'page';
+export type Chapter = 'dns' | 'hello' | 'secret' | 'page';
 
 export type Step =
   | { kind: 'appear'; device: string }
@@ -58,6 +74,10 @@ export interface Trip {
   retry: boolean;
   /** When the page needs several packets: which one this is (1-based) and how many there are. */
   part?: { n: number; of: number };
+  /** HTTPS: the card travels locked; only the two ends can open it. */
+  locked?: boolean;
+  /** One of several packets of the same message that is not the last: no reaction when it arrives. */
+  quiet?: boolean;
 }
 
 export interface Story {
@@ -243,6 +263,8 @@ export function buildStory(r: SimResult): Story {
     .map((p) => trip(r, p, retried, client))
     .filter((t): t is Trip => !!t)
     .sort((a, b) => a.start - b.start);
+  const tls = r.scenario.devices.flatMap((d) => d.apps).find((a) => a.kind === 'browser')?.tls;
+  if (tls) labelTls(trips, r, tls);
   numberParts(trips, r);
   const url = start?.type === 'app' ? String(start.info?.url ?? '') : '';
   const wifiIfaces = new Set(r.scenario.devices.flatMap((d) => d.ifaces.filter((i) => i.wifi).map((i) => i.id)));
@@ -274,10 +296,84 @@ function numberParts(trips: Trip[], r: SimResult): void {
   const seqOf = (t: Trip): number => r.packets.get(t.packetId)?.tcp?.relSeq ?? 0;
   const seqs = [...new Set(parts.map(seqOf))].sort((a, b) => a - b);
   if (seqs.length < 2) return;
-  const status = parts.find((t) => t.card && t.card !== 'data')?.card ?? '';
+  const status = parts.find((t) => t.card && t.card !== 'data' && t.card !== 'page' && t.card !== 'ticket')?.card ?? '';
   for (const t of parts) {
     const n = seqs.indexOf(seqOf(t)) + 1;
     t.part = { n, of: seqs.length };
     t.card = n === 1 && status ? `${status} 1/${seqs.length}` : `${n}/${seqs.length}`;
+  }
+}
+
+/** The most telling name for what a TLS record carries. */
+function recordLabel(rec: OpenedRecord): string {
+  if (rec.inner === TLS_APPLICATION_DATA) {
+    const line = new TextDecoder('latin1').decode(rec.plaintext.subarray(0, 80)).split('\r\n')[0] ?? '';
+    return /^(GET|HEAD|POST) |^HTTP\//.test(line) ? cardLabel(`HTTP ${line}`) : 'page';
+  }
+  if (rec.inner === TLS_ALERT) return 'bye';
+  const h = rec.handshakes;
+  if (h.includes('ClientHello') || h.includes('ServerHello')) return 'hello';
+  if (h.includes('Certificate')) return 'certificate';
+  if (h.includes('NewSessionTicket')) return 'ticket';
+  if (h.includes('CertificateVerify')) return 'signature';
+  if (h.includes('Finished')) return 'done';
+  return h[0] ?? 'TLS';
+}
+
+const RANK = (rec: OpenedRecord): number =>
+  rec.inner === TLS_APPLICATION_DATA ? 5 : rec.handshakes.some((h) => /Hello|Certificate/.test(h)) ? 4 : rec.inner === TLS_ALERT ? 1 : rec.handshakes.length ? 2 : 0;
+
+/**
+ * HTTPS: name each data segment after the TLS records in it (opened with the session's keys, as either end could),
+ * mark it locked when what it carries is encrypted, and put the handshake into its own chapter. Segments of the same
+ * flight get numbered ("certificate 2/4").
+ */
+function labelTls(trips: Trip[], r: SimResult, session: TlsSession): void {
+  const opened = {
+    client: openRecords(session, 'client', sessionStream(session, 'client')),
+    server: openRecords(session, 'server', sessionStream(session, 'server')),
+  };
+  // Where each flight starts and ends in its sender's stream.
+  const flightOf = (side: 'client' | 'server', offset: number): number => {
+    let o = 0;
+    let n = 0;
+    for (const f of session.flights) {
+      if (f.from !== side) continue;
+      const len = Math.ceil((f.base64.length * 3) / 4) - (f.base64.endsWith('==') ? 2 : f.base64.endsWith('=') ? 1 : 0);
+      if (offset < o + len) return n;
+      o += len;
+      n++;
+    }
+    return n;
+  };
+  const groups = new Map<string, Trip[]>();
+  for (const t of trips) {
+    const info = r.packets.get(t.packetId)?.tcp;
+    if (!info || !t.dataBytes) continue;
+    const side = t.outward ? 'client' : 'server';
+    const from = info.relSeq - 1;
+    const to = from + t.dataBytes;
+    const recs = opened[side];
+    const touching = recs.filter((x, i) => x.offset < to && (recs[i + 1]?.offset ?? Infinity) > from);
+    const starting = touching.filter((x) => x.offset >= from);
+    const main = [...(starting.length ? starting : touching)].sort((a, b) => RANK(b) - RANK(a))[0];
+    if (!main) continue;
+    t.card = recordLabel(main);
+    t.locked = main.inner === TLS_APPLICATION_DATA || !main.handshakes.some((h) => /Hello/.test(h));
+    t.chapter = touching.some((x) => x.inner === TLS_APPLICATION_DATA || x.inner === TLS_ALERT || x.handshakes.includes('NewSessionTicket')) ? 'page' : 'secret';
+    if (t.chapter === 'secret') {
+      const key = `${side}|${flightOf(side, from)}`;
+      groups.set(key, [...(groups.get(key) ?? []), t]);
+    }
+  }
+  // Number the packets of a handshake flight; retransmissions keep their number.
+  for (const g of groups.values()) {
+    const seqs = [...new Set(g.map((t) => r.packets.get(t.packetId)?.tcp?.relSeq ?? 0))].sort((a, b) => a - b);
+    if (seqs.length < 2) continue;
+    for (const t of g) {
+      const n = seqs.indexOf(r.packets.get(t.packetId)?.tcp?.relSeq ?? 0) + 1;
+      t.card = `${t.card} ${n}/${seqs.length}`;
+      t.quiet = n < seqs.length;
+    }
   }
 }

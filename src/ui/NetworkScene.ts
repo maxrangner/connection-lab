@@ -7,6 +7,30 @@ import { addressBefore, DEVICE_TOP, FACE_EMOJI, frameAt, LEVEL, packetPos, packe
 
 export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', eth: '#e08b33', wifi: '#2a9d8f' } as const;
 const DEVICE = '#d9d0c2';
+/** A locked (encrypted) card: dark, with a padlock instead of what it says. */
+const LOCKED = '#3d4654';
+
+/** Mix two #rrggbb colours. */
+function mix(a: string, b: string, t: number): string {
+  const p = (h: string, i: number): number => parseInt(h.slice(1 + i * 2, 3 + i * 2), 16);
+  const c = [0, 1, 2].map((i) => Math.round(p(a, i) + (p(b, i) - p(a, i)) * t).toString(16).padStart(2, '0'));
+  return `#${c.join('')}`;
+}
+
+/** Lock state of a card: closes at the end of `appear` at the sender, opens at the start of `read` at the receiver. */
+function lockAt(seg: Seg, k: number): number {
+  if (!seg.trip.locked) return 0;
+  if (seg.step.kind === 'appear') return clamp01((k - 0.55) / 0.2);
+  if (seg.step.kind === 'read') return 1 - clamp01((k - 0.05) / 0.2);
+  return 1;
+}
+
+/** 0..1 while the lock is clicking shut or springing open, else 0. */
+function lockClick(seg: Seg, k: number): number {
+  if (!seg.trip.locked) return 0;
+  const q = seg.step.kind === 'appear' ? (k - 0.6) / 0.25 : seg.step.kind === 'read' ? (k - 0.1) / 0.25 : -1;
+  return q > 0 && q < 1 ? q : 0;
+}
 const BURST = '#ffd84a';
 const WAIT = '#c2562f';
 
@@ -22,7 +46,8 @@ const layerName = (layer: Layer, trip: Trip, l2: L2 = 'ethernet'): string =>
   ({ app: 'App', l4: trip.l4 === 'udp' ? 'UDP' : 'TCP', ip: 'IP', eth: l2 === 'wifi' ? 'Wi-Fi' : 'Ethernet' })[layer];
 const cardFont = (label: string): number => (label.length <= 7 ? 13 : label.length <= 14 ? 10.5 : 9);
 const cardLen = (trip: Trip): number => {
-  const label = trip.card ?? '';
+  // Room for the label as it shows (locked cards show only a padlock and maybe a number).
+  const label = trip.locked ? (trip.card?.match(/\d+\/\d+$/)?.[0] ?? '') + '🔒 ' : (trip.card ?? '');
   return Math.max(1.3 + 0.42 * Math.log2(Math.max(trip.dataBytes, 64) / 64), (label.length * cardFont(label) * 0.62 + 18) / U);
 };
 
@@ -116,6 +141,12 @@ export class NetworkScene {
   private overview = { x: 0, y: 0, w: 1, h: 1 };
   /** The kind of frame around the packet being drawn. */
   private l2: L2 = 'ethernet';
+  /** How locked the card being drawn is (0 open, 1 locked): HTTPS cards lock at the sender and open at the receiver. */
+  private lock = 0;
+
+  private cardText(trip: Trip): string {
+    return this.lock > 0.5 ? (trip.card?.match(/\d+\/\d+$/) ? `🔒 ${trip.card.match(/\d+\/\d+$/)![0]}` : '🔒') : (trip.card ?? '');
+  }
   private readonly cables: SVGGElement;
   /** Each drawn cable (or satellite hop) and the devices at its ends, to grey out the unused ones. */
   private cableViews: { g: SVGGElement; a: string; b: string }[] = [];
@@ -644,7 +675,11 @@ export class NetworkScene {
     }
     const trip = seg.trip;
     this.l2 = frameAt(seg)?.l2 ?? 'ethernet';
+    this.lock = lockAt(seg, k);
     const parts = this.parts(seg, k);
+    // The lock clicks shut (or springs open) with a little bounce.
+    const click = lockClick(seg, k);
+    if (click > 0) for (const p of parts) if (p.key === 'card') p.scale *= 1 + 0.18 * Math.sin(Math.PI * click);
     const at = packetPose(this.tl, seg, k);
     const pose: Pose = { pos: at.pos, angle: at.angle, gap: peek * 0.7, spin: 0, squash: 0, op: 1, sleeve: 1 - peek, tag: peek < 0.5, chips: peek };
 
@@ -839,11 +874,11 @@ export class NetworkScene {
       if (along < 0.005) continue;
       const centre = at((u0 + u1) / 2 + p.slide);
       const z = pos.z - h / 2 + p.lift + (p.key === 'card' ? wiggle : 0);
-      const color = colorOf(p.layer, trip, this.l2);
+      const color = p.key === 'card' && this.lock > 0 ? mix(COLOR.app, LOCKED, this.lock) : colorOf(p.layer, trip, this.l2);
       const g = el('g', { opacity: p.op.toFixed(3), class: `part part-${p.layer}` }, g0);
       rbox(g, { cx: centre.x, cy: centre.y, z, len: along, wid: d, h, angle: pose.angle, color });
       // Name printed on the long side facing the viewer, if there is room for it.
-      const label = p.key === 'card' ? (trip.card ?? '') : p.key === 'ip' ? 'IP' : p.key === 'l4' ? trip.l4Label : '';
+      const label = p.key === 'card' ? this.cardText(trip) : p.key === 'ip' ? 'IP' : p.key === 'l4' ? trip.l4Label : '';
       const font = p.key === 'card' ? cardFont(label) : 10;
       const onSide = label && p.f > 0.6 ? faceText(dir, v3(centre.x + side.x * (d / 2), centre.y + side.y * (d / 2), z + h / 2)) : null;
       if (label && onSide && along * U * onSide.ex > label.length * font * 0.62 + 4) {
@@ -938,7 +973,7 @@ export class NetworkScene {
   private sizeChips(items: { p: Part; top: Vec3 }[], trip: Trip, op: number): void {
     const chips = items
       .map(({ p, top }) => {
-        const name = p.key === 'card' ? (trip.card ?? '') : p.key === 'ethT' ? '' : p.key === 'l4' ? trip.l4Label : layerName(p.layer, trip, this.l2);
+        const name = p.key === 'card' ? this.cardText(trip) : p.key === 'ethT' ? '' : p.key === 'l4' ? trip.l4Label : layerName(p.layer, trip, this.l2);
         const text = name ? `${name} · ${p.bytes} B` : `${p.bytes} B`;
         return { p, a: iso(top.x, top.y, top.z), text, w: text.length * 6.6 + 14, x: 0 };
       })
@@ -953,7 +988,7 @@ export class NetworkScene {
     }
     const y = Math.min(...chips.map((c) => c.a.sy)) - 30 - 20 * op;
     for (const c of chips) {
-      const color = colorOf(c.p.layer, trip, this.l2);
+      const color = c.p.key === 'card' && this.lock > 0.5 ? LOCKED : colorOf(c.p.layer, trip, this.l2);
       const g = el('g', { class: 'size-tag', opacity: op.toFixed(3) }, this.tags);
       el('path', { d: `M${c.a.sx.toFixed(1)} ${c.a.sy.toFixed(1)}L${c.x.toFixed(1)} ${y.toFixed(1)}`, stroke: color, fill: 'none' }, g);
       el('rect', { x: c.x - c.w / 2, y: y - 18, width: c.w, height: 18, rx: 9, fill: color }, g);

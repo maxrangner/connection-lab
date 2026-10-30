@@ -1,0 +1,138 @@
+{
+  "flights": [
+    {
+      "from": "client",
+      "length": 1482
+    },
+    {
+      "from": "server",
+      "length": 5069
+    },
+    {
+      "from": "client",
+      "length": 245
+    },
+    {
+      "from": "server",
+      "length": 1448
+    },
+    {
+      "from": "client",
+      "length": 24
+    }
+  ],
+  "records": [
+    {
+      "from": "client",
+      "offset": 0,
+      "length": 1482,
+      "type": 22,
+      "inner": [
+        "ClientHello"
+      ]
+    },
+    {
+      "from": "client",
+      "offset": 1482,
+      "length": 6,
+      "type": 20,
+      "inner": [
+        "ChangeCipherSpec"
+      ]
+    },
+    {
+      "from": "client",
+      "offset": 1488,
+      "length": 58,
+      "type": 23,
+      "inner": [
+        "Finished"
+      ]
+    },
+    {
+      "from": "client",
+      "offset": 1546,
+      "length": 181,
+      "type": 23,
+      "inner": [
+        "HTTP GET / HTTP/1.1"
+      ]
+    },
+    {
+      "from": "client",
+      "offset": 1727,
+      "length": 24,
+      "type": 23,
+      "inner": [
+        "Alert close_notify"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 0,
+      "length": 1215,
+      "type": 22,
+      "inner": [
+        "ServerHello"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 1215,
+      "length": 6,
+      "type": 20,
+      "inner": [
+        "ChangeCipherSpec"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 1221,
+      "length": 3848,
+      "type": 23,
+      "inner": [
+        "EncryptedExtensions",
+        "Certificate",
+        "CertificateVerify",
+        "Finished"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 5069,
+      "length": 450,
+      "type": 23,
+      "inner": [
+        "NewSessionTicket",
+        "NewSessionTicket"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 5519,
+      "length": 947,
+      "type": 23,
+      "inner": [
+        "HTTP HTTP/1.1 200 OK"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 6466,
+      "length": 27,
+      "type": 23,
+      "inner": [
+        "HTTP 0"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 6493,
+      "length": 24,
+      "type": 23,
+      "inner": [
+        "Alert close_notify"
+      ]
+    }
+  ]
+}

@@ -265,3 +265,29 @@ describe('phone over Wi-Fi in the story', () => {
     }
   });
 });
+
+describe('HTTPS in the story', () => {
+  const s = buildStory(runScenario(fetchWebPage({ https: true }), { seed: 1, faults: { randomLoss: 0, manual: [] } }));
+
+  it('adds an "agree on a secret" chapter between the hello and the page', () => {
+    const order = [...new Set(s.trips.map((t) => t.chapter))];
+    expect(order).toEqual(['dns', 'hello', 'secret', 'page']);
+  });
+
+  it('the hellos travel open; the certificate, the GET and the page travel locked', () => {
+    const byCard = (re: RegExp) => s.trips.filter((t) => re.test(t.card ?? ''));
+    expect(byCard(/^hello/).length).toBeGreaterThanOrEqual(2);
+    expect(byCard(/^hello/).every((t) => !t.locked)).toBe(true);
+    expect(byCard(/^certificate/).every((t) => t.locked)).toBe(true);
+    expect(byCard(/^GET \/$/)).toHaveLength(1);
+    expect(byCard(/^GET \/$/)[0]!.locked).toBe(true);
+    expect(byCard(/^200 OK/).every((t) => t.locked)).toBe(true);
+    expect(s.pageTitle).toBe('Example Domain');
+  });
+
+  it('only the last packet of a handshake flight gets a thumbs up', () => {
+    const faces = buildTimeline(s).reactions.map((r) => `${r.device}:${r.face}`);
+    expect(faces.filter((f) => f === 'laptop:thumbs').length).toBe(3); // DNS answer, SYN-ACK, end of the server's hello
+    expect(faces[faces.length - 1]).toBe('laptop:love');
+  });
+});

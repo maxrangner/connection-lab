@@ -2,6 +2,7 @@ import { concat, toAscii } from '../bytes/bytes';
 import type { AppSpec } from '../model';
 import { buildDnsQuery, buildDnsResponse, parseDns } from '../proto/dns';
 import type { Host } from './Host';
+import { httpsClient } from './https';
 
 const DNS_TIMEOUT = 5; // glibc resolv.conf default "timeout:5"
 const DNS_ATTEMPTS = 2; // glibc default "attempts:2"
@@ -82,6 +83,21 @@ export function startBrowser(host: Host, spec: BrowserSpec, mss: number): void {
   lookup(
     (ips) => {
       const target = ips[0]!;
+      if (spec.tls) {
+        const session = spec.tls;
+        host.tcpConnect(target, 443, { mss, wscale: 7, app: 'tls' }, {
+          onConnected(conn) {
+            const h = httpsClient(host, conn, session, spec.request, url.pathname, (ok, bytes) =>
+              sim.emit({ type: 'app', deviceId: host.id, app: 'browser', action: ok ? 'done' : 'error', info: ok ? { bytes } : { reason: 'connection closed before the response was complete' } }),
+            );
+            conn.handlers = { ...conn.handlers, onData: h.onData, onPeerClose: h.onPeerClose };
+          },
+          onError(_conn, reason) {
+            sim.emit({ type: 'app', deviceId: host.id, app: 'browser', action: 'error', info: { reason } });
+          },
+        });
+        return;
+      }
       let received: Uint8Array = new Uint8Array(0);
       let reported = false;
       host.tcpConnect(target, Number(url.port || 80), { mss, wscale: 7, app: 'http' }, {

@@ -1,4 +1,5 @@
 import type { Ip4, Mac } from './bytes/addr';
+import type { TlsSession } from './proto/tls';
 
 export type DeviceKind = 'laptop' | 'phone' | 'home-router' | 'router' | 'dns-resolver' | 'web-server';
 
@@ -42,9 +43,11 @@ export type AppSpec =
       request: Uint8Array;
       /** The address is still in the browser's DNS cache (a second visit within the record's TTL): skip the lookup. */
       knownAddress?: Ip4;
+      /** HTTPS: replay this captured TLS 1.3 session on port 443. */
+      tls?: TlsSession;
     }
   | { kind: 'dns-server'; records: Record<string, { ips: Ip4[]; ttl: number }>; processing: number }
-  | { kind: 'http-server'; response: Uint8Array; processing: number };
+  | { kind: 'http-server'; response: Uint8Array; processing: number; /** Also serve HTTPS on 443 with this session. */ tls?: TlsSession };
 
 export interface DeviceSpec {
   id: string;

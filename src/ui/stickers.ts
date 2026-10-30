@@ -6,10 +6,11 @@ import { lerp } from './project';
  * it) to switch that feature on; drag it off the card (or tap it there) to switch it off again.
  */
 
-export type Feature = 'big' | 'again' | 'slow';
+export type Feature = 'https' | 'big' | 'again' | 'slow';
 export type Features = Record<Feature, boolean>;
 
 const DEFS: { id: Feature; label: string; color: string }[] = [
+  { id: 'https', label: 'Secure', color: '#3d4654' },
   { id: 'big', label: 'Bigger page', color: '#3d7ea6' },
   { id: 'again', label: 'Visit again', color: '#5f8a2e' },
   { id: 'slow', label: 'Satellite', color: '#7a5aa6' },
@@ -27,7 +28,13 @@ interface Sticker {
 
 /** Icons drawn from simple shapes, centred on 0,0, about 24 px across. */
 function icon(g: SVGGElement, id: Feature, color: string): void {
-  if (id === 'big') {
+  if (id === 'https') {
+    // A padlock: shackle and body with a keyhole.
+    el('path', { d: 'M-5 -2 V-6 A5 5 0 0 1 5 -6 V-2', fill: 'none', stroke: color, 'stroke-width': 2.4, 'stroke-linecap': 'round' }, g);
+    el('rect', { x: -8, y: -2, width: 16, height: 13, rx: 2.5, fill: color }, g);
+    el('circle', { cx: 0, cy: 3.5, r: 1.8, fill: '#fff' }, g);
+    el('rect', { x: -0.8, y: 4, width: 1.6, height: 4, fill: '#fff' }, g);
+  } else if (id === 'big') {
     // A tall page with a folded corner and lines of text.
     el('path', { d: 'M-8 -12 H4 L9 -7 V12 H-8 Z', fill: '#fff', stroke: color, 'stroke-width': 2, 'stroke-linejoin': 'round' }, g);
     el('path', { d: 'M4 -12 V-7 H9', fill: 'none', stroke: color, 'stroke-width': 2, 'stroke-linejoin': 'round' }, g);
@@ -54,7 +61,7 @@ export class Stickers {
     initial: Partial<Features>,
     private readonly onChange: (f: Features) => void,
   ) {
-    this.features = { big: false, again: false, slow: false, ...initial };
+    this.features = { https: false, big: false, again: false, slow: false, ...initial };
     this.root = el('g', { class: 'stickers' }, svg);
     for (const d of DEFS) {
       const g = el('g', { class: 'sticker' }, this.root);
@@ -142,7 +149,7 @@ export class Stickers {
       if (s.drag) scale = 1.12;
       // Snap-on bounce.
       if (on && !s.drag && s.since < 0.5) scale *= 1 + 0.35 * Math.sin((s.since / 0.5) * Math.PI) * (1 - s.since / 0.5);
-      const tilt = on ? ([-10, 6, -4][i] ?? 0) : 0;
+      const tilt = on ? ([-10, 6, -4, 8][i] ?? 0) : 0;
       s.g.setAttribute('transform', `translate(${s.pos.sx.toFixed(1)} ${s.pos.sy.toFixed(1)}) rotate(${tilt}) scale(${scale.toFixed(3)})`);
       s.g.setAttribute('opacity', (on ? cardOpacity : 1).toFixed(3));
       s.label.style.display = on || s.drag ? 'none' : '';

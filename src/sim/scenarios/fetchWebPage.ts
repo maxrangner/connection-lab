@@ -7,6 +7,8 @@ import {
   HTTP_REQUEST,
   HTTP_RESPONSE_BASE64,
 } from './exampleComCapture';
+import * as tlsExample from './tlsCapture_example_com';
+import * as tlsCern from './tlsCapture_info_cern_ch';
 import { CERN_A_RECORDS, CERN_DNS_TTL, CERN_HOST, CERN_HTTP_REQUEST, CERN_HTTP_RESPONSE_BASE64, CERN_IP, CERN_PATH } from './infoCernCapture';
 
 /**
@@ -48,14 +50,16 @@ export interface FetchWebPageOptions {
    * about 36 000 km each way, so it takes about 280 ms one way (and is slower, 25 Mbit/s).
    */
   slow?: boolean;
+  /** HTTPS: the same page over a real captured TLS 1.3 session, so everything after the hellos is encrypted. */
+  https?: boolean;
   /** Which device opens the page: the laptop on its Ethernet cable, or the phone over Wi-Fi. */
   from?: 'laptop' | 'phone';
 }
 
 /** What the scenario needs to know about each real site. */
 const SITES = {
-  'example.com': { url: 'http://example.com/', ip: CAPTURED_FROM_IP, request: HTTP_REQUEST, response: HTTP_RESPONSE_BASE64 },
-  'info.cern.ch': { url: `http://${CERN_HOST}${CERN_PATH}`, ip: CERN_IP, request: CERN_HTTP_REQUEST, response: CERN_HTTP_RESPONSE_BASE64 },
+  'example.com': { url: 'http://example.com/', ip: CAPTURED_FROM_IP, request: HTTP_REQUEST, response: HTTP_RESPONSE_BASE64, tls: tlsExample },
+  'info.cern.ch': { url: `http://${CERN_HOST}${CERN_PATH}`, ip: CERN_IP, request: CERN_HTTP_REQUEST, response: CERN_HTTP_RESPONSE_BASE64, tls: tlsCern },
 } as const;
 
 export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
@@ -63,16 +67,19 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
   const site = SITES[opts.site ?? 'example.com'];
   const server = { ip: site.ip, mac: ADDR.server.mac };
   const revisit = !!opts.revisit;
+  const tls = opts.https ? { host: site.tls.TLS_HOST, flights: site.tls.TLS_FLIGHTS, secrets: site.tls.TLS_SECRETS } : undefined;
+  const url = opts.https ? site.url.replace(/^http:/, 'https:') : site.url;
   const from = opts.from ?? 'laptop';
   const browser = (gateway: { ip: string; mac: string }) => ({
     ...(revisit ? { arp: { [gateway.ip]: gateway.mac } } : {}),
     apps: [
       {
         kind: 'browser' as const,
-        url: site.url,
+        url,
         resolver: ADDR.resolver.ip,
-        request: ascii(site.request),
+        request: ascii(opts.https ? site.tls.TLS_REQUEST : site.request),
         ...(revisit ? { knownAddress: site.ip } : {}),
+        ...(tls ? { tls } : {}),
       },
     ],
   });
@@ -80,7 +87,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
   const remembered = from === 'phone' ? ADDR.phone : ADDR.laptop;
   return {
     id: 'fetch-web-page',
-    title: `Fetch ${site.url}`,
+    title: `Fetch ${url}`,
     startDevice: from,
     tcp: { clientMss: mss, serverMss: 1460 },
     devices: [
@@ -189,7 +196,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
         ifaces: [{ id: 'server.eth0', name: 'eth0', mac: server.mac, ip: server.ip, prefixLen: 32 }],
         routes: [{ network: '0.0.0.0', prefixLen: 0, via: ADDR.ispToServer.ip, iface: 'server.eth0' }],
         arp: { [ADDR.ispToServer.ip]: ADDR.ispToServer.mac },
-        apps: [{ kind: 'http-server', processing: 0.0005, response: fromBase64(site.response) }],
+        apps: [{ kind: 'http-server', processing: 0.0005, response: fromBase64(site.response), ...(tls ? { tls } : {}) }],
       },
     ],
     links: [

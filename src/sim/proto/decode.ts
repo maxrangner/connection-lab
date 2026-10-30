@@ -5,6 +5,7 @@ import { describeEthernet, ETHERTYPE_ARP, ETHERTYPE_IPV4, parseEthernet } from '
 import { describeHttp } from './http';
 import { describeIpv4, IPPROTO_TCP, IPPROTO_UDP, parseIpv4 } from './ipv4';
 import { describeTcp, parseTcp } from './tcp';
+import { describeTls } from './tls';
 import { describeWifi, parseWifi } from './wifi';
 import type { LayerPdu, Protocol } from './types';
 import { describeUdp, parseUdp } from './udp';
@@ -75,13 +76,19 @@ function walk(b: Uint8Array, proto: Protocol, o: number, end: number, ctx: Decod
       const t = parseTcp(b, o);
       const pdu = describeTcp(b, o, end, ctx.srcIp, ctx.dstIp);
       out.push(pdu);
-      if (end > t.payloadStart && (t.srcPort === 80 || t.dstPort === 80 || ctx.appHint === 'http')) {
+      if (end > t.payloadStart && (t.srcPort === 443 || t.dstPort === 443 || ctx.appHint === 'tls')) {
+        walk(b, 'tls', t.payloadStart, end, ctx, out);
+      } else if (end > t.payloadStart && (t.srcPort === 80 || t.dstPort === 80 || ctx.appHint === 'http')) {
         walk(b, 'http', t.payloadStart, end, ctx, out);
       }
       return end;
     }
     case 'dns': {
       out.push(describeDns(b, o, end));
+      return end;
+    }
+    case 'tls': {
+      out.push(describeTls(b, o, end));
       return end;
     }
     case 'http': {

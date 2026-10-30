@@ -1,0 +1,161 @@
+{
+  "flights": [
+    {
+      "from": "client",
+      "length": 1483
+    },
+    {
+      "from": "server",
+      "length": 7372
+    },
+    {
+      "from": "client",
+      "length": 275
+    },
+    {
+      "from": "server",
+      "length": 3070
+    },
+    {
+      "from": "client",
+      "length": 24
+    }
+  ],
+  "records": [
+    {
+      "from": "client",
+      "offset": 0,
+      "length": 1483,
+      "type": 22,
+      "inner": [
+        "ClientHello"
+      ]
+    },
+    {
+      "from": "client",
+      "offset": 1483,
+      "length": 6,
+      "type": 20,
+      "inner": [
+        "ChangeCipherSpec"
+      ]
+    },
+    {
+      "from": "client",
+      "offset": 1489,
+      "length": 58,
+      "type": 23,
+      "inner": [
+        "Finished"
+      ]
+    },
+    {
+      "from": "client",
+      "offset": 1547,
+      "length": 211,
+      "type": 23,
+      "inner": [
+        "HTTP GET /hypertext/WWW/TheProject.html HTTP/1.1"
+      ]
+    },
+    {
+      "from": "client",
+      "offset": 1758,
+      "length": 24,
+      "type": 23,
+      "inner": [
+        "Alert close_notify"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 0,
+      "length": 127,
+      "type": 22,
+      "inner": [
+        "ServerHello"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 127,
+      "length": 6,
+      "type": 20,
+      "inner": [
+        "ChangeCipherSpec"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 133,
+      "length": 47,
+      "type": 23,
+      "inner": [
+        "EncryptedExtensions"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 180,
+      "length": 6848,
+      "type": 23,
+      "inner": [
+        "Certificate"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 7028,
+      "length": 286,
+      "type": 23,
+      "inner": [
+        "CertificateVerify"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 7314,
+      "length": 58,
+      "type": 23,
+      "inner": [
+        "Finished"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 7372,
+      "length": 287,
+      "type": 23,
+      "inner": [
+        "NewSessionTicket"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 7659,
+      "length": 287,
+      "type": 23,
+      "inner": [
+        "NewSessionTicket"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 7946,
+      "length": 2472,
+      "type": 23,
+      "inner": [
+        "HTTP HTTP/1.1 200 OK"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 10418,
+      "length": 24,
+      "type": 23,
+      "inner": [
+        "Alert close_notify"
+      ]
+    }
+  ]
+}

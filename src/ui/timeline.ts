@@ -48,7 +48,7 @@ export interface Seg {
 
 export interface Cue {
   t: number;
-  sound: 'snap' | 'sleeve' | 'thud' | 'flip' | 'bonk' | 'zap' | 'surprise' | 'pop' | 'chime';
+  sound: 'snap' | 'sleeve' | 'thud' | 'flip' | 'bonk' | 'zap' | 'surprise' | 'pop' | 'chime' | 'lock' | 'unlock';
 }
 
 export interface Timeline {
@@ -197,6 +197,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
  * earlier one is still missing. Requests (a question, SYN, GET) get no reaction.
  */
 function arrivalFace(trip: Trip, device: string, arrived: Set<string>, filled: Set<number>): Face | null {
+  if (trip.quiet) return null;
   const key = `${device}|${trip.chapter}|${trip.card ?? trip.l4Label}|${trip.part?.n ?? 0}`;
   if (arrived.has(key)) return 'confused';
   arrived.add(key);
@@ -219,6 +220,8 @@ function addCues(cues: Cue[], seg: Seg, story: Story): void {
   if (s.kind === 'unwrap' && s.layer === 'eth') cues.push({ t: at(0.35 + 0.65 * 0.62), sound: 'thud' });
   if (s.kind === 'nat') cues.push({ t: at(0.5), sound: 'flip' });
   if (s.kind === 'lost' && seg.knock) cues.push({ t: seg.t0 + seg.knock.k * seg.knock.travel, sound: seg.knock.byYou ? 'bonk' : 'zap' });
+  if (seg.trip.locked && s.kind === 'appear') cues.push({ t: at(0.62), sound: 'lock' });
+  if (seg.trip.locked && s.kind === 'read') cues.push({ t: at(0.12), sound: 'unlock' });
   if (s.kind === 'read') {
     const last = story.trips[story.trips.length - 1];
     cues.push({ t: at(0.6), sound: seg.trip === last && seg.trip.chapter === 'page' ? 'chime' : 'pop' });

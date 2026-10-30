@@ -107,3 +107,31 @@ describe('phone over Wi-Fi', () => {
     for (const f of frames('wlan')) for (const fld of f.layers[0]!.fields) expect(fld.explain.length).toBeGreaterThan(10);
   });
 });
+
+describe('HTTPS (a real captured TLS 1.3 session)', () => {
+  for (const site of ['example.com', 'info.cern.ch'] as const) {
+    describe(site, () => {
+      const r = run({ https: true, site });
+      const page = () => {
+        const got = of(r, 'app').find((e) => e.action === 'http-response-received')!;
+        return toAscii(r.pdus.get(got.pduId!)!.bytes);
+      };
+
+      it('the server decrypts the request and the browser decrypts the page', () => {
+        const req = of(r, 'app').find((e) => e.action === 'http-request-received')!;
+        expect(String(req.info?.requestLine)).toMatch(/^GET \/\S* HTTP\/1\.1$/);
+        expect(page().startsWith('HTTP/1.1 200 OK')).toBe(true);
+        expect(page()).toMatch(/<title>[^<]+<\/title>/i);
+        expect(of(r, 'app').some((e) => e.action === 'done')).toBe(true);
+      });
+
+      it('talks on port 443, and every frame to and from the server is TLS', () => {
+        const segs = of(r, 'tx').filter((e) => e.linkId === 'bb2').map((e) => r.pdus.get(e.frameId)!);
+        const withData = segs.filter((p) => p.layers.some((l) => l.protocol === 'tls'));
+        expect(withData.length).toBeGreaterThan(3);
+        expect(segs.some((p) => p.layers.some((l) => l.protocol === 'http'))).toBe(false);
+        for (const p of withData) for (const l of p.layers) if (l.protocol === 'tls') for (const f of l.fields) expect(f.explain.length).toBeGreaterThan(10);
+      });
+    });
+  }
+});
