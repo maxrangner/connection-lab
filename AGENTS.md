@@ -31,6 +31,7 @@ The machine may not have Node on `PATH` in every shell. If `node` is missing in 
 | `npm run build` | typecheck + static build to `dist/` |
 | `npx vite-node scripts/dump-events.ts [mss] [lose:<packetId>@<linkId>]` | Print a scenario's full event log (debugging) |
 | `node scripts/screenshot.mjs` / `node scripts/screenshot-flows.mjs` | Headless screenshots of the running dev server (see "UI model") |
+| `node scripts/screenshot-network.mjs` | Screenshots of the simple prototype at `/network.html` (dev hook `window.__net`) |
 | `node scripts/capture-example-com.mjs` | Re-capture the real example.com response (regenerates `src/sim/scenarios/exampleComCapture.ts` and `tests/fixtures/*.http`) |
 
 Run `npm run typecheck && npm run lint && npm test` before declaring work done.
@@ -72,6 +73,8 @@ src/ui/                      presentation (vanilla DOM + SVG, no framework, no a
                              assemble (byte cubes snap into the data core), diff, consumed, lost; one label stack per layer
   scene/UrlCard.ts, svg.ts   draggable URL card (real ASCII bits, inertia, spring snap); SVG helpers
   panels/                    Inspector (clean/full/hex, device tables), Controls (transport, scrubber), Receipt, SettingsPanel
+src/network/                 prototype "Get example.com" (network.html): one request out, the page back; light theme, packet as
+                             card + TCP/IP collars + Ethernet sleeve; story.ts reads the real event log, timeline.ts is pure in v
 src/styles/app.css           all styling; layer colors as CSS vars mirror content/layers.ts
 scripts/                     capture, event dump, screenshot scripts (Playwright)
 tests/fixtures/              raw captured bytes
