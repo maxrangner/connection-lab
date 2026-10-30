@@ -379,3 +379,25 @@ describe('what a snoop on a line can read', () => {
     expect(get.lines.join()).not.toMatch(/GET|example/);
   });
 });
+
+describe('a cut cable in the story', () => {
+  const s = buildStory(runScenario(fetchWebPage(), { seed: 1, faults: { randomLoss: 0, manual: [], cuts: [{ link: 'bb2', from: 0 }] }, maxTime: 1000 }));
+  const tl = buildTimeline(s);
+
+  it('shows each resend falling into the cut, longer rings for longer waits, and giving up at the end', () => {
+    const lost = s.trips.filter((t) => t.lost);
+    expect(lost).toHaveLength(7);
+    expect(lost.every((t) => t.steps.some((x) => x.kind === 'lost' && x.cut))).toBe(true);
+    const waits = tl.segs.flatMap((x) => (x.step.kind === 'wait' ? [{ step: x.step, d: x.t1 - x.t0 }] : []));
+    expect(waits.map((w) => w.step.mood)).toEqual(['surprise', 'angry', 'angry', 'angry', 'angry', 'angry', 'cry']);
+    expect(waits.map((w) => Math.round(w.step.seconds)).slice(0, 6)).toEqual([1, 2, 4, 8, 16, 32]);
+    expect(waits[5]!.d).toBeGreaterThan(waits[0]!.d);
+    expect(s.pageTitle).toBeNull();
+  });
+
+  it('goes by faster as the resends pile up', () => {
+    const lost = tl.segs.filter((x) => x.step.kind === 'lost');
+    const trip = (i: number) => tl.segs.filter((x) => x.trip === lost[i]!.trip).reduce((d, x) => d + x.t1 - x.t0, 0);
+    expect(trip(6)).toBeLessThan(trip(1));
+  });
+});

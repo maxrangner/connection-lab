@@ -1,6 +1,6 @@
 import { rngFor, type Rng } from '../core/Rng';
 import { Simulator } from '../core/Simulator';
-import { shouldDrop, type FaultPlan } from '../faults';
+import { isCut, shouldDrop, type FaultPlan } from '../faults';
 import type { LinkSpec, Scenario } from '../model';
 import type { Device } from './Device';
 
@@ -72,7 +72,7 @@ export class Link {
       });
       if (shouldDrop(this.world.faults, this.world.seed, this.spec.id, packetId, start)) {
         sim.at(start + (arrive - start) / 2, () =>
-          sim.emit({ type: 'drop', packetId, reason: 'fault', linkId: this.spec.id, frameId }),
+          sim.emit({ type: 'drop', packetId, reason: isCut(this.world.faults, this.spec.id, start) ? 'cut' : 'fault', linkId: this.spec.id, frameId }),
         );
       } else {
         sim.at(arrive, () => to.receiveFrame(toIface, frame, packetId, frameId));

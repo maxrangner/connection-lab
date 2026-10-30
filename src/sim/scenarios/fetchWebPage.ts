@@ -52,6 +52,8 @@ export interface FetchWebPageOptions {
   slow?: boolean;
   /** HTTPS: the same page over a real captured TLS 1.3 session, so everything after the hellos is encrypted. */
   https?: boolean;
+  /** The device and its home router already know each other's MAC addresses (ARP caches stay warm for a while). */
+  warmArp?: boolean;
   /** Which device opens the page: the laptop on its Ethernet cable, or the phone over Wi-Fi. */
   from?: 'laptop' | 'phone';
 }
@@ -69,9 +71,10 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
   const revisit = !!opts.revisit;
   const tls = opts.https ? { host: site.tls.TLS_HOST, flights: site.tls.TLS_FLIGHTS, secrets: site.tls.TLS_SECRETS } : undefined;
   const url = opts.https ? site.url.replace(/^http:/, 'https:') : site.url;
+  const warm = revisit || !!opts.warmArp;
   const from = opts.from ?? 'laptop';
   const browser = (gateway: { ip: string; mac: string }) => ({
-    ...(revisit ? { arp: { [gateway.ip]: gateway.mac } } : {}),
+    ...(warm ? { arp: { [gateway.ip]: gateway.mac } } : {}),
     apps: [
       {
         kind: 'browser' as const,
@@ -136,7 +139,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           { network: '203.0.113.0', prefixLen: 24, iface: 'home.wan' },
           { network: '0.0.0.0', prefixLen: 0, via: ADDR.ispCustomer.ip, iface: 'home.wan' },
         ],
-        arp: { [ADDR.ispCustomer.ip]: ADDR.ispCustomer.mac, ...(revisit ? { [remembered.ip]: remembered.mac } : {}) },
+        arp: { [ADDR.ispCustomer.ip]: ADDR.ispCustomer.mac, ...(warm ? { [remembered.ip]: remembered.mac } : {}) },
         nat: { inside: ['home.lan', 'home.wlan'], outside: 'home.wan' },
         apps: [],
       },

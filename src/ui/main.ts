@@ -1,9 +1,9 @@
 import './app.css';
-import { fetchWebPage, runScenario, type LossWindow, type ManualFault } from '../sim';
+import { fetchWebPage, runScenario, type Cut, type LossWindow, type ManualFault } from '../sim';
 import { el } from './svg';
 import { clamp01, easeInOut, easeOutBack, iso, lerp } from './project';
 import { NetworkScene, type Camera } from './NetworkScene';
-import { drawCloud, drawSatellite, drawSpyglass, Prop, rain, type PropSpec } from './props';
+import { drawCloud, drawSatellite, drawScissors, drawSpyglass, Prop, rain, type PropSpec } from './props';
 import { Sound } from './sound';
 import { Stickers, type Features } from './stickers';
 import { buildStory, type Chapter, type Story } from './story';
@@ -25,20 +25,23 @@ let features: Features = { https: false, big: false };
 let stormLine: string | null = null;
 /** The line the spyglass is on, if any. */
 let spyLine: string | null = null;
+/** The cable that is cut, if any. It can change any time too. */
+let cutLine: string | null = null;
 /** The line to the ISP goes through a satellite. Set before a run: it would change what has already happened. */
 let slow = false;
 try {
-  const saved = JSON.parse(localStorage.getItem('net.features') ?? '{}') as Partial<Features> & { stormLine?: string | null; spyLine?: string | null; slow?: boolean };
+  const saved = JSON.parse(localStorage.getItem('net.features') ?? '{}') as Partial<Features> & { stormLine?: string | null; spyLine?: string | null; cutLine?: string | null; slow?: boolean };
   features = { https: !!saved.https, big: !!saved.big };
   stormLine = saved.stormLine ?? null;
   spyLine = saved.spyLine ?? null;
+  cutLine = saved.cutLine ?? null;
   slow = !!saved.slow;
 } catch {
   // Nothing remembered; start plain.
 }
 function remember(): void {
   try {
-    localStorage.setItem('net.features', JSON.stringify({ ...features, stormLine, spyLine, slow }));
+    localStorage.setItem('net.features', JSON.stringify({ ...features, stormLine, spyLine, cutLine, slow }));
   } catch {
     // Not remembered; fine.
   }
@@ -51,6 +54,10 @@ let stormSeed = 1;
 /** When (sim time) the storm was on during this run, and what the viewer has already seen happen. */
 let stormWindows: LossWindow[] = [];
 let decided: Record<string, boolean> = {};
+/** When (sim time) cables were cut during this run. */
+let cuts: Cut[] = [];
+/** A cable was already cut at the start of the run, so the ARP that would not get through is left out of it. */
+let warmArp = false;
 let story: Story;
 let tl: Timeline;
 type Client = 'laptop' | 'phone';
@@ -66,9 +73,10 @@ function remembers(): boolean {
   return !!k && k.site === siteName() && performance.now() < k.until;
 }
 function simulate(): void {
-  const scenario = fetchWebPage({ site: siteName(), revisit, slow, https: features.https, from: client });
-  const plan = { randomLoss: STORM_LOSS, lossWindows: stormWindows, decided, manual: faults };
-  story = buildStory(runScenario(scenario, { seed: stormSeed, faults: plan }));
+  const scenario = fetchWebPage({ site: siteName(), revisit, slow, https: features.https, from: client, warmArp });
+  const plan = { randomLoss: STORM_LOSS, lossWindows: stormWindows, decided, cuts, manual: faults };
+  // Long enough for TCP to give up on a dead line (15 resends, backing off to a minute apart).
+  story = buildStory(runScenario(scenario, { seed: stormSeed, faults: plan, maxTime: 1000 }));
   tl = buildTimeline(story, knocks);
 }
 simulate();
@@ -141,11 +149,12 @@ function toLink(p: { sx: number; sy: number }, link: string): number {
   }
   return best;
 }
-/** The line a held thing is over, if any. */
-function lineNear(p: { sx: number; sy: number }): string | null {
+/** The line a held thing is over, if any; only the cables, for things that need one. */
+function lineNear(p: { sx: number; sy: number }, cablesOnly = false): string | null {
   let best: string | null = null;
   let bestD = 80;
   for (const l of story.links) {
+    if (cablesOnly && (l.medium !== 'cable' || tl.sky.has(l.id))) continue;
     const d = toLink(p, l.id);
     if (d < bestD) {
       best = l.id;
@@ -179,7 +188,7 @@ let cam: Camera = scene.overviewCamera();
 
 /** Tools wait by the buttons, always in reach; each goes on one line at a time, and works even mid-run. */
 const TOOL_SIZE = 0.75;
-function lineTool(i: number, spec: Pick<PropSpec, 'label' | 'cls' | 'draw' | 'animate'>, line: () => string | null, spot: (line: string) => { sx: number; sy: number }, place: (line: string | null) => void, on: boolean): Prop {
+function lineTool(i: number, spec: Pick<PropSpec, 'label' | 'cls' | 'draw' | 'animate'>, line: () => string | null, spot: (line: string) => { sx: number; sy: number }, place: (line: string | null) => void, on: boolean, cablesOnly = false): Prop {
   const slot = (): { sx: number; sy: number } => scene.toolSlot(cam, document.querySelector('.net-controls')?.getBoundingClientRect().right ?? window.innerWidth / 2, i);
   return new Prop(
     svg,
@@ -190,8 +199,8 @@ function lineTool(i: number, spec: Pick<PropSpec, 'label' | 'cls' | 'draw' | 'an
         const l = line();
         return l ? spot(l) : slot();
       },
-      hits: (p) => !!lineNear(p),
-      dropped: (p) => place(p ? lineNear(p) : null),
+      hits: (p) => !!lineNear(p, cablesOnly),
+      dropped: (p) => place(p ? lineNear(p, cablesOnly) : null),
       ghost: true,
       canMove: () => true,
       pinned: () => (line() ? null : { scale: TOOL_SIZE / cam.scale }),
@@ -215,6 +224,31 @@ function setSpyLine(line: string | null): void {
 const spyglass = lineTool(1, { label: 'Spy', cls: 'spy-prop', draw: drawSpyglass }, () => spyLine, (l) => scene.linkSpot(l, 0.66, 30), setSpyLine, !!spyLine);
 scene.setSpy(spyLine);
 
+/** Cut a cable, or mend it. Like the storm it works mid-run, and a packet on that cable right now falls in. */
+function setCutLine(line: string | null): void {
+  if (line === cutLine) return;
+  cutLine = line;
+  scissors.on = !!line;
+  remember();
+  if (mode === 'play') {
+    const riding = line ? scene.knockable(v) : null;
+    if (riding?.link === line) {
+      faults.push({ packetId: riding.trip.packetId, linkId: riding.link });
+      knocks.set(`${riding.trip.packetId}@${riding.link}`, riding.k);
+    }
+    const seen = seenSoFar(tl, v);
+    decided = { ...decided, ...seen.decided };
+    cuts = cuts.map((c) => (c.to === undefined ? { ...c, to: seen.now } : c));
+    if (line) cuts = [...cuts, { link: line, from: seen.now }];
+    simulate();
+    scene.setStory(story, tl);
+  }
+  scene.setCut(line);
+  sound.play(line ? 'snip' : 'snap');
+}
+const scissors = lineTool(2, { label: 'Cut', cls: 'cut-prop', draw: drawScissors }, () => cutLine, (l) => scene.linkSpot(l, 0.5, 8), setCutLine, !!cutLine, true);
+scene.setCut(cutLine);
+
 // The satellite: put it on the line to the ISP and that line goes through space. Only before a run.
 const skySpot = (): { sx: number; sy: number } => {
   const ends = scene.cableEnds('wan');
@@ -232,6 +266,8 @@ const satellite = new Prop(
     canMove: canSetUp,
     hidden: () => !slow && (mode === 'play' || mode === 'drop'),
     onChange: (on) => {
+      // The line to the ISP becomes radio, which cannot be cut.
+      if (on && cutLine === 'wan') setCutLine(null);
       slow = on;
       preview();
       sound.play('snap');
@@ -518,6 +554,9 @@ function reset(): void {
   cardPos = { ...home };
   setStormLine(null);
   setSpyLine(null);
+  setCutLine(null);
+  cuts = [];
+  warmArp = false;
   stickers.set('https', false);
   stickers.set('big', false);
   satellite.set(false);
@@ -540,6 +579,8 @@ function beginRun(): void {
   stormSeed = 1 + Math.floor(Math.random() * 1e6);
   decided = {};
   stormWindows = stormLine ? [{ from: 0, links: [stormLine] }] : [];
+  cuts = cutLine ? [{ link: cutLine, from: 0 }] : [];
+  warmArp = !!cutLine;
   revisit = remembers();
   simulate();
   scene.setStory(story, tl);
@@ -615,6 +656,7 @@ function frame(now: number): void {
   stickers.update(dt, home, { sx: cardPos.sx, sy: cardPos.sy + bob }, scale, cardOp, mode !== 'play');
   cloud.update(dt, clock);
   spyglass.update(dt, clock);
+  scissors.update(dt, clock);
   satellite.update(dt, clock);
   scene.renderStorm(clock);
 
@@ -682,6 +724,10 @@ if (import.meta.env.DEV) {
         snapCamera = true;
         camFree = false;
       },
+      /** Cut a cable or mend it, as the scissors do. */
+      cut(line: string | null): void {
+        setCutLine(line);
+      },
       /** Knock off whatever packet is on a cable at visual time t. */
       knock(t: number): boolean {
         mode = 'play';
@@ -694,12 +740,13 @@ if (import.meta.env.DEV) {
         return tl.reactions;
       },
       /** Start a run straight away with these things on the table (for screenshots). */
-      start(f: Partial<Features> & { storm?: string; spy?: string; slow?: boolean; again?: boolean; from?: Client }): void {
+      start(f: Partial<Features> & { storm?: string; spy?: string; cut?: string; slow?: boolean; again?: boolean; from?: Client }): void {
         client = f.from ?? 'laptop';
         for (const k of ['https', 'big'] as const) stickers.set(k, !!f[k]);
         satellite.set(!!f.slow);
         setStormLine(f.storm ?? null);
         setSpyLine(f.spy ?? null);
+        setCutLine(f.cut ?? null);
         if (f.again) known.set(client, { site: siteName(), ip: '', until: Infinity });
         else known.delete(client);
         beginRun();

@@ -52,6 +52,10 @@ export class Sound {
       case 'key':
         [1320, 1760, 2640].forEach((f, i) => this.tone(c, t + i * 0.06, 'triangle', f, f, 0.12, 0.05));
         break;
+      case 'snip':
+        this.noise(c, t, 0.05, 0.14, 7000);
+        this.noise(c, t + 0.09, 0.05, 0.14, 7000);
+        break;
       case 'surprise':
         this.tone(c, t, 'square', 880, 1320, 0.07, 0.05);
         this.tone(c, t + 0.09, 'square', 1320, 1760, 0.09, 0.05);

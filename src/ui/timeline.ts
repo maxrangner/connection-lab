@@ -43,12 +43,12 @@ export interface Seg {
   p0: Vec3;
   p1: Vec3;
   /** For `lost`: how far along the cable it was knocked off (travel progress 0..1) and the travel's duration. */
-  knock?: { k: number; travel: number; byYou: boolean };
+  knock?: { k: number; travel: number; byYou: boolean; cut: boolean };
 }
 
 export interface Cue {
   t: number;
-  sound: 'snap' | 'sleeve' | 'thud' | 'flip' | 'bonk' | 'zap' | 'surprise' | 'pop' | 'chime' | 'lock' | 'unlock' | 'key';
+  sound: 'snap' | 'sleeve' | 'thud' | 'flip' | 'bonk' | 'zap' | 'surprise' | 'pop' | 'chime' | 'lock' | 'unlock' | 'key' | 'snip';
 }
 
 export interface Timeline {
@@ -117,12 +117,15 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   const filled = new Set<number>();
   // Steps get quicker as they repeat, so the third trip through a router doesn't drag.
   const seen = new Map<string, number>();
+  // Resend after resend goes by faster and faster, so a long outage stays watchable; only the waits keep growing.
+  let streak = 0;
   const pace = (s: TStep, trip: Trip): number => {
-    if (s.kind === 'appear' || s.kind === 'read' || s.kind === 'wait' || s.kind === 'nat') return 1;
+    const tired = Math.max(0.35, 0.8 ** streak);
+    if (s.kind === 'appear' || s.kind === 'read' || s.kind === 'wait' || s.kind === 'nat') return tired;
     const key = s.kind;
     const n = seen.get(key) ?? 0;
     seen.set(key, n + 1);
-    return (0.5 + 0.5 * 0.8 ** n) * (trip.card ? 1 : 0.85);
+    return (0.5 + 0.5 * 0.8 ** n) * (trip.card ? 1 : 0.85) * tired;
   };
 
   let t = 0;
@@ -154,7 +157,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
           // Knocked by the viewer: where they tapped. Lost by itself (a stormy cable): halfway along.
           const tapped = knocks.get(`${trip.packetId}@${step.link}`);
           const k = tapped ?? 0.5;
-          seg.knock = { k, travel, byYou: tapped !== undefined };
+          seg.knock = { k, travel, byYou: tapped !== undefined, cut: !!step.cut };
           d = k * travel + TUMBLE;
           seg.p1 = travelPath(pos, trayZ, step.from, step.to, k, sky.get(step.link) ?? 0, air.has(step.link));
           break;
@@ -168,13 +171,15 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
     }
 
     // A lost packet: the device that will resend it waits for its timer, then is surprised into trying again.
+    streak = trip.lost ? streak + 1 : 0;
     if (trip.lost) {
       const next = story.trips[ti + 1];
       const retry = next?.retry ? next : undefined;
       const device = retry?.origin ?? trip.origin;
       const mood = !retry ? 'cry' : trip.retry ? 'angry' : 'surprise';
       const step: WaitStep = { kind: 'wait', device, seconds: retry ? retry.start - trip.start : 0, giveUp: !retry, mood };
-      const seg: Seg = { step, trip, t0: t, t1: t + DUR.wait, p0: p, p1: p };
+      // A longer real wait gets a longer ring: resends back off, 1 s, 2 s, 4 s and so on.
+      const seg: Seg = { step, trip, t0: t, t1: t + DUR.wait + 0.5 * Math.log2(Math.max(1, step.seconds)), p0: p, p1: p };
       segs.push(seg);
       cues.push({ t: seg.t1 - 0.5, sound: 'surprise' });
       t = seg.t1;
@@ -228,7 +233,7 @@ function addCues(cues: Cue[], seg: Seg, story: Story): void {
   if (s.kind === 'wrap') cues.push({ t: at(0.35 + 0.65 * 0.45), sound: s.layer === 'eth' ? 'sleeve' : 'snap' });
   if (s.kind === 'unwrap' && s.layer === 'eth') cues.push({ t: at(0.35 + 0.65 * 0.62), sound: 'thud' });
   if (s.kind === 'nat') cues.push({ t: at(0.5), sound: 'flip' });
-  if (s.kind === 'lost' && seg.knock) cues.push({ t: seg.t0 + seg.knock.k * seg.knock.travel, sound: seg.knock.byYou ? 'bonk' : 'zap' });
+  if (s.kind === 'lost' && seg.knock) cues.push({ t: seg.t0 + seg.knock.k * seg.knock.travel, sound: seg.knock.byYou ? 'bonk' : seg.knock.cut ? 'thud' : 'zap' });
   if (s.kind === 'lock') cues.push({ t: at(0.62), sound: 'lock' });
   if (s.kind === 'unlock') cues.push({ t: at(0.4), sound: 'unlock' });
   if (s.kind === 'read') {

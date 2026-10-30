@@ -170,3 +170,14 @@ export function drawSpyglass(g: SVGGElement): void {
   el('circle', { cx: 0, cy: 0, r: 19, class: 'spy-lens' }, g);
   el('path', { d: 'M-11 -6 A12 12 0 0 1 -4 -12', class: 'spy-shine' }, g);
 }
+
+/** A pair of scissors. */
+export function drawScissors(g: SVGGElement): void {
+  // Thin shapes are hard to grab: a clear area around them makes the whole thing a handle.
+  el('circle', { cx: 0, cy: 4, r: 36, class: 'grab-area' }, g);
+  for (const s of [-1, 1]) {
+    el('line', { x1: s * 13, y1: 16, x2: -s * 7, y2: -26, class: 'scissor-blade' }, g);
+    el('circle', { cx: s * 16, cy: 24, r: 8, class: 'scissor-grip' }, g);
+  }
+  el('circle', { cx: 0, cy: 0, r: 2.5, class: 'scissor-pin' }, g);
+}

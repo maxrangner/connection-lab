@@ -18,6 +18,7 @@ export type TcpState =
 
 export type DropReason =
   | 'fault' // lost in transit (user or random fault injection)
+  | 'cut' // the cable it was sent on has been cut
   | 'not-for-me' // destination MAC/IP does not match
   | 'bad-checksum'
   | 'ttl-expired'

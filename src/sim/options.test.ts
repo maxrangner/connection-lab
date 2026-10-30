@@ -163,3 +163,39 @@ describe('a storm on one line', () => {
     }
   });
 });
+
+describe('a cut cable', () => {
+  const cutRun = (cuts: { link: string; from: number; to?: number }[], opts: FetchWebPageOptions = {}) =>
+    runScenario(fetchWebPage(opts), { seed: 1, faults: { randomLoss: 0, manual: [], cuts }, maxTime: 1000 });
+  const sentAt = (r: SimResult, pick: (l: string) => boolean) => of(r, 'tx').filter((e) => pick(r.packets.get(e.packetId)!.label) && e.linkId === 'bb2').map((e) => e.start);
+
+  it('loses everything sent on it; SYN resends back off 1, 2, 4 ... s until the laptop gives up', () => {
+    const r = cutRun([{ link: 'bb2', from: 0 }]);
+    const syn = sentAt(r, (l) => /^SYN/.test(l) || /SYN/.test(l));
+    expect(syn).toHaveLength(7); // the SYN and Linux's 6 retries
+    const gaps = syn.slice(1).map((t, i) => Math.round(t - syn[i]!));
+    expect(gaps).toEqual([1, 2, 4, 8, 16, 32]);
+    expect(of(r, 'drop').every((d) => d.reason === 'cut')).toBe(true);
+    const err = of(r, 'app').find((e) => e.action === 'error');
+    expect(err?.info?.reason).toBe('connection timed out');
+    expect(of(r, 'app').some((e) => e.action === 'done')).toBe(false);
+  });
+
+  it('mended in time: the next resend gets through and the page loads', () => {
+    const r = cutRun([{ link: 'bb2', from: 0, to: 3 }]);
+    expect(of(r, 'app').some((e) => e.action === 'done')).toBe(true);
+    expect(of(r, 'drop').length).toBeGreaterThan(0);
+  });
+
+  it('does not matter if the traffic does not use it', () => {
+    const r = cutRun([{ link: 'bb1', from: 0 }], { revisit: true });
+    expect(of(r, 'drop')).toHaveLength(0);
+    expect(of(r, 'app').some((e) => e.action === 'done')).toBe(true);
+  });
+
+  it('cut at the laptop from the start, the DNS question is what falls (with ARP warm)', () => {
+    const r = cutRun([{ link: 'lan', from: 0 }], { warmArp: true });
+    expect(of(r, 'drop').map((d) => r.packets.get(d.packetId)!.kind)).toEqual(['dns', 'dns']);
+    expect(of(r, 'app').find((e) => e.action === 'error')?.info?.reason).toBe('DNS lookup timed out');
+  });
+});

@@ -156,6 +156,7 @@ export class NetworkScene {
     return this.lock > 0.5 ? (trip.card?.match(/\d+\/\d+$/)?.[0] ?? '') : (trip.card ?? '');
   }
   private readonly cables: SVGGElement;
+  private cut: string | null = null;
   /** Each drawn cable (or satellite hop) and the devices at its ends, to grey out the unused ones. */
   private cableViews: { g: SVGGElement; a: string; b: string }[] = [];
   /** Devices that take part in this run; the rest are greyed out once it starts. */
@@ -280,7 +281,7 @@ export class NetworkScene {
     const dt = v - (last.t0 + (last.t1 - last.t0) * 0.25);
     if (dt < 0) return;
     const { seen } = last;
-    const c = this.linkSpot(line, 0.66, 96);
+    const c = this.linkSpot(line, 0.66, 132);
     const op = 1 - clamp01((v - last.t1 - 1) / 0.4);
     const addr = `${seen.from} → ${seen.to}`;
     const w = Math.max(...[addr, ...seen.lines].map((l) => l.length * 7)) + 24;
@@ -319,11 +320,30 @@ export class NetworkScene {
           line(g, foot, top, { class: 'beam' });
           cylinder(g, { x: foot.x, y: foot.y, z: 0, r: 0.35, h: 0.3, color: DEVICE });
         }
+      } else if (this.cut === l.id) {
+        // Two loose ends with a gap between them.
+        const [a, b] = path as [Vec3, Vec3];
+        const mid = (s: number): Vec3 => v3(lerp(a.x, b.x, 0.5 + s), lerp(a.y, b.y, 0.5 + s), 0);
+        line(g, a, mid(-0.07), { class: 'cable' });
+        line(g, mid(0.07), b, { class: 'cable' });
+        for (const s of [-0.07, 0.07]) {
+          const c = iso(mid(s).x, mid(s).y, 0);
+          for (const [dx, dy] of [[6, -7], [9, 1], [4, 8]] as const) {
+            const k = Math.sign(s);
+            el('line', { x1: c.sx, y1: c.sy, x2: c.sx - k * dx, y2: c.sy + dy, class: 'fray' }, g);
+          }
+        }
       } else {
         line(g, path[0]!, path[1]!, { class: 'cable' });
       }
       this.cableViews.push({ g, a: l.a, b: l.b });
     }
+  }
+
+  /** Which cable is cut, if any. */
+  setCut(line: string | null): void {
+    this.cut = line;
+    this.buildCables();
   }
 
   /** Which links crackle, by id; empty for calm weather. */
@@ -784,7 +804,7 @@ export class NetworkScene {
     if (step.kind === 'lost' && seg.knock) {
       const tau = k * (seg.t1 - seg.t0) - seg.knock.k * seg.knock.travel;
       if (tau >= 0) {
-        this.burst(pose.pos, tau, !seg.knock.byYou);
+        if (!seg.knock.cut || seg.knock.byYou) this.burst(pose.pos, tau, !seg.knock.byYou);
         this.tumble(pose, tau);
         if (tau > 0.2) {
           const c = iso(pose.pos.x, pose.pos.y, pose.pos.z + 1.6);

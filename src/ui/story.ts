@@ -57,7 +57,7 @@ export type Step =
   | { kind: 'nat'; device: string; which: 'from' | 'to'; before: string; after: string }
   | { kind: 'travel'; from: string; to: string; link: string; /** Sim time the frame was sent. */ at: number; /** What anyone on this line could read. */ seen?: Seen }
   /** Knocked off the cable on the way from `from` to `to`. */
-  | { kind: 'lost'; from: string; to: string; link: string; at: number; seen?: Seen }
+  | { kind: 'lost'; from: string; to: string; link: string; at: number; seen?: Seen; /** It fell into a cut in the cable. */ cut?: boolean }
   | { kind: 'read'; device: string }
   /** HTTPS: the sender puts a padlock on the card with its session key, the receiver opens it with the same key. */
   | { kind: 'lock'; device: string }
@@ -243,8 +243,8 @@ function trip(r: SimResult, p: PacketInfo, retried: Set<string>, client: string)
         break;
       case 'drop': {
         const last = steps[steps.length - 1];
-        if (e.reason === 'fault' && last?.kind === 'travel') {
-          steps[steps.length - 1] = { ...last, kind: 'lost' };
+        if ((e.reason === 'fault' || e.reason === 'cut') && last?.kind === 'travel') {
+          steps[steps.length - 1] = { ...last, kind: 'lost', cut: e.reason === 'cut' };
           lost = true;
         }
         done = true;
