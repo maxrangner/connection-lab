@@ -163,3 +163,10 @@ export function drawSatellite(g: SVGGElement): void {
   rbox(g, { cx: 0, cy: 0, z: -0.35, len: 0.7, wid: 0.7, h: 0.7, angle: 0, color: '#cfc6b8' });
   for (const s of [-1, 1]) tile(g, -0.45 + s * 1.15, -0.35, 0.9, 0.7, 0, { class: 'panel' });
 }
+
+/** A magnifying glass. */
+export function drawSpyglass(g: SVGGElement): void {
+  el('line', { x1: 13, y1: 13, x2: 30, y2: 30, class: 'spy-handle' }, g);
+  el('circle', { cx: 0, cy: 0, r: 19, class: 'spy-lens' }, g);
+  el('path', { d: 'M-11 -6 A12 12 0 0 1 -4 -12', class: 'spy-shine' }, g);
+}

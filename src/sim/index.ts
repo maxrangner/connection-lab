@@ -9,4 +9,4 @@ export { PROTOCOL_LAYER, type Field, type LayerNum, type LayerPdu, type Protocol
 export { hexBytes, preview } from './bytes/bytes';
 export { ETH_PREAMBLE } from './proto/ethernet';
 export { flagNames, TCP_ACK, TCP_FIN, TCP_SYN } from './proto/tcp';
-export { openRecords, sessionStream, TLS_ALERT, TLS_APPLICATION_DATA, TLS_HANDSHAKE, type OpenedRecord, type TlsSession } from './proto/tls';
+export { clientHelloSni, openRecords, sessionStream, TLS_ALERT, TLS_APPLICATION_DATA, TLS_HANDSHAKE, type OpenedRecord, type TlsSession } from './proto/tls';

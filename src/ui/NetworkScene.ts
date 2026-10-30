@@ -2,7 +2,7 @@ import { el } from './svg';
 import { box, cylinder, line, rbox, tile } from './prims';
 import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, easeOutBounce, iso, lerp, U, v3, type Vec3 } from './project';
 import { shade } from './shade';
-import type { Story, Trip, Wrap } from './story';
+import type { Seen, Story, Trip, Wrap } from './story';
 import { addressBefore, DEVICE_TOP, FACE_EMOJI, frameAt, LEVEL, lockPose, packetPos, packetPose, segAt, trayOpacity, wrapsBefore, type LockPose, type Seg, type Timeline } from './timeline';
 
 export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', eth: '#e08b33', wifi: '#2a9d8f' } as const;
@@ -128,6 +128,9 @@ export class NetworkScene {
   /** Emoji statuses over devices; on top of everything. */
   private readonly moods: SVGGElement;
   private readonly fx: SVGGElement;
+  /** What the spyglass reads, and the line it is on. */
+  private readonly spyNote: SVGGElement;
+  private spy: string | null = null;
   /** The session keys beside each end, and the one at work. */
   private readonly keys: SVGGElement;
   /** What the laptop and the phone show on their screens. */
@@ -176,6 +179,7 @@ export class NetworkScene {
     this.tags = el('g', { class: 'tags' }, world);
     this.keys = el('g', { class: 'keys' }, world);
     this.moods = el('g', { class: 'moods' }, world);
+    this.spyNote = el('g', { class: 'spy' }, world);
 
     // Draw far devices first: a larger x + y is nearer the viewer.
     const order = [...story.devices].sort((m, n) => this.depthOf(m.id) - this.depthOf(n.id));
@@ -250,11 +254,45 @@ export class NetworkScene {
     return this.linkWorld(id).map((p) => iso(p.x, p.y, p.z));
   }
 
-  /** Where a storm cloud hangs over a link: above its middle, or over the first beam of a satellite hop. */
-  linkCloudSpot(id: string): { sx: number; sy: number } {
-    const { p } = pointAlong(this.linkWorld(id), this.tl.sky.has(id) ? 0.28 : 0.5);
+  /** A spot a share t along a link, `lift` px above it; a satellite hop keeps to its first beam. */
+  linkSpot(id: string, t: number, lift: number): { sx: number; sy: number } {
+    const { p } = pointAlong(this.linkWorld(id), this.tl.sky.has(id) ? t * 0.56 : t);
     const s = iso(p.x, p.y, p.z);
-    return { sx: s.sx, sy: s.sy - 62 };
+    return { sx: s.sx, sy: s.sy - lift };
+  }
+
+  /** The line the spyglass is on, if any. */
+  setSpy(line: string | null): void {
+    this.spy = line;
+  }
+
+  /** What the spyglass reads: a note with the last thing that passed along its line, staying for a moment. */
+  private renderSpy(v: number): void {
+    this.spyNote.replaceChildren();
+    const line = this.spy;
+    if (!line || v < 0) return;
+    let last: { seen: Seen; t0: number; t1: number } | null = null;
+    for (const s of this.tl.segs) {
+      const st = s.step;
+      if ((st.kind === 'travel' || st.kind === 'lost') && st.link === line && st.seen && s.t0 <= v) last = { seen: st.seen, t0: s.t0, t1: s.t1 };
+    }
+    if (!last || v > last.t1 + 1.4) return;
+    const dt = v - (last.t0 + (last.t1 - last.t0) * 0.25);
+    if (dt < 0) return;
+    const { seen } = last;
+    const c = this.linkSpot(line, 0.66, 96);
+    const op = 1 - clamp01((v - last.t1 - 1) / 0.4);
+    const addr = `${seen.from} → ${seen.to}`;
+    const w = Math.max(...[addr, ...seen.lines].map((l) => l.length * 7)) + 24;
+    const h = 28 + seen.lines.length * 18;
+    const g = el('g', { class: `spy-note spy-${seen.kind}`, opacity: op.toFixed(3), transform: `translate(${c.sx.toFixed(1)} ${c.sy.toFixed(1)}) scale(${easeOutBack(clamp01(dt / 0.25)).toFixed(3)})` }, this.spyNote);
+    el('rect', { x: -w / 2, y: -h, width: w, height: h, rx: 7, class: 'spy-paper' }, g);
+    const t = el('text', { x: 0, y: -h + 18, 'text-anchor': 'middle', class: 'spy-addr' }, g);
+    t.textContent = addr;
+    seen.lines.forEach((l, i) => {
+      const line2 = el('text', { x: 0, y: -h + 38 + i * 18, 'text-anchor': 'middle', class: i === 0 ? 'spy-text' : 'spy-text spy-more' }, g);
+      line2.textContent = l;
+    });
   }
 
   /** Cables between devices; a slow link is a radio hop up to a satellite instead. */
@@ -491,9 +529,16 @@ export class NetworkScene {
     return { sx: c.cx + (x - (this.svg.clientWidth || 1) / 2) / c.scale, sy: c.cy + (y - (this.svg.clientHeight || 1) / 2) / c.scale };
   }
 
-  /** The spot just right of the buttons, whose right edge is `barRight` px, where the storm cloud waits. */
-  cloudSlot(c: Camera, barRight: number): { sx: number; sy: number } {
-    return this.viewPoint(c, Math.min(barRight + 58, (this.svg.clientWidth || 1) - 50), (this.svg.clientHeight || 1) - 66);
+  /**
+   * Where tool number `i` waits, in SVG units: in a row right of the buttons, whose right edge is `barRight` px,
+   * stacking upwards when the view is too narrow for the row.
+   */
+  toolSlot(c: Camera, barRight: number, i: number): { sx: number; sy: number } {
+    const cw = this.svg.clientWidth || 1;
+    const ch = this.svg.clientHeight || 1;
+    const first = barRight + 58;
+    const columns = Math.max(1, Math.floor((cw - 50 - first) / 84) + 1);
+    return this.viewPoint(c, Math.min(first + (i % columns) * 84, cw - 50), ch - 66 - Math.floor(i / columns) * 84);
   }
 
   /** Sets the viewBox so it matches the element's aspect ratio. */
@@ -619,6 +664,7 @@ export class NetworkScene {
     }
     this.renderRack(v);
     this.renderMoods(v);
+    this.renderSpy(v);
     for (const [id, screen] of this.screens) {
       if (id === tl.client && v >= 0) continue;
       this.blank(screen);

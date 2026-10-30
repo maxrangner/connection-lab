@@ -353,3 +353,29 @@ describe('step buttons', () => {
     expect(stepTarget(tl, 0, -1)).toBe(0);
   });
 });
+
+describe('what a snoop on a line can read', () => {
+  const seenOnWan = (s: ReturnType<typeof run>, card: string) => {
+    const t = s.trips.find((x) => x.card === card)!;
+    const step = t.steps.find((x) => x.kind === 'travel' && x.link === 'wan');
+    return step?.kind === 'travel' ? step.seen! : null;
+  };
+
+  it('reads plain HTTP and DNS, with the addresses as they are on that line', () => {
+    const get = seenOnWan(story, 'GET /')!;
+    expect(get).toMatchObject({ from: '203.0.113.7', to: '104.20.23.154', kind: 'open' });
+    expect(get.lines).toEqual(['GET / HTTP/1.1', 'Host: example.com']);
+    expect(seenOnWan(story, '200 OK')!.lines[0]).toBe('HTTP/1.1 200 OK');
+    expect(seenOnWan(story, 'example.com?')).toMatchObject({ kind: 'open', lines: ['example.com?'] });
+  });
+
+  it('with HTTPS it reads only scrambled bytes, except the site name in the hello', () => {
+    const s = buildStory(runScenario(fetchWebPage({ https: true }), { seed: 1, faults: { randomLoss: 0, manual: [] } }));
+    const hello = s.trips.find((t) => t.card === 'hello 1/2')!;
+    const step = hello.steps.find((x) => x.kind === 'travel' && x.link === 'wan');
+    expect(step?.kind === 'travel' && step.seen).toMatchObject({ kind: 'name', lines: [expect.stringMatching(/^example\.com$/), expect.any(String)] });
+    const get = seenOnWan(s, 'GET /')!;
+    expect(get.kind).toBe('scrambled');
+    expect(get.lines.join()).not.toMatch(/GET|example/);
+  });
+});

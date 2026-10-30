@@ -3,7 +3,7 @@ import { fetchWebPage, runScenario, type LossWindow, type ManualFault } from '..
 import { el } from './svg';
 import { clamp01, easeInOut, easeOutBack, iso, lerp } from './project';
 import { NetworkScene, type Camera } from './NetworkScene';
-import { drawCloud, drawSatellite, Prop, rain } from './props';
+import { drawCloud, drawSatellite, drawSpyglass, Prop, rain, type PropSpec } from './props';
 import { Sound } from './sound';
 import { Stickers, type Features } from './stickers';
 import { buildStory, type Chapter, type Story } from './story';
@@ -23,19 +23,22 @@ const LINGER = 1.4;
 let features: Features = { https: false, big: false };
 /** The one line the storm cloud hangs over, if any. It can change any time, before or during a run. */
 let stormLine: string | null = null;
+/** The line the spyglass is on, if any. */
+let spyLine: string | null = null;
 /** The line to the ISP goes through a satellite. Set before a run: it would change what has already happened. */
 let slow = false;
 try {
-  const saved = JSON.parse(localStorage.getItem('net.features') ?? '{}') as Partial<Features> & { stormLine?: string | null; slow?: boolean };
+  const saved = JSON.parse(localStorage.getItem('net.features') ?? '{}') as Partial<Features> & { stormLine?: string | null; spyLine?: string | null; slow?: boolean };
   features = { https: !!saved.https, big: !!saved.big };
   stormLine = saved.stormLine ?? null;
+  spyLine = saved.spyLine ?? null;
   slow = !!saved.slow;
 } catch {
   // Nothing remembered; start plain.
 }
 function remember(): void {
   try {
-    localStorage.setItem('net.features', JSON.stringify({ ...features, stormLine, slow }));
+    localStorage.setItem('net.features', JSON.stringify({ ...features, stormLine, spyLine, slow }));
   } catch {
     // Not remembered; fine.
   }
@@ -174,28 +177,43 @@ function setStormLine(line: string | null): void {
 
 let cam: Camera = scene.overviewCamera();
 
-// The cloud waits by the buttons, always in reach. Put it on a line and that line gets stormy, even mid-run.
-const CLOUD_SIZE = 0.75;
-const cloudSlot = (): { sx: number; sy: number } => scene.cloudSlot(cam, document.querySelector('.net-controls')?.getBoundingClientRect().right ?? window.innerWidth / 2);
-const cloud = new Prop(
-  svg,
-  {
-    label: 'Storm',
-    cls: 'cloud-prop',
-    draw: drawCloud,
-    animate: rain,
-    parked: cloudSlot,
-    active: () => (stormLine ? scene.linkCloudSpot(stormLine) : cloudSlot()),
-    hits: (p) => !!lineNear(p),
-    dropped: (p) => setStormLine(p ? lineNear(p) : null),
-    ghost: true,
-    canMove: () => true,
-    pinned: () => (stormLine ? null : { scale: CLOUD_SIZE / cam.scale }),
-    waiting: () => CLOUD_SIZE / cam.scale,
-    onChange: () => {},
-  },
-  !!stormLine,
-);
+/** Tools wait by the buttons, always in reach; each goes on one line at a time, and works even mid-run. */
+const TOOL_SIZE = 0.75;
+function lineTool(i: number, spec: Pick<PropSpec, 'label' | 'cls' | 'draw' | 'animate'>, line: () => string | null, spot: (line: string) => { sx: number; sy: number }, place: (line: string | null) => void, on: boolean): Prop {
+  const slot = (): { sx: number; sy: number } => scene.toolSlot(cam, document.querySelector('.net-controls')?.getBoundingClientRect().right ?? window.innerWidth / 2, i);
+  return new Prop(
+    svg,
+    {
+      ...spec,
+      parked: slot,
+      active: () => {
+        const l = line();
+        return l ? spot(l) : slot();
+      },
+      hits: (p) => !!lineNear(p),
+      dropped: (p) => place(p ? lineNear(p) : null),
+      ghost: true,
+      canMove: () => true,
+      pinned: () => (line() ? null : { scale: TOOL_SIZE / cam.scale }),
+      waiting: () => TOOL_SIZE / cam.scale,
+      onChange: () => {},
+    },
+    on,
+  );
+}
+const cloud = lineTool(0, { label: 'Storm', cls: 'cloud-prop', draw: drawCloud, animate: rain }, () => stormLine, (l) => scene.linkSpot(l, 0.5, 62), setStormLine, !!stormLine);
+
+/** Put the spyglass on a line, or take it off. It only reads, so nothing about the run changes. */
+function setSpyLine(line: string | null): void {
+  if (line === spyLine) return;
+  spyLine = line;
+  spyglass.on = !!line;
+  scene.setSpy(line);
+  remember();
+  sound.play('snap');
+}
+const spyglass = lineTool(1, { label: 'Spy', cls: 'spy-prop', draw: drawSpyglass }, () => spyLine, (l) => scene.linkSpot(l, 0.66, 30), setSpyLine, !!spyLine);
+scene.setSpy(spyLine);
 
 // The satellite: put it on the line to the ISP and that line goes through space. Only before a run.
 const skySpot = (): { sx: number; sy: number } => {
@@ -499,6 +517,7 @@ function reset(): void {
   client = 'laptop';
   cardPos = { ...home };
   setStormLine(null);
+  setSpyLine(null);
   stickers.set('https', false);
   stickers.set('big', false);
   satellite.set(false);
@@ -595,6 +614,7 @@ function frame(now: number): void {
   hint.style.display = mode === 'idle' ? '' : 'none';
   stickers.update(dt, home, { sx: cardPos.sx, sy: cardPos.sy + bob }, scale, cardOp, mode !== 'play');
   cloud.update(dt, clock);
+  spyglass.update(dt, clock);
   satellite.update(dt, clock);
   scene.renderStorm(clock);
 
@@ -674,11 +694,12 @@ if (import.meta.env.DEV) {
         return tl.reactions;
       },
       /** Start a run straight away with these things on the table (for screenshots). */
-      start(f: Partial<Features> & { storm?: string; slow?: boolean; again?: boolean; from?: Client }): void {
+      start(f: Partial<Features> & { storm?: string; spy?: string; slow?: boolean; again?: boolean; from?: Client }): void {
         client = f.from ?? 'laptop';
         for (const k of ['https', 'big'] as const) stickers.set(k, !!f[k]);
         satellite.set(!!f.slow);
         setStormLine(f.storm ?? null);
+        setSpyLine(f.spy ?? null);
         if (f.again) known.set(client, { site: siteName(), ip: '', until: Infinity });
         else known.delete(client);
         beginRun();

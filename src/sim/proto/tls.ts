@@ -107,6 +107,36 @@ export function openRecords(session: TlsSession, from: 'client' | 'server', stre
   return out;
 }
 
+/**
+ * The site name in a ClientHello's server_name extension: sent in the clear so the server knows which certificate to
+ * use. Reads a record that starts at o; null if there is no complete ClientHello with a name in the bytes given.
+ */
+export function clientHelloSni(b: Uint8Array, o = 0): string | null {
+  if (b[o] !== TLS_HANDSHAKE || b[o + 5] !== 1) return null;
+  let p = o + 5 + 4 + 2 + 32; // record header, handshake header, legacy version, random
+  const has = (n: number): boolean => p + n <= b.length;
+  if (!has(1)) return null;
+  p += 1 + b[p]!; // session id
+  if (!has(2)) return null;
+  p += 2 + u16(b, p); // cipher suites
+  if (!has(1)) return null;
+  p += 1 + b[p]!; // compression methods
+  if (!has(2)) return null;
+  const end = p + 2 + u16(b, p);
+  p += 2;
+  while (p + 4 <= end && has(4)) {
+    const type = u16(b, p);
+    const len = u16(b, p + 2);
+    if (type === 0 && has(4 + 5)) {
+      const nameLen = u16(b, p + 7);
+      if (!has(9 + nameLen)) return null;
+      return new TextDecoder().decode(b.subarray(p + 9, p + 9 + nameLen));
+    }
+    p += 4 + len;
+  }
+  return null;
+}
+
 /** All bytes one side sends in a session, in order. */
 export function sessionStream(session: TlsSession, from: 'client' | 'server'): Uint8Array {
   const parts = session.flights.filter((f) => f.from === from).map((f) => fromBase64(f.base64));

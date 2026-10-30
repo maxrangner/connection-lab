@@ -1,4 +1,5 @@
 import {
+  clientHelloSni,
   flagNames,
   openRecords,
   sessionStream,
@@ -30,6 +31,17 @@ import {
 
 /** Pieces that go around the data: transport (TCP or UDP), IP, and the link layer's frame (Ethernet or Wi-Fi). */
 export type Wrap = 'l4' | 'ip' | 'eth';
+/**
+ * What a snoop on a line can read from the real bytes of a frame. `open`: plain text; `name`: scrambled, except for
+ * the site name; `scrambled`: only unreadable bytes; `empty`: no content at all.
+ */
+export interface Seen {
+  from: string;
+  to: string;
+  lines: string[];
+  kind: 'open' | 'name' | 'scrambled' | 'empty';
+}
+
 /** Which kind of frame a link uses, with its real header and trailer sizes. */
 export interface Frame {
   l2: 'ethernet' | 'wifi';
@@ -43,9 +55,9 @@ export type Step =
   | { kind: 'wrap'; device: string; layer: Wrap; /** For the frame (layer 'eth'): which kind and its sizes. */ frame?: Frame }
   | { kind: 'unwrap'; device: string; layer: Wrap; frame?: Frame }
   | { kind: 'nat'; device: string; which: 'from' | 'to'; before: string; after: string }
-  | { kind: 'travel'; from: string; to: string; link: string; /** Sim time the frame was sent. */ at: number }
+  | { kind: 'travel'; from: string; to: string; link: string; /** Sim time the frame was sent. */ at: number; /** What anyone on this line could read. */ seen?: Seen }
   /** Knocked off the cable on the way from `from` to `to`. */
-  | { kind: 'lost'; from: string; to: string; link: string; at: number }
+  | { kind: 'lost'; from: string; to: string; link: string; at: number; seen?: Seen }
   | { kind: 'read'; device: string }
   /** HTTPS: the sender puts a padlock on the card with its session key, the receiver opens it with the same key. */
   | { kind: 'lock'; device: string }
@@ -128,6 +140,38 @@ export function dnsCardLabel(summary: string): string {
   return /\d+\.\d+\.\d+\.\d+/.exec(summary)?.[0] ?? 'DNS';
 }
 
+const printable = (s: string): string => s.replace(/[^\x20-\x7e]/g, '·');
+const clip = (s: string, n = 36): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+/** The start of some bytes as hex, the way scrambled data looks to anyone without the key. */
+const hexStart = (b: Uint8Array): string => [...b.subarray(0, 12)].map((x) => x.toString(16).padStart(2, '0')).join(' ') + (b.length > 12 ? ' …' : '');
+
+/** The most telling readable lines of plain text: its first line, and the Host or the page title if they are there. */
+function readable(b: Uint8Array): string[] {
+  const text = new TextDecoder('latin1').decode(b);
+  const first = text.split('\r\n').find((l) => l.trim()) ?? '';
+  const more = /^Host: .*$/im.exec(text)?.[0] ?? /<title>[^<]*<\/title>/i.exec(text)?.[0];
+  return [first, ...(more && more !== first ? [more] : [])].map((l) => clip(printable(l)));
+}
+
+/** Reads a frame the way a snoop on the line would: from its bytes, with no keys. */
+function seenOn(pdu: PduSnapshot | undefined, p: PacketInfo): Seen | undefined {
+  const ip = pdu && layer(pdu, 'ipv4');
+  if (!pdu || !ip) return undefined;
+  const base = { from: field(ip, 'ipv4.src'), to: field(ip, 'ipv4.dst') };
+  const dns = layer(pdu, 'dns');
+  if (dns) return { ...base, lines: [dnsCardLabel(dns.summary)], kind: 'open' };
+  const tls = layer(pdu, 'tls');
+  if (tls) {
+    const data = pdu.bytes.subarray(tls.start, tls.payloadEnd);
+    const name = clientHelloSni(data);
+    return name ? { ...base, lines: [name, hexStart(data)], kind: 'name' } : { ...base, lines: [hexStart(data)], kind: 'scrambled' };
+  }
+  const tcp = layer(pdu, 'tcp');
+  if (tcp && tcp.payloadEnd > tcp.headerEnd) return { ...base, lines: readable(pdu.bytes.subarray(tcp.headerEnd, tcp.payloadEnd)), kind: 'open' };
+  return { ...base, lines: tcp ? [flagNames(p.tcp?.flags ?? 0).replace(/, /g, '-')] : [], kind: 'empty' };
+}
+
 /** Which packets the story follows. */
 function chosen(r: SimResult): PacketInfo[] {
   const out: PacketInfo[] = [];
@@ -195,7 +239,7 @@ function trip(r: SimResult, p: PacketInfo, retried: Set<string>, client: string)
         });
         break;
       case 'tx':
-        steps.push({ kind: 'travel', from: e.fromDevice, to: e.toDevice, link: e.linkId, at: e.start });
+        steps.push({ kind: 'travel', from: e.fromDevice, to: e.toDevice, link: e.linkId, at: e.start, seen: seenOn(r.pdus.get(e.frameId), p) });
         break;
       case 'drop': {
         const last = steps[steps.length - 1];
