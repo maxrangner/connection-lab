@@ -19,6 +19,25 @@ function mix(a: string, b: string, t: number): string {
 
 const BURST = '#ffd84a';
 const WAIT = '#c2562f';
+/** How far from a device its satellite dish stands. */
+const DISH = 2.4;
+
+/** The point a share t of the way along a path, and the path's direction there on the ground. */
+function pointAlong(path: Vec3[], t: number): { p: Vec3; ux: number; uy: number } {
+  const lens = path.slice(1).map((p, i) => Math.hypot(p.x - path[i]!.x, p.y - path[i]!.y, p.z - path[i]!.z));
+  let d = t * lens.reduce((s, x) => s + x, 0);
+  for (let i = 0; i < lens.length; i++) {
+    const a = path[i]!;
+    const b = path[i + 1]!;
+    if (d <= lens[i]! || i === lens.length - 1) {
+      const q = lens[i] ? clamp01(d / lens[i]!) : 0;
+      const ground = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+      return { p: v3(lerp(a.x, b.x, q), lerp(a.y, b.y, q), lerp(a.z, b.z, q)), ux: (b.x - a.x) / ground, uy: (b.y - a.y) / ground };
+    }
+    d -= lens[i]!;
+  }
+  return { p: path[0] ?? v3(0, 0, 0), ux: 1, uy: 0 };
+}
 const NO_KEY: LockPose = { show: false, drop: 0, open: 0, op: 1, dark: 0, key: null };
 
 /** Header bytes → tiles along the packet. The data card is not to scale (it would dwarf the headers). */
@@ -113,8 +132,8 @@ export class NetworkScene {
   private readonly keys: SVGGElement;
   /** What the laptop and the phone show on their screens. */
   private readonly screens = new Map<string, Screen>();
-  /** Cables that crackle in stormy weather, and the layer they crackle on. */
-  private stormy: { a: Vec3; b: Vec3 }[] = [];
+  /** The paths of the links that crackle in stormy weather. */
+  private stormy: Vec3[][] = [];
   private readonly storm: SVGGElement;
   /** Where a page that comes in several parts is put back together, beside the laptop. */
   private readonly rack: SVGGElement;
@@ -200,68 +219,78 @@ export class NetworkScene {
     }
   }
 
+  /**
+   * The way a link really runs through the world: a straight cable, an arc through the air for Wi-Fi, or for a
+   * satellite hop a short cable to a dish at each end with the radio beams up to the satellite between them.
+   */
+  private linkWorld(id: string): Vec3[] {
+    const l = this.story.links.find((x) => x.id === id);
+    const a = l && this.tl.pos.get(l.a);
+    const b = l && this.tl.pos.get(l.b);
+    if (!l || !a || !b) return [];
+    if (this.tl.air.has(id)) {
+      const za = (DEVICE_TOP[this.tl.kind.get(l.a) ?? ''] ?? 1) + 0.2;
+      const zb = (DEVICE_TOP[this.tl.kind.get(l.b) ?? ''] ?? 1) + 0.9;
+      return Array.from({ length: 21 }, (_, i) => {
+        const q = i / 20;
+        return v3(lerp(a.x, b.x, q), lerp(a.y, b.y, q), lerp(za, zb, q) + Math.sin(Math.PI * q) * 1.4);
+      });
+    }
+    const sky = this.tl.sky.get(id);
+    if (!sky) return [v3(a.x, a.y, 0), v3(b.x, b.y, 0)];
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    const ux = (b.x - a.x) / len;
+    const uy = (b.y - a.y) / len;
+    const dish = (p: { x: number; y: number }, s: number): Vec3 => v3(p.x + ux * DISH * s, p.y + uy * DISH * s, 0.3);
+    return [v3(a.x, a.y, 0), dish(a, 1), v3((a.x + b.x) / 2, (a.y + b.y) / 2, sky), dish(b, -1), v3(b.x, b.y, 0)];
+  }
+
+  /** A link's path on screen, in SVG units. */
+  linkPath(id: string): { sx: number; sy: number }[] {
+    return this.linkWorld(id).map((p) => iso(p.x, p.y, p.z));
+  }
+
+  /** Where a storm cloud hangs over a link: above its middle, or over the first beam of a satellite hop. */
+  linkCloudSpot(id: string): { sx: number; sy: number } {
+    const { p } = pointAlong(this.linkWorld(id), this.tl.sky.has(id) ? 0.28 : 0.5);
+    const s = iso(p.x, p.y, p.z);
+    return { sx: s.sx, sy: s.sy - 62 };
+  }
+
   /** Cables between devices; a slow link is a radio hop up to a satellite instead. */
   private buildCables(): void {
     this.cables.replaceChildren();
     this.cableViews = [];
     for (const l of this.story.links) {
-      const a = this.tl.pos.get(l.a);
-      const b = this.tl.pos.get(l.b);
-      if (!a || !b) continue;
+      const path = this.linkWorld(l.id);
+      if (!path.length) continue;
       const g = el('g', { class: 'link' }, this.cables);
-      const sky = this.tl.sky.get(l.id);
       if (this.tl.air.has(l.id)) {
-        const za = (DEVICE_TOP[this.tl.kind.get(l.a) ?? ''] ?? 1) + 0.2;
-        const zb = (DEVICE_TOP[this.tl.kind.get(l.b) ?? ''] ?? 1) + 0.9;
-        const pts: string[] = [];
-        for (let i = 0; i <= 20; i++) {
-          const q = i / 20;
-          const p = iso(lerp(a.x, b.x, q), lerp(a.y, b.y, q), lerp(za, zb, q) + Math.sin(Math.PI * q) * 1.4);
-          pts.push(`${p.sx.toFixed(1)},${p.sy.toFixed(1)}`);
-        }
-        el('polyline', { points: pts.join(' '), class: 'airwave' }, g);
+        const pts = path.map((p) => iso(p.x, p.y, p.z));
+        el('polyline', { points: pts.map((p) => `${p.sx.toFixed(1)},${p.sy.toFixed(1)}`).join(' '), class: 'airwave' }, g);
         // Radio ripples at both ends.
-        for (const [p, z] of [[a, za], [b, zb]] as const) {
-          const c = iso(p.x, p.y, z + 0.3);
+        for (const p of [path[0]!, path[path.length - 1]!]) {
+          const c = iso(p.x, p.y, p.z + 0.3);
           for (const r of [7, 12, 17]) el('path', { d: `M${(c.sx - r).toFixed(1)} ${(c.sy - r * 0.2).toFixed(1)}A${r} ${r} 0 0 1 ${(c.sx + r).toFixed(1)} ${(c.sy - r * 0.2).toFixed(1)}`, class: 'ripple' }, g);
         }
-      } else if (sky) {
-        const top = v3((a.x + b.x) / 2, (a.y + b.y) / 2, sky);
-        const len = Math.hypot(b.x - a.x, b.y - a.y);
-        const ux = (b.x - a.x) / len;
-        const uy = (b.y - a.y) / len;
-        // Radio beams from a dish beside each end up to the satellite.
-        for (const [p, s] of [[a, 1], [b, -1]] as const) {
-          const foot = v3(p.x + ux * 2.4 * s, p.y + uy * 2.4 * s, 0.3);
+      } else if (path.length === 5) {
+        // A cable from each device to its dish, then the radio beams up to the satellite.
+        const [a, footA, top, footB, b] = path as [Vec3, Vec3, Vec3, Vec3, Vec3];
+        for (const [end, foot] of [[a, footA], [b, footB]] as const) {
+          line(g, end, v3(foot.x, foot.y, 0), { class: 'cable' });
           line(g, foot, top, { class: 'beam' });
           cylinder(g, { x: foot.x, y: foot.y, z: 0, r: 0.35, h: 0.3, color: DEVICE });
         }
       } else {
-        line(g, v3(a.x, a.y, 0), v3(b.x, b.y, 0), { class: 'cable' });
+        line(g, path[0]!, path[1]!, { class: 'cable' });
       }
       this.cableViews.push({ g, a: l.a, b: l.b });
     }
   }
 
-  /** Which cables crackle (stormy weather on the internet side), by link id; empty for calm weather. */
+  /** Which links crackle, by id; empty for calm weather. */
   setStorm(links: readonly string[]): void {
-    this.stormy = this.story.links
-      .filter((l) => links.includes(l.id))
-      .flatMap((l) => {
-        const a = this.tl.pos.get(l.a) ?? { x: 0, y: 0 };
-        const b = this.tl.pos.get(l.b) ?? { x: 0, y: 0 };
-        const sky = this.tl.sky.get(l.id);
-        if (!sky) return [{ a: v3(a.x, a.y, 0), b: v3(b.x, b.y, 0) }];
-        // A satellite hop crackles along both radio beams.
-        const len = Math.hypot(b.x - a.x, b.y - a.y);
-        const ux = (b.x - a.x) / len;
-        const uy = (b.y - a.y) / len;
-        const top = v3((a.x + b.x) / 2, (a.y + b.y) / 2, sky);
-        return [
-          { a: v3(a.x + ux * 2.4, a.y + uy * 2.4, 0.3), b: top },
-          { a: top, b: v3(b.x - ux * 2.4, b.y - uy * 2.4, 0.3) },
-        ];
-      });
+    this.stormy = links.map((id) => this.linkWorld(id)).filter((p) => p.length > 1);
   }
 
   /**
@@ -276,11 +305,9 @@ export class NetworkScene {
       const x = Math.sin(n * 12.9898 + tick * 78.233) * 43758.5453;
       return x - Math.floor(x);
     };
-    this.stormy.forEach(({ a, b }, li) => {
-      const len = Math.hypot(b.x - a.x, b.y - a.y);
-      const ux = (b.x - a.x) / len;
-      const uy = (b.y - a.y) / len;
-      const steps = Math.max(4, Math.round(len / 0.45));
+    this.stormy.forEach((path, li) => {
+      const length = path.slice(1).reduce((s, p, i) => s + Math.hypot(p.x - path[i]!.x, p.y - path[i]!.y, p.z - path[i]!.z), 0);
+      const steps = Math.max(4, Math.round(length / 0.45));
       const pts: string[] = [];
       for (let i = 0; i <= steps; i++) {
         const t = i / steps;
@@ -288,17 +315,18 @@ export class NetworkScene {
         const amp = Math.sin(Math.PI * t) * 0.34;
         const off = (rnd(li * 100 + i) - 0.5) * 2 * amp;
         const z = (rnd(li * 100 + i + 50) - 0.3) * amp * 1.2;
-        const p = iso(a.x + ux * len * t - uy * off, a.y + uy * len * t + ux * off, Math.max(0, lerp(a.z, b.z, t) + z));
-        pts.push(`${p.sx.toFixed(1)},${p.sy.toFixed(1)}`);
+        const { p, ux, uy } = pointAlong(path, t);
+        const s = iso(p.x - uy * off, p.y + ux * off, Math.max(0, p.z + z));
+        pts.push(`${s.sx.toFixed(1)},${s.sy.toFixed(1)}`);
       }
       const flicker = (0.55 + 0.45 * rnd(li + 7)).toFixed(2);
       // A dark edge under the yellow keeps it readable on the light table.
       el('polyline', { points: pts.join(' '), class: 'crackle-edge', opacity: flicker }, this.storm);
       el('polyline', { points: pts.join(' '), class: 'crackle', opacity: flicker }, this.storm);
-      // Now and then a spark jumps off the cable.
+      // Now and then a spark jumps off the line.
       if (rnd(li + 31) > 0.72) {
-        const t = 0.15 + 0.7 * rnd(li + 3);
-        const p = iso(a.x + ux * len * t, a.y + uy * len * t, 0.3);
+        const { p: at } = pointAlong(path, 0.15 + 0.7 * rnd(li + 3));
+        const p = iso(at.x, at.y, at.z + 0.3);
         const r = 5 + 6 * rnd(li + 9);
         const spikes = [0, 1, 2, 3, 4, 5, 6, 7].map((j) => {
           const ang = (j / 8) * Math.PI * 2;
@@ -412,10 +440,10 @@ export class NetworkScene {
     return Math.min((this.svg.clientWidth || 1) / o.w, (this.svg.clientHeight || 1) / o.h);
   }
 
-  /** Following shows about 460–800 units across, so the packet stays big on a phone too. */
+  /** Following shows about 560–1100 units across, so the packet stays big on a phone too. */
   private followScale(): number {
     const cw = this.svg.clientWidth || 1;
-    return Math.max(this.baseScale() * 1.4, cw / Math.min(800, Math.max(460, cw * 0.55)));
+    return Math.max(this.baseScale() * 1.15, cw / Math.min(1100, Math.max(560, cw * 0.8)));
   }
 
   /** How far a viewer may zoom out and in by hand. */
@@ -458,9 +486,14 @@ export class NetworkScene {
     return { cx: s.sx, cy: s.sy, scale: this.followScale() };
   }
 
-  /** The point `right` and `down` screen pixels in from the top-right corner of the view, in SVG units. */
-  viewCorner(c: Camera, right: number, down: number): { sx: number; sy: number } {
-    return { sx: c.cx + ((this.svg.clientWidth || 1) / 2 - right) / c.scale, sy: c.cy + (-(this.svg.clientHeight || 1) / 2 + down) / c.scale };
+  /** The point `x`, `y` screen pixels from the top left of the view, in SVG units. */
+  viewPoint(c: Camera, x: number, y: number): { sx: number; sy: number } {
+    return { sx: c.cx + (x - (this.svg.clientWidth || 1) / 2) / c.scale, sy: c.cy + (y - (this.svg.clientHeight || 1) / 2) / c.scale };
+  }
+
+  /** The spot just right of the buttons, whose right edge is `barRight` px, where the storm cloud waits. */
+  cloudSlot(c: Camera, barRight: number): { sx: number; sy: number } {
+    return this.viewPoint(c, Math.min(barRight + 58, (this.svg.clientWidth || 1) - 50), (this.svg.clientHeight || 1) - 66);
   }
 
   /** Sets the viewBox so it matches the element's aspect ratio. */

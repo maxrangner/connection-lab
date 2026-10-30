@@ -215,7 +215,8 @@ body {
 
 .net-controls {
   position: fixed;
-  left: 50%;
+  /* Left of centre: the storm cloud waits on its right. */
+  left: calc(50% - 44px);
   bottom: calc(18px + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%);
   display: flex;
@@ -657,5 +658,15 @@ body {
 
 .cloud-prop.on .cloud-puff,
 .cloud-prop.over .cloud-puff {
+  fill: #7d8590;
+}
+
+/* The outline the cloud leaves by the buttons: tap it to call the cloud back */
+.prop-ghost {
+  cursor: pointer;
+  opacity: 0.3;
+}
+
+.prop-ghost .cloud-puff {
   fill: #7d8590;
 }

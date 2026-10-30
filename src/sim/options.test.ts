@@ -135,3 +135,31 @@ describe('HTTPS (a real captured TLS 1.3 session)', () => {
     });
   }
 });
+
+describe('a storm on one line', () => {
+  it('only ever loses frames on that line, and only inside its window', () => {
+    let lost = 0;
+    for (let seed = 1; seed <= 30; seed++) {
+      const r = run({}, { randomLoss: 0.4, manual: [], lossWindows: [{ from: 0, links: ['bb2'] }] }, seed);
+      for (const d of of(r, 'drop')) {
+        if (d.reason !== 'fault') continue;
+        lost++;
+        expect(d.linkId).toBe('bb2');
+      }
+    }
+    expect(lost).toBeGreaterThan(0);
+  });
+
+  it('can move: each window has its own line', () => {
+    const late = 0.01;
+    for (let seed = 1; seed <= 30; seed++) {
+      const r = run({}, { randomLoss: 0.4, manual: [], lossWindows: [{ from: 0, to: late, links: ['lan'] }, { from: late, links: ['wan'] }] }, seed);
+      const txAt = new Map(of(r, 'tx').map((e) => [e.frameId, e.start]));
+      for (const d of of(r, 'drop')) {
+        if (d.reason !== 'fault') continue;
+        const at = txAt.get(d.frameId!)!;
+        expect(d.linkId).toBe(at < late ? 'lan' : 'wan');
+      }
+    }
+  });
+});

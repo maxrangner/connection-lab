@@ -11,34 +11,31 @@ import { buildTimeline, chapterAt, seenSoFar, SKY_HEIGHT, stepTarget, type Timel
 
 /**
  * "Get example.com". Everything you change, you change by hand on the table: drag the site card onto the laptop or
- * the phone, stick things on it, put the cloud over the internet cables, put the satellite on the line to the ISP.
+ * the phone, stick things on it, put the cloud on a line, put the satellite on the line to the ISP.
  * Tap a packet on a cable to knock it off; tap it anywhere else to pop it open. When a run ends the card comes back.
  */
 
-/** Stormy weather happens on the internet side; the home cable stays calm. */
-const STORM_LINKS = ['wan', 'bb1', 'bb2'];
+/** A share of the frames on a stormy line is lost. */
 const STORM_LOSS = 0.15;
-/** Visual seconds per real second while a step button races to its target. */
-const SEEK_SPEED = 16;
 /** Seconds the finished picture stays before the card comes back. */
 const LINGER = 1.4;
 
 let features: Features = { https: false, big: false };
-/** Stormy weather can change any time, before or during a run. */
-let stormy = false;
+/** The one line the storm cloud hangs over, if any. It can change any time, before or during a run. */
+let stormLine: string | null = null;
 /** The line to the ISP goes through a satellite. Set before a run: it would change what has already happened. */
 let slow = false;
 try {
-  const saved = JSON.parse(localStorage.getItem('net.features') ?? '{}') as Partial<Features> & { storm?: boolean; slow?: boolean };
+  const saved = JSON.parse(localStorage.getItem('net.features') ?? '{}') as Partial<Features> & { stormLine?: string | null; slow?: boolean };
   features = { https: !!saved.https, big: !!saved.big };
-  stormy = !!saved.storm;
+  stormLine = saved.stormLine ?? null;
   slow = !!saved.slow;
 } catch {
   // Nothing remembered; start plain.
 }
 function remember(): void {
   try {
-    localStorage.setItem('net.features', JSON.stringify({ ...features, storm: stormy, slow }));
+    localStorage.setItem('net.features', JSON.stringify({ ...features, stormLine, slow }));
   } catch {
     // Not remembered; fine.
   }
@@ -67,7 +64,7 @@ function remembers(): boolean {
 }
 function simulate(): void {
   const scenario = fetchWebPage({ site: siteName(), revisit, slow, https: features.https, from: client });
-  const plan = { randomLoss: STORM_LOSS, lossyLinks: STORM_LINKS, lossWindows: stormWindows, decided, manual: faults };
+  const plan = { randomLoss: STORM_LOSS, lossWindows: stormWindows, decided, manual: faults };
   story = buildStory(runScenario(scenario, { seed: stormSeed, faults: plan }));
   tl = buildTimeline(story, knocks);
 }
@@ -124,27 +121,62 @@ function showFeatures(): void {
     cardText.textContent = site;
     cardPop = 0;
   }
-  scene.setStorm(stormy ? STORM_LINKS : []);
+  scene.setStorm(stormLine ? [stormLine] : []);
 }
 
-/** Distance from a point to a cable on screen. */
-function toCable(p: { sx: number; sy: number }, link: string): number {
-  const ends = scene.cableEnds(link);
-  if (!ends) return Infinity;
-  const [a, b] = ends;
-  const dx = b.sx - a.sx;
-  const dy = b.sy - a.sy;
-  const t = clamp01(((p.sx - a.sx) * dx + (p.sy - a.sy) * dy) / (dx * dx + dy * dy));
-  return Math.hypot(p.sx - (a.sx + dx * t), p.sy - (a.sy + dy * t));
+/** Distance from a point to a link's path on screen. */
+function toLink(p: { sx: number; sy: number }, link: string): number {
+  const path = scene.linkPath(link);
+  let best = Infinity;
+  for (let i = 0; i + 1 < path.length; i++) {
+    const a = path[i]!;
+    const b = path[i + 1]!;
+    const dx = b.sx - a.sx;
+    const dy = b.sy - a.sy;
+    const t = clamp01(((p.sx - a.sx) * dx + (p.sy - a.sy) * dy) / (dx * dx + dy * dy || 1));
+    best = Math.min(best, Math.hypot(p.sx - (a.sx + dx * t), p.sy - (a.sy + dy * t)));
+  }
+  return best;
+}
+/** The line a held thing is over, if any. */
+function lineNear(p: { sx: number; sy: number }): string | null {
+  let best: string | null = null;
+  let bestD = 80;
+  for (const l of story.links) {
+    const d = toLink(p, l.id);
+    if (d < bestD) {
+      best = l.id;
+      bestD = d;
+    }
+  }
+  return best;
 }
 const near = (a: { sx: number; sy: number }, b: { sx: number; sy: number }, r: number): boolean => Math.hypot(a.sx - b.sx, a.sy - b.sy) < r;
 const canSetUp = (): boolean => mode === 'idle' || mode === 'spring';
 
-const running = (): boolean => mode === 'play' || mode === 'drop';
-const cloudCorner = (): { sx: number; sy: number } => scene.viewCorner(cam, 70, 60);
+/** Move the storm to a line, or end it. Mid-run the simulation re-runs from this moment on: what was seen stays. */
+function setStormLine(line: string | null): void {
+  if (line === stormLine) return;
+  stormLine = line;
+  cloud.on = !!line;
+  remember();
+  if (mode === 'play') {
+    const seen = seenSoFar(tl, v);
+    decided = { ...decided, ...seen.decided };
+    stormWindows = stormWindows.map((w) => (w.to === undefined ? { ...w, to: seen.now } : w));
+    if (line) stormWindows = [...stormWindows, { from: seen.now, links: [line] }];
+    simulate();
+    scene.setStory(story, tl);
+  }
+  showFeatures();
+  sound.play(line ? 'zap' : 'snap');
+}
 
-// The cloud: put it over the internet cables and the storm starts, even in the middle of a run.
-const cloudSpot = iso(15, -1.5, 5);
+let cam: Camera = scene.overviewCamera();
+
+// The cloud waits by the buttons, always in reach. Put it on a line and that line gets stormy, even mid-run.
+const CLOUD_SIZE = 0.75;
+const cloudSlot = (): { sx: number; sy: number } => scene.cloudSlot(cam, document.querySelector('.net-controls')?.getBoundingClientRect().right ?? window.innerWidth / 2);
 const cloud = new Prop(
   svg,
   {
@@ -152,29 +184,17 @@ const cloud = new Prop(
     cls: 'cloud-prop',
     draw: drawCloud,
     animate: rain,
-    parked: () => (running() ? cloudCorner() : iso(-3, -5, 3)),
-    active: () => (running() ? cloudCorner() : cloudSpot),
-    hits: (p) => near(p, cloudSpot, 120) || STORM_LINKS.some((l) => toCable(p, l) < 80),
+    parked: cloudSlot,
+    active: () => (stormLine ? scene.linkCloudSpot(stormLine) : cloudSlot()),
+    hits: (p) => !!lineNear(p),
+    dropped: (p) => setStormLine(p ? lineNear(p) : null),
+    ghost: true,
     canMove: () => true,
-    // During a run the camera follows the packet, so the cloud stays in the corner of the view: tap it any time.
-    pinned: () => (running() ? { scale: 0.75 / cam.scale } : null),
-    onChange: (on) => {
-      stormy = on;
-      remember();
-      if (mode === 'play') {
-        // Mid-run the simulation re-runs from this moment on: everything already seen stays.
-        const seen = seenSoFar(tl, v);
-        decided = { ...decided, ...seen.decided };
-        if (stormy) stormWindows = [...stormWindows, { from: seen.now }];
-        else stormWindows = stormWindows.map((w) => (w.to === undefined ? { ...w, to: seen.now } : w));
-        simulate();
-        scene.setStory(story, tl);
-      }
-      showFeatures();
-      sound.play(on ? 'zap' : 'snap');
-    },
+    pinned: () => (stormLine ? null : { scale: CLOUD_SIZE / cam.scale }),
+    waiting: () => CLOUD_SIZE / cam.scale,
+    onChange: () => {},
   },
-  stormy,
+  !!stormLine,
 );
 
 // The satellite: put it on the line to the ISP and that line goes through space. Only before a run.
@@ -190,9 +210,9 @@ const satellite = new Prop(
     draw: drawSatellite,
     parked: () => iso(-6, -3, 3),
     active: skySpot,
-    hits: (p) => near(p, skySpot(), 120) || toCable(p, 'wan') < 80,
+    hits: (p) => near(p, skySpot(), 120) || toLink(p, 'wan') < 80,
     canMove: canSetUp,
-    hidden: () => !slow && running(),
+    hidden: () => !slow && (mode === 'play' || mode === 'drop'),
     onChange: (on) => {
       slow = on;
       preview();
@@ -201,7 +221,7 @@ const satellite = new Prop(
   },
   slow,
 );
-scene.setOnTable([home, { sx: home.sx - 110, sy: home.sy + 50 }, { sx: home.sx - 170, sy: home.sy - 110 }, iso(-3, -5, 4.6), iso(-6, -3, 4.6), { sx: iso(-6, -3, 3).sx - 60, sy: iso(-6, -3, 3).sy }]);
+scene.setOnTable([home, { sx: home.sx - 110, sy: home.sy + 50 }, { sx: home.sx - 170, sy: home.sy - 110 }, iso(-6, -3, 4.6), { sx: iso(-6, -3, 3).sx - 60, sy: iso(-6, -3, 3).sy }]);
 
 const CHAPTERS: Record<Chapter, string> = { dns: 'Find the address', hello: 'Say hello', secret: 'Agree on a secret', page: 'Get the page' };
 /** Chapter number in this run (a second visit skips the address, HTTPS adds the secret). */
@@ -239,7 +259,7 @@ chapter.addEventListener('click', () => {
     item.addEventListener('click', () => {
       v = s.t0;
       cueDone = v;
-      seekTo = null;
+      seek = null;
       paused = false;
       peek = peekTarget = 0;
       camFree = false;
@@ -271,6 +291,7 @@ const soundBtn = button('♪', 'Sound', () => {
     // Not remembered; fine.
   }
 });
+button('↺', 'Reset', reset);
 const followBtn = button('◎ Follow packet', 'Follow the packet', () => {
   camFree = false;
 });
@@ -280,8 +301,8 @@ let v = 0;
 /** What the table shows between runs: the end of the last run, or a clean table (-1). */
 let idleV = -1;
 let paused = false;
-/** Where a step button is racing to while playing. */
-let seekTo: number | null = null;
+/** A step button playing the animation through at high speed, playing or paused. */
+let seek: { from: number; to: number; t: number; dur: number } | null = null;
 /** Seconds since the run reached its end. */
 let doneFor = 0;
 let peek = 0;
@@ -289,7 +310,7 @@ let peekTarget = 0;
 let cardPos = { ...home };
 let anim = { from: { ...home }, to: { ...home }, t: 0, dur: 0.4 };
 let grab = { dx: 0, dy: 0 };
-let cam: Camera = scene.overviewCamera();
+cam = scene.overviewCamera();
 let snapCamera = false;
 /** Set once the viewer pans or zooms by hand; the camera stops following until they ask again. */
 let camFree = false;
@@ -350,7 +371,7 @@ card.addEventListener('pointerup', () => {
 // Tap a packet out on a cable to knock it off; anywhere else, tap it to pop it open.
 scene.packet.addEventListener('pointerdown', () => {
   if (mode !== 'play' || v >= tl.total) return;
-  const target = !paused && !peekTarget && seekTo === null ? scene.knockable(v) : null;
+  const target = !paused && !peekTarget && !seek ? scene.knockable(v) : null;
   if (target) knock(target);
   else if (scene.peekable(v)) peekTarget = peekTarget ? 0 : 1;
 });
@@ -453,20 +474,38 @@ function togglePause(): void {
   else paused = !paused;
 }
 
-/** One action on or back. Paused it teleports; playing it races there and carries on. */
+/** One action on or back: the animation really plays, very fast, then carries on as it was (playing or paused). */
 function step(dir: 1 | -1): void {
   if (mode !== 'play') return;
-  peek = peekTarget = 0;
-  const target = stepTarget(tl, seekTo ?? v, dir);
-  if (paused) {
-    v = target;
-    cueDone = v;
-    seekTo = null;
-    snapCamera = !camFree;
-  } else {
-    seekTo = target;
-  }
+  peekTarget = 0;
+  const to = stepTarget(tl, seek?.to ?? v, dir);
+  seek = { from: v, to, t: 0, dur: Math.min(0.5, Math.max(0.22, Math.abs(to - v) / 6)) };
 }
+
+/** Start over: a clean table, everything put back and forgotten. */
+function reset(): void {
+  mode = 'idle';
+  card.classList.remove('held', 'over');
+  seek = null;
+  paused = false;
+  peek = peekTarget = 0;
+  doneFor = 0;
+  camFree = false;
+  faults.length = 0;
+  knocks.clear();
+  decided = {};
+  stormWindows = [];
+  known.clear();
+  client = 'laptop';
+  cardPos = { ...home };
+  setStormLine(null);
+  stickers.set('https', false);
+  stickers.set('big', false);
+  satellite.set(false);
+  preview();
+  sound.play('thud');
+}
+
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
     e.preventDefault();
@@ -481,7 +520,7 @@ function beginRun(): void {
   knocks.clear();
   stormSeed = 1 + Math.floor(Math.random() * 1e6);
   decided = {};
-  stormWindows = stormy ? [{ from: 0 }] : [];
+  stormWindows = stormLine ? [{ from: 0, links: [stormLine] }] : [];
   revisit = remembers();
   simulate();
   scene.setStory(story, tl);
@@ -489,7 +528,7 @@ function beginRun(): void {
   mode = 'play';
   v = 0;
   cueDone = 0;
-  seekTo = null;
+  seek = null;
   doneFor = 0;
   paused = false;
   peek = peekTarget = 0;
@@ -526,21 +565,19 @@ function frame(now: number): void {
     }
   }
   if (mode === 'play') {
-    if (seekTo !== null) {
-      // A step button racing to its target; no sounds on the way.
-      const dir = Math.sign(seekTo - v);
-      v += dir * SEEK_SPEED * dt;
-      if (dir === 0 || Math.sign(seekTo - v) !== dir) {
-        v = seekTo;
-        seekTo = null;
-      }
+    if (seek) {
+      // A step button: the animation plays through at high speed, without sounds.
+      seek.t += dt;
+      const k = clamp01(seek.t / seek.dur);
+      v = lerp(seek.from, seek.to, k);
       cueDone = v;
+      if (k >= 1) seek = null;
     } else if (!paused && !peekTarget) {
       const next = Math.min(tl.total, v + dt);
       for (const c of tl.cues) if (c.t > Math.max(v, cueDone) && c.t <= next) sound.play(c.sound);
       v = next;
     }
-    doneFor = v >= tl.total && !paused && seekTo === null ? doneFor + dt : 0;
+    doneFor = v >= tl.total && !paused && !seek ? doneFor + dt : 0;
     if (doneFor > LINGER) endRun();
   }
   peek += (peekTarget - peek) * Math.min(1, dt * 10);
@@ -565,7 +602,7 @@ function frame(now: number): void {
   // unless the viewer has taken it over.
   if (!camFree) {
     const target = mode === 'play' ? scene.followCamera(v) : scene.overviewCamera();
-    const ease = snapCamera ? 1 : Math.min(1, dt * (seekTo === null ? 3.5 : 8));
+    const ease = snapCamera ? 1 : Math.min(1, dt * (seek ? 6 : 3.5));
     cam = { cx: lerp(cam.cx, target.cx, ease), cy: lerp(cam.cy, target.cy, ease), scale: lerp(cam.scale, target.scale, ease) };
   }
   snapCamera = false;
@@ -574,7 +611,7 @@ function frame(now: number): void {
   const shown = mode === 'play' ? v : idleV;
   scene.render(shown);
   scene.drawPacket(shown, peek);
-  scene.packet.classList.toggle('knockable', mode === 'play' && !paused && !peekTarget && seekTo === null && !!scene.knockable(v));
+  scene.packet.classList.toggle('knockable', mode === 'play' && !paused && !peekTarget && !seek && !!scene.knockable(v));
 
   const ch = mode === 'play' ? chapterAt(tl, v) : null;
   if (ch !== shownChapter) {
@@ -620,7 +657,7 @@ if (import.meta.env.DEV) {
         mode = 'play';
         v = t;
         paused = true;
-        seekTo = null;
+        seek = null;
         peek = peekTarget = open;
         snapCamera = true;
         camFree = false;
@@ -637,11 +674,11 @@ if (import.meta.env.DEV) {
         return tl.reactions;
       },
       /** Start a run straight away with these things on the table (for screenshots). */
-      start(f: Partial<Features> & { storm?: boolean; slow?: boolean; again?: boolean; from?: Client }): void {
+      start(f: Partial<Features> & { storm?: string; slow?: boolean; again?: boolean; from?: Client }): void {
         client = f.from ?? 'laptop';
         for (const k of ['https', 'big'] as const) stickers.set(k, !!f[k]);
         satellite.set(!!f.slow);
-        cloud.set(!!f.storm);
+        setStormLine(f.storm ?? null);
         if (f.again) known.set(client, { site: siteName(), ip: '', until: Infinity });
         else known.delete(client);
         beginRun();

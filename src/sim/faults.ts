@@ -9,6 +9,8 @@ export interface ManualFault {
 export interface LossWindow {
   from: number;
   to?: number;
+  /** If set, only these links are affected during the window (bad weather on one line). */
+  links?: string[];
 }
 
 /**
@@ -38,6 +40,6 @@ export function shouldDrop(plan: FaultPlan, seed: number, linkId: string, packet
   if (decided !== undefined) return decided;
   if (plan.randomLoss <= 0) return false;
   if (plan.lossyLinks && !plan.lossyLinks.includes(linkId)) return false;
-  if (plan.lossWindows && !plan.lossWindows.some((w) => now >= w.from && (w.to === undefined || now < w.to))) return false;
+  if (plan.lossWindows && !plan.lossWindows.some((w) => now >= w.from && (w.to === undefined || now < w.to) && (!w.links || w.links.includes(linkId)))) return false;
   return hash32(`${linkId}|${packetId}`, seed ^ 0x5eed) / 4294967296 < plan.randomLoss;
 }
