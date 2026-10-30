@@ -22,12 +22,12 @@ export class Menu<T extends string> {
     label: string,
     items: MenuItem<T>[],
     private readonly onPick: (id: T) => void,
-    private readonly onClose: () => void = () => {},
   ) {
     this.button.textContent = text;
     this.button.className = 'menu-button';
     this.button.setAttribute('aria-label', label);
     this.button.setAttribute('aria-haspopup', 'true');
+    this.button.setAttribute('aria-expanded', 'false');
     this.button.addEventListener('click', () => this.setOpen(!this.isOpen));
     bar.appendChild(this.button);
     this.panel.className = 'menu-panel';
@@ -58,10 +58,14 @@ export class Menu<T extends string> {
 
   setOpen(open: boolean): void {
     if (open === this.isOpen) return;
+    // Focus goes into the popup and back out with it: the popups sit outside the bar, away from its tab order.
+    if (!open && this.panel.contains(document.activeElement)) this.button.focus();
     this.panel.hidden = !open;
     this.button.setAttribute('aria-expanded', String(open));
-    if (open) this.place();
-    else this.onClose();
+    if (open) {
+      this.place();
+      this.items.values().next().value?.focus();
+    }
   }
 
   setOn(id: T, on: boolean): void {

@@ -225,6 +225,7 @@ let tool: Tool | null = null;
 
 /** Put the spyglass on a line, or take it off. It only reads, so nothing about the run changes. */
 function setSpyLine(line: string | null): void {
+  if (line === spyLine) return;
   spyLine = line;
   scene.setSpy(line);
   remember();
@@ -261,10 +262,14 @@ function setSetting(id: Setting, on: boolean): void {
     clearLine(VPN_LINK);
     if (spyLine === VPN_LINK) setSpyLine(null);
   }
-  setupMenu.setOn(id, on);
-  setupMenu.button.classList.toggle('on', SETTINGS.some((k) => features[k]));
+  showSetup();
   preview();
   sound.play(id === 'https' || id === 'vpn' ? 'lock' : 'snap');
+}
+/** The Setup menu says what is on, also for what was remembered from last time. */
+function showSetup(): void {
+  for (const k of SETTINGS) setupMenu.setOn(k, features[k]);
+  setupMenu.button.classList.toggle('on', SETTINGS.some((k) => features[k]));
 }
 
 const CHAPTERS: Record<Chapter, string> = { dns: 'Find the address', hello: 'Say hello', secret: 'Agree on a secret', page: 'Get the page' };
@@ -345,11 +350,18 @@ const toolsMenu = new Menu<Tool>(
     { id: 'cut', label: 'Cut', draw: drawScissors, span: 38 },
   ],
   (id) => pickUp(tool === id ? null : id),
-  () => pickUp(null),
 );
+// Closing Tools by its own button puts the tool down. Another popup only hides it: the tool stays in hand.
+toolsMenu.button.addEventListener('click', () => {
+  if (!toolsMenu.isOpen) pickUp(null);
+});
 const setupMenu = new Menu<Setting>(controls, root, 'Setup', 'Setup', SETUP, (id) => setSetting(id, !features[id]));
+showSetup();
 const menus: { isOpen: boolean; setOpen(open: boolean): void; place(): void; button: HTMLButtonElement }[] = [speedMenu, toolsMenu, setupMenu];
 for (const menu of menus) menu.button.addEventListener('click', () => { for (const other of menus) if (other !== menu) other.setOpen(false); });
+const placeMenus = (): void => {
+  for (const menu of menus) menu.place();
+};
 const soundBtn = button('♪', 'Sound', () => {
   sound.muted = !sound.muted;
   try {
@@ -363,6 +375,9 @@ const followBtn = button('◎ Follow packet', 'Follow the packet', () => {
   camFree = false;
 });
 root.appendChild(controls);
+// A popup only has to move when the bar does.
+new ResizeObserver(placeMenus).observe(controls);
+window.addEventListener('resize', placeMenus);
 
 let v = 0;
 /** What the table shows between runs: the end of the last run, or a clean table (-1). */
@@ -482,7 +497,7 @@ function spread(): { d: number; x: number; y: number } {
 }
 
 svg.addEventListener('pointerdown', (e) => {
-  // The Tools menu stays open while a tool is in hand; the other popups give way to the stage.
+  // Working the stage leaves the Tools menu open while a tool is in hand; the other popups give way to it.
   for (const menu of menus) if (menu !== toolsMenu || !tool) menu.setOpen(false);
   const target = e.target as Element;
   if (target.closest('.site-card') || (!tool && target.closest('.packet'))) return;
@@ -603,9 +618,12 @@ function reset(): void {
 
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
+    // A menu item reached by keyboard works like any button; everywhere else Space pauses.
+    if (e.target instanceof Element && e.target.matches('.menu-item:focus-visible')) return;
     e.preventDefault();
     togglePause();
   } else if (e.code === 'Escape') {
+    pickUp(null);
     for (const menu of menus) menu.setOpen(false);
   }
   else if (e.code === 'ArrowRight') step(1);
@@ -731,7 +749,6 @@ function frame(now: number): void {
   // The setup is for the next run: it would rewrite what has already happened.
   setupMenu.button.disabled = !canSetUp();
   if (!canSetUp()) setupMenu.setOpen(false);
-  for (const menu of menus) menu.place();
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

@@ -4,7 +4,7 @@ import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, easeOutBounce, iso, l
 import { drawBolt, drawSatellite, drawScissors, drawShield, drawSpyglass } from './icons';
 import { shade } from './shade';
 import type { Seen, Story, Trip, Wrap } from './story';
-import { addressBefore, DEVICE_TOP, FACE_EMOJI, frameAt, LEVEL, lockPose, packetPos, packetPose, segAt, swapMoment, trayOpacity, wrapsBefore, type LockPose, type Seg, type Timeline } from './timeline';
+import { addressBefore, DEVICE_TOP, FACE_EMOJI, frameAt, LEVEL, lockPose, packetPos, packetPose, segAt, swapLanding, swapMoment, trayOpacity, wrapsBefore, type LockPose, type Seg, type Timeline } from './timeline';
 
 export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', vpn: '#2e5e6e', eth: '#e08b33', wifi: '#2a9d8f' } as const;
 const DEVICE = '#d9d0c2';
@@ -701,7 +701,7 @@ export class NetworkScene {
     // Once a run starts, whatever it doesn't use steps back.
     const greying = v >= 0;
     for (const d of this.devices) {
-      // Without a VPN its server is just a faint shape showing where it can go.
+      // Without a VPN its server is not on the table.
       const absent = d.kind === 'vpn-server' && !this.story.vpn;
       d.g.classList.toggle('absent', absent);
       d.g.classList.toggle('unused', !absent && greying && !this.used.has(d.id));
@@ -926,20 +926,7 @@ export class NetworkScene {
     const q = tau / T;
     const c = iso(at.x, at.y, at.z);
     const g = el('g', { class: 'burst', opacity: (1 - easeIn(q)).toFixed(3), transform: `translate(${c.sx.toFixed(1)} ${c.sy.toFixed(1)})` }, this.fx);
-    const r = 22 + 34 * easeOut(q);
-    const pts: string[] = [];
-    for (let j = 0; j < 20; j++) {
-      const a = (j / 20) * Math.PI * 2 + 0.2;
-      const rr = j % 2 ? r * 0.5 : r * (j % 4 ? 1 : 1.25);
-      pts.push(`${(Math.cos(a) * rr).toFixed(1)},${(Math.sin(a) * rr).toFixed(1)}`);
-    }
-    el('polygon', { points: pts.join(' '), fill: BURST, class: 'burst-star' }, g);
-    for (let j = 0; j < 14; j++) {
-      const a = (j / 14) * Math.PI * 2 + 0.11 * j;
-      const r1 = r * 1.15 + 6;
-      const r2 = r1 + 18 + 26 * easeOut(q) + (j % 3) * 6;
-      el('line', { x1: Math.cos(a) * r1, y1: Math.sin(a) * r1, x2: Math.cos(a) * r2, y2: Math.sin(a) * r2, class: 'speed-line' }, g);
-    }
+    drawBang(g, 22 + 34 * easeOut(q), 18 + 26 * easeOut(q));
     // The storm did it: a lightning bolt strikes down onto the cable first.
     if (zap && q < 0.6) {
       const bolt = '0,-150 -14,-96 6,-92 -12,-40 8,-38 -4,0 22,-52 2,-56 18,-104 -2,-108 10,-150';
@@ -1245,7 +1232,7 @@ export class NetworkScene {
     const old = { ...a };
     let changed: 'from' | 'to' | 'both' | null = null;
     const step = seg.step;
-    const m = swapMoment(k);
+    const m = swapMoment(k, swapLanding(step) ?? 0);
     if (step.kind === 'nat') {
       changed = step.which;
       if (m.flip >= 0.5) a[step.which] = step.after;
@@ -1306,20 +1293,24 @@ export class NetworkScene {
   /** The anime bang behind a value landing: a yellow star and speed lines. */
   private swapBurst(parent: SVGGElement, x: number, y: number, q: number, wide: number): void {
     const g = el('g', { opacity: (1 - q).toFixed(3), transform: `translate(${x.toFixed(1)} ${y.toFixed(1)}) scale(${wide} 1)` }, parent);
-    const r = 28 + 24 * easeOut(q);
-    const pts: string[] = [];
-    for (let j = 0; j < 20; j++) {
-      const a = (j / 20) * Math.PI * 2 + 0.2;
-      const rr = j % 2 ? r * 0.55 : r;
-      pts.push(`${(Math.cos(a) * rr * 1.5).toFixed(1)},${(Math.sin(a) * rr).toFixed(1)}`);
-    }
-    el('polygon', { points: pts.join(' '), fill: BURST, class: 'burst-star' }, g);
-    for (let j = 0; j < 12; j++) {
-      const a = (j / 12) * Math.PI * 2 + 0.13;
-      const r1 = r * 1.05 + 4;
-      const r2 = r1 + 8 + 12 * easeOut(q);
-      el('line', { x1: Math.cos(a) * r1 * 1.5, y1: Math.sin(a) * r1, x2: Math.cos(a) * r2 * 1.5, y2: Math.sin(a) * r2, class: 'speed-line' }, g);
-    }
+    drawBang(g, 24 + 20 * easeOut(q), 8 + 12 * easeOut(q), 1.5);
+  }
+}
+
+/** A jagged yellow star of radius r, and speed lines of the given length shooting out of it. `wide` stretches both. */
+function drawBang(g: SVGGElement, r: number, length: number, wide = 1): void {
+  const pts: string[] = [];
+  for (let j = 0; j < 20; j++) {
+    const a = (j / 20) * Math.PI * 2 + 0.2;
+    const rr = j % 2 ? r * 0.5 : r * (j % 4 ? 1 : 1.25);
+    pts.push(`${(Math.cos(a) * rr * wide).toFixed(1)},${(Math.sin(a) * rr).toFixed(1)}`);
+  }
+  el('polygon', { points: pts.join(' '), fill: BURST, class: 'burst-star' }, g);
+  for (let j = 0; j < 14; j++) {
+    const a = (j / 14) * Math.PI * 2 + 0.11 * j;
+    const r1 = r * 1.15 + 6;
+    const r2 = r1 + length + (j % 3) * 6;
+    el('line', { x1: Math.cos(a) * r1 * wide, y1: Math.sin(a) * r1, x2: Math.cos(a) * r2 * wide, y2: Math.sin(a) * r2, class: 'speed-line' }, g);
   }
 }
 

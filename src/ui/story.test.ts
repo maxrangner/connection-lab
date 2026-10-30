@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fetchWebPage, runScenario, type ManualFault } from '../sim';
 import { buildStory, cardLabel, dnsCardLabel, type Trip } from './story';
-import { addressBefore, buildTimeline, lockPose, packetPose, seenSoFar, stepTarget, swapMoment, trayAngle } from './timeline';
+import { addressBefore, buildTimeline, lockPose, packetPose, seenSoFar, stepTarget, swapLanding, swapMoment, trayAngle } from './timeline';
 
 const run = (manual: ManualFault[] = []) => buildStory(runScenario(fetchWebPage(), { seed: 1, faults: { randomLoss: 0, manual } }));
 const story = run();
@@ -461,20 +461,41 @@ describe('naming addresses', () => {
 
 describe('an address changing', () => {
   it('swells, flips, lands and settles back to normal', () => {
-    expect(swapMoment(0).grow).toBeCloseTo(0);
-    expect(swapMoment(0.6).grow).toBeGreaterThan(0.9);
-    expect(swapMoment(1).grow).toBeCloseTo(0);
-    expect(swapMoment(0.3).flip).toBe(0);
-    expect(swapMoment(0.6).flip).toBe(1);
-    expect(swapMoment(1).stamp).toBe(1);
+    expect(swapMoment(0, 0.44).grow).toBeCloseTo(0);
+    expect(swapMoment(0.6, 0.44).grow).toBeGreaterThan(0.9);
+    expect(swapMoment(1, 0.44).grow).toBeCloseTo(0);
+    expect(swapMoment(0.3, 0.44).flip).toBe(0);
+    expect(swapMoment(0.6, 0.44).flip).toBe(1);
+    expect(swapMoment(1, 0.44).stamp).toBe(1);
+  });
+
+  it('lands when it says, so the bang and the box meet', () => {
+    const land = 0.64;
+    expect(swapMoment(land, land).flip).toBeCloseTo(0.5);
+    expect(swapMoment(land, land).stamp).toBe(0);
+    expect(swapMoment(0.5, land).flip).toBe(0);
   });
 
   it('gets a sound at the home router and at the VPN box, and more time the first time', () => {
     const s = buildStory(runScenario(fetchWebPage({ vpn: true }), { seed: 1, faults: { randomLoss: 0, manual: [] } }));
     const tl = buildTimeline(s);
-    expect(tl.cues.filter((c) => c.sound === 'swap').length).toBeGreaterThanOrEqual(tl.segs.filter((x) => x.step.kind === 'nat').length);
+    for (const kind of ['nat', 'wrap', 'unwrap']) {
+      const seg = tl.segs.find((x) => x.step.kind === kind && swapLanding(x.step) !== null)!;
+      const t = seg.t0 + (seg.t1 - seg.t0) * swapLanding(seg.step)!;
+      expect(tl.cues.some((c) => c.sound === 'swap' && Math.abs(c.t - t) < 1e-9)).toBe(true);
+    }
     const nats = tl.segs.filter((x) => x.step.kind === 'nat');
     expect(nats[0]!.t1 - nats[0]!.t0).toBeCloseTo(2.6);
     expect(nats[nats.length - 1]!.t1 - nats[nats.length - 1]!.t0).toBeGreaterThan(1.3);
+  });
+
+  it('only bangs the first few times: later the router ticks and the VPN box has its lock', () => {
+    const s = buildStory(runScenario(fetchWebPage({ vpn: true, https: true }), { seed: 1, faults: { randomLoss: 0, manual: [] } }));
+    const tl = buildTimeline(s);
+    const swaps = tl.cues.filter((c) => c.sound === 'swap');
+    expect(swaps.length).toBe(6);
+    const later = tl.segs.filter((x) => x.step.kind === 'nat' && x.t0 > Math.max(...swaps.map((c) => c.t)));
+    expect(later.length).toBeGreaterThan(0);
+    for (const seg of later) expect(tl.cues.some((c) => c.sound === 'snap' && c.t > seg.t0 && c.t < seg.t1)).toBe(true);
   });
 });

@@ -97,6 +97,10 @@ export const SLOW_DELAY = 0.1;
 export const SKY_HEIGHT = 9;
 /** Seconds the VPN box takes to close or open, the first time. */
 const VPN_BOX = 2.6;
+/** Where in a wrap step the piece closes onto the packet. */
+const WRAP_SHUT = 0.35 + 0.65 * 0.45;
+/** Address changes in a run that get the full whoosh, stamp and ding. */
+const SWAP_SOUNDS = 6;
 /** Seconds a knocked packet tumbles before it is gone. */
 export const TUMBLE = 1.8;
 
@@ -247,10 +251,15 @@ function arrivalFace(trip: Trip, device: string, arrived: Set<string>, filled: S
 function addCues(cues: Cue[], seg: Seg, story: Story): void {
   const s = seg.step;
   const at = (f: number): number => seg.t0 + (seg.t1 - seg.t0) * f;
-  if (s.kind === 'wrap') cues.push({ t: at(0.35 + 0.65 * 0.45), sound: s.layer === 'eth' ? 'sleeve' : s.layer === 'vpn' ? 'lock' : 'snap' });
+  if (s.kind === 'wrap') cues.push({ t: at(WRAP_SHUT), sound: s.layer === 'eth' ? 'sleeve' : s.layer === 'vpn' ? 'lock' : 'snap' });
   if (s.kind === 'unwrap' && s.layer === 'vpn') cues.push({ t: at(0.5), sound: 'unlock' });
   if (s.kind === 'unwrap' && s.layer === 'eth') cues.push({ t: at(0.35 + 0.65 * 0.62), sound: 'thud' });
-  if (s.kind === 'nat' || ((s.kind === 'wrap' || s.kind === 'unwrap') && s.addr)) cues.push({ t: at(0.44), sound: 'swap' });
+  const landing = swapLanding(s);
+  if (landing !== null) {
+    // The bang is for the first few. After that the router only ticks, and the VPN box has its lock.
+    if (cues.filter((c) => c.sound === 'swap').length < SWAP_SOUNDS) cues.push({ t: at(landing), sound: 'swap' });
+    else if (s.kind === 'nat') cues.push({ t: at(landing), sound: 'snap' });
+  }
   if (s.kind === 'lost' && seg.knock) cues.push({ t: seg.t0 + seg.knock.k * seg.knock.travel, sound: seg.knock.byYou ? 'bonk' : seg.knock.cut ? 'thud' : 'zap' });
   if (s.kind === 'lock') cues.push({ t: at(0.62), sound: 'lock' });
   if (s.kind === 'unlock') cues.push({ t: at(0.4), sound: 'unlock' });
@@ -505,13 +514,24 @@ export function stepTarget(tl: Timeline, from: number, dir: 1 | -1): number {
 }
 
 /**
- * The big moment when an address changes, at progress k of a step: the tag swells (`grow`), the field flips over
- * (`flip`, the new value shows from 0.5), then the new value lands with a bang and the old one falls away (`stamp`).
+ * Where in a step the new address lands, if the step changes one: at the router in the middle of its moment, and at
+ * the VPN box when the box closes, or as it starts to lift off.
  */
-export function swapMoment(k: number): { grow: number; flip: number; stamp: number } {
+export function swapLanding(s: TStep): number | null {
+  if (s.kind === 'nat') return 0.44;
+  if (s.kind === 'wrap' && s.addr) return WRAP_SHUT;
+  if (s.kind === 'unwrap' && s.addr) return 0.6;
+  return null;
+}
+
+/**
+ * The big moment when an address changes, at progress k of a step: the tag swells (`grow`), the field flips over
+ * (`flip`, the new value shows from 0.5) to land at `landing`, then it bangs and the old value falls away (`stamp`).
+ */
+export function swapMoment(k: number, landing: number): { grow: number; flip: number; stamp: number } {
   return {
     grow: easeOutBack(clamp01((k - 0.1) / 0.16)) * (1 - easeIn(clamp01((k - 0.84) / 0.16))),
-    flip: clamp01((k - 0.36) / 0.16),
-    stamp: clamp01((k - 0.44) / 0.3),
+    flip: clamp01((k - landing + 0.08) / 0.16),
+    stamp: clamp01((k - landing) / 0.3),
   };
 }

@@ -132,10 +132,6 @@ body {
   stroke-width: 1.5;
 }
 
-.addr-hot {
-  fill: #ffe7a8;
-}
-
 .addr-text {
   font-size: 12px;
   font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
@@ -451,11 +447,6 @@ body {
   font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
 }
 
-.net-controls button.on {
-  background: #ffe14d;
-  border-color: #c08a10;
-}
-
 /* Devices and cables a run doesn't use step back */
 .device,
 .link {
@@ -682,11 +673,7 @@ body {
   stroke-linecap: round;
 }
 
-.grab-area {
-  fill: transparent;
-}
-
-/* The VPN: a shield you stand on its spot; without it the server is only a faint shape */
+/* The VPN: a shield in the Setup menu; without it the server is not on the table */
 .shield {
   fill: #2e5e6e;
   stroke: #1d3f4b;
