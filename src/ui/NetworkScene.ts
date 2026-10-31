@@ -1,4 +1,4 @@
-import { el } from './svg';
+import { el, setAttr, setText } from './svg';
 import { box, cylinder, line, rbox, tile } from './prims';
 import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, easeOutBounce, iso, isoV, lerp, U, unproject, v3, type Pt, type Vec3 } from './project';
 import { drawSatellite, drawScissors, drawShield, drawSpyglass } from './icons';
@@ -6,7 +6,7 @@ import { shade } from './shade';
 import type { Details, PartKey, Row, Story, Trip, Wrap } from './story';
 import { bandPoint, pageContent, Paper, PAPER_H, PAPER_W, photoContent, type Parts } from './paper';
 import { drawBook, drawShelf, SERVER } from './stations';
-import { addressBefore, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, LEVEL, lockPose, packetPos, packetPose, segAt, swapLanding, swapMoment, trayOpacity, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
+import { addressBefore, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, LEVEL, lockPose, NO_LOCK, packetPos, packetPose, segAt, swapLanding, swapMoment, trayOpacity, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
 
 export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', vpn: '#2e5e6e', eth: '#e08b33', wifi: '#2a9d8f' } as const;
 const DEVICE = '#d9d0c2';
@@ -46,7 +46,8 @@ function pointAlong(path: Vec3[], t: number): { p: Vec3; ux: number; uy: number 
   }
   return { p: path[0] ?? v3(0, 0, 0), ux: 1, uy: 0 };
 }
-const NO_KEY: LockPose = { show: false, drop: 0, open: 0, op: 1, dark: 0, key: null };
+/** The blade of the session key, with its teeth; the tip at the origin. */
+const KEY_BLADE = 'M0 -2.2 H30 V2.2 H16 V8 H12 V2.2 H8 V6 H4 V2.2 H0 Z';
 
 /** Header bytes → tiles along the packet. The data card is not to scale (it would dwarf the headers). */
 const TILES_PER_BYTE = 0.04;
@@ -173,13 +174,18 @@ export class NetworkScene {
   private cableViews: { g: SVGGElement; a: string; b: string }[] = [];
   /** Devices that take part in this run; the rest are greyed out once it starts. */
   private used = new Set<string>();
+  /** Where the spyglass was last drawn, so it is not drawn again every frame. */
+  private spyDrawn = '';
+  /** Whether any emoji is up, so an empty frame costs nothing. */
+  private moodsUp = false;
 
   constructor(
     host: HTMLElement,
     private story: Story,
     private tl: Timeline,
   ) {
-    this.svg = el('svg', { class: 'net-stage', preserveAspectRatio: 'xMidYMid meet' });
+    // One picture to a screen reader: its words are labels on things, not text to read out.
+    this.svg = el('svg', { class: 'net-stage', preserveAspectRatio: 'xMidYMid meet', role: 'img', 'aria-label': 'A laptop and a phone, a home router, an ISP router, a DNS resolver and a web server, with the packets travelling between them' });
     host.appendChild(this.svg);
     this.photo = el('image', { id: PHOTO_ID, width: PAPER_W, height: PAPER_H, preserveAspectRatio: 'xMidYMid slice' }, el('defs', {}, this.svg));
     const world = el('g', {}, this.svg);
@@ -221,7 +227,7 @@ export class NetworkScene {
     this.tl = tl;
     this.fit();
     this.buildCables();
-    const stops =(t: Trip): string[] => t.steps.flatMap((s) => (s.kind === 'flow' ? s.packets.flatMap(stops) : 'device' in s ? [s.device] : [s.from, s.to]));
+    const stops = (t: Trip): string[] => t.steps.flatMap((s) => (s.kind === 'flow' ? s.packets.flatMap(stops) : 'device' in s ? [s.device] : [s.from, s.to]));
     this.used = new Set(story.trips.flatMap(stops));
     const image = story.image ?? '';
     if ((this.photo.getAttribute('href') ?? '') !== image) this.photo.setAttribute('href', image);
@@ -253,8 +259,8 @@ export class NetworkScene {
     const b = l && this.tl.pos.get(l.b);
     if (!l || !a || !b) return [];
     if (this.tl.air.has(id)) {
-      const za = (DEVICE_TOP[this.tl.kind.get(l.a) ?? ''] ?? 1) + 0.2;
-      const zb = (DEVICE_TOP[this.tl.kind.get(l.b) ?? ''] ?? 1) + 0.9;
+      const za = this.deviceTop(l.a) + 0.2;
+      const zb = this.deviceTop(l.b) + 0.9;
       return Array.from({ length: 21 }, (_, i) => {
         const q = i / 20;
         return v3(lerp(a.x, b.x, q), lerp(a.y, b.y, q), lerp(za, zb, q) + Math.sin(Math.PI * q) * 1.4);
@@ -286,8 +292,16 @@ export class NetworkScene {
     this.spy = line;
   }
 
-  /** The spyglass, with its lens on the middle of its line; what it reads goes in the popup above the bar. */
+  /** The top of a device, in tiles. */
+  private deviceTop(id: string): number {
+    return DEVICE_TOP[this.tl.kind.get(id) ?? ''] ?? 1;
+  }
+
+  /** The spyglass, with its lens on the middle of its line; what it reads goes in the popup above the bar. It is drawn again only when it moves. */
   private renderSpy(): void {
+    const where = this.spy ? `${this.spy}|${this.tl.sky.has(this.spy)}` : '';
+    if (where === this.spyDrawn) return;
+    this.spyDrawn = where;
     this.spyGlass.replaceChildren();
     if (!this.spy) return;
     const glass = this.linkSpot(this.spy, 0.5, 0);
@@ -507,10 +521,10 @@ export class NetworkScene {
     if (mood && (!hit || v < hit.seg.t0)) {
       // Between trips: stay on whoever is reacting.
       const d = this.tl.pos.get(mood.device) ?? { x: 0, y: 0 };
-      p = v3(d.x, d.y, (DEVICE_TOP[this.tl.kind.get(mood.device) ?? ''] ?? 1) + 1.5);
+      p = v3(d.x, d.y, this.deviceTop(mood.device) + 1.5);
     } else if (hit?.seg.step.kind === 'wait' || hit?.seg.step.kind === 'lookup') {
       const d = this.tl.pos.get(hit.seg.step.device) ?? { x: 0, y: 0 };
-      p = v3(d.x, d.y, (DEVICE_TOP[this.tl.kind.get(hit.seg.step.device) ?? ''] ?? 1) + 1.5);
+      p = v3(d.x, d.y, this.deviceTop(hit.seg.step.device) + 1.5);
     } else if (hit?.seg.flow) {
       // One small ACK: follow it like a packet.
       p = this.blockAt(hit.seg.flow[0]!, v) ?? packetPos(this.tl, hit.seg, hit.k);
@@ -547,16 +561,11 @@ export class NetworkScene {
     return { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, scale };
   }
 
-  /** The point `x`, `y` screen pixels from the top left of the view, in SVG units. */
-  viewPoint(c: Camera, x: number, y: number): { sx: number; sy: number } {
-    return { sx: c.cx + (x - (this.svg.clientWidth || 1) / 2) / c.scale, sy: c.cy + (y - (this.svg.clientHeight || 1) / 2) / c.scale };
-  }
-
   /** Sets the viewBox so it matches the element's aspect ratio. */
   applyCamera(c: Camera): void {
     const w = (this.svg.clientWidth || 1) / c.scale;
     const h = (this.svg.clientHeight || 1) / c.scale;
-    this.svg.setAttribute('viewBox', `${(c.cx - w / 2).toFixed(1)} ${(c.cy - h / 2).toFixed(1)} ${w.toFixed(1)} ${h.toFixed(1)}`);
+    setAttr(this.svg, 'viewBox', `${(c.cx - w / 2).toFixed(1)} ${(c.cy - h / 2).toFixed(1)} ${w.toFixed(1)} ${h.toFixed(1)}`);
   }
 
   /**
@@ -675,20 +684,20 @@ export class NetworkScene {
       c.g.classList.toggle('unused', greying && (!this.used.has(c.a) || !this.used.has(c.b)));
     }
     for (const d of this.devices) {
-      d.trays.setAttribute('opacity', trayOpacity(tl, d.id, v).toFixed(3));
-      d.g.setAttribute('transform', `translate(0 ${(-this.hop(d.id, v) * U).toFixed(2)})`);
+      setAttr(d.trays, 'opacity', trayOpacity(tl, d.id, v).toFixed(3));
+      setAttr(d.g, 'transform', `translate(0 ${(-this.hop(d.id, v) * U).toFixed(2)})`);
       if (d.l4Name && hit) {
         const udp = hit.seg.trip.l4 === 'udp';
-        d.l4Name.textContent = udp ? 'UDP' : 'TCP';
-        d.l4Name.setAttribute('fill', shade(udp ? COLOR.udp : COLOR.tcp, 0.75));
+        setText(d.l4Name, udp ? 'UDP' : 'TCP');
+        setAttr(d.l4Name, 'fill', shade(udp ? COLOR.udp : COLOR.tcp, 0.75));
       }
       if (d.l2Tray && d.l2Name && hit) {
         const wifi = frameAt(hit.seg)?.l2 === 'wifi';
         const color = wifi ? COLOR.wifi : COLOR.eth;
-        d.l2Name.textContent = wifi ? 'Wi-Fi' : 'Ethernet';
-        d.l2Name.setAttribute('fill', shade(color, 0.75));
-        d.l2Tray.setAttribute('fill', color);
-        d.l2Tray.setAttribute('stroke', color);
+        setText(d.l2Name, wifi ? 'Wi-Fi' : 'Ethernet');
+        setAttr(d.l2Name, 'fill', shade(color, 0.75));
+        setAttr(d.l2Tray, 'fill', color);
+        setAttr(d.l2Tray, 'stroke', color);
       }
     }
     const parts = this.partArrivals();
@@ -726,13 +735,14 @@ export class NetworkScene {
 
   /** Emoji statuses: each pops up over its device, floats up a little and fades. */
   private renderMoods(v: number): void {
+    const live = this.tl.reactions.filter((r) => v >= r.t && v - r.t <= (r.stamp ? 2.6 : 1.6));
+    if (!live.length && !this.moodsUp) return;
+    this.moodsUp = live.length > 0;
     this.moods.replaceChildren();
-    for (const r of this.tl.reactions) {
+    for (const r of live) {
       const dt = v - r.t;
-      if (dt < 0 || dt > (r.stamp ? 2.6 : 1.6)) continue;
       const d = this.tl.pos.get(r.device) ?? { x: 0, y: 0 };
-      const top = DEVICE_TOP[this.tl.kind.get(r.device) ?? ''] ?? 1;
-      const c = iso(d.x, d.y, top + 2.2 + 0.4 * dt);
+      const c = iso(d.x, d.y, this.deviceTop(r.device) + 2.2 + 0.4 * dt);
       if (r.stamp) this.stamp(c, r.stamp, easeOutBack(clamp01(dt / 0.3)), 1 - clamp01((dt - 2.2) / 0.4));
       else this.emoji(this.moods, c, FACE_EMOJI[r.face], easeOutBack(clamp01(dt / 0.3)), 1 - clamp01((dt - 1.2) / 0.4));
     }
@@ -802,19 +812,19 @@ export class NetworkScene {
     const step = seg.step;
     if (step.kind === 'wait') {
       this.drawWait(step, k, seg.t1 - seg.t0);
-      this.drawKeys(v, seg, NO_KEY);
+      this.drawKeys(v, seg, NO_LOCK);
       return;
     }
     if (seg.flow) {
       this.drawFlow(seg.flow, seg.waits ?? [], v);
-      this.drawKeys(v, seg, NO_KEY);
+      this.drawKeys(v, seg, NO_LOCK);
       return;
     }
     if (step.kind === 'lookup') {
       const d = this.tl.pos.get(step.device) ?? { x: 0, y: 0 };
       const draw = step.what === 'dns' ? drawBook : drawShelf;
-      draw(this.fx, v3(d.x, d.y, DEVICE_TOP[this.tl.kind.get(step.device) ?? ''] ?? 1), seg.p1, step, k);
-      this.drawKeys(v, seg, NO_KEY);
+      draw(this.fx, v3(d.x, d.y, this.deviceTop(step.device)), seg.p1, step, k);
+      this.drawKeys(v, seg, NO_LOCK);
       return;
     }
     const trip = seg.trip;
@@ -845,10 +855,9 @@ export class NetworkScene {
       wiggle = Math.sin(w * Math.PI * 3) * 0.12 * (1 - w);
       const sink = easeIn(clamp01((k - 0.6) / 0.4));
       const d = this.tl.pos.get(step.device) ?? { x: 0, y: 0 };
-      const kind = this.tl.kind.get(step.device) ?? '';
       const part = seg.trip.part;
       // A part of a bigger page goes onto its band of the sheet; anything else into the screen or the device.
-      const target = step.device !== this.tl.client ? v3(d.x, d.y, DEVICE_TOP[kind] ?? 1) : part ? this.paperSlot(part.n, part.of) : this.screenPoint();
+      const target = step.device !== this.tl.client ? v3(d.x, d.y, this.deviceTop(step.device)) : part ? this.paperSlot(part.n, part.of) : this.screenPoint();
       pose.pos = v3(lerp(pose.pos.x, target.x, sink), lerp(pose.pos.y, target.y, sink), lerp(pose.pos.z, target.z, sink));
       for (const p of parts) {
         if (p.key !== 'card') continue;
@@ -961,8 +970,7 @@ export class NetworkScene {
   /** The resender's timer above it: a ring that fills, then a surprised "!" (or a "✗" if it gives up). */
   private drawWait(step: WaitStep, k: number, dur: number): void {
     const d = this.tl.pos.get(step.device) ?? { x: 0, y: 0 };
-    const top = DEVICE_TOP[this.tl.kind.get(step.device) ?? ''] ?? 1;
-    const c = iso(d.x, d.y, top + 2.4);
+    const c = iso(d.x, d.y, this.deviceTop(step.device) + 2.4);
     const fill = clamp01((k * dur) / (dur - 0.5));
     const g = el('g', { class: 'timer', transform: `translate(${c.sx.toFixed(1)} ${c.sy.toFixed(1)})` }, this.fx);
     const pop = easeOutBack(clamp01((k * dur) / 0.3));
@@ -1130,14 +1138,14 @@ export class NetworkScene {
   /** The session key resting beside a device. */
   private keyRest(device: string): { sx: number; sy: number } {
     const d = this.tl.pos.get(device) ?? { x: 0, y: 0 };
-    return iso(d.x + 1.7, d.y - 1.3, (DEVICE_TOP[this.tl.kind.get(device) ?? ''] ?? 1) + 0.5);
+    return iso(d.x + 1.7, d.y - 1.3, this.deviceTop(device) + 0.5);
   }
 
   /** One key: the same shape at both ends, because both ends worked out the same secret. Tip at the origin. */
   private keyShape(c: { sx: number; sy: number }, scale: number, turn: number): SVGGElement {
     const squeeze = Math.max(0.12, Math.cos((turn * Math.PI) / 2));
     const g = el('g', { class: 'key', transform: `translate(${c.sx.toFixed(1)} ${c.sy.toFixed(1)}) scale(${scale.toFixed(3)} ${(scale * squeeze).toFixed(3)})` }, this.keys);
-    el('path', { d: 'M0 -2.2 H30 V2.2 H16 V8 H12 V2.2 H8 V6 H4 V2.2 H0 Z', class: 'key-metal' }, g);
+    el('path', { d: KEY_BLADE, class: 'key-metal' }, g);
     el('circle', { cx: 38, cy: 0, r: 10, class: 'key-metal' }, g);
     el('circle', { cx: 40, cy: 0, r: 3.5, class: 'key-hole' }, g);
     return g;
@@ -1146,7 +1154,7 @@ export class NetworkScene {
   /** A piece of the key: the bow an end keeps to itself, or the blade it sends. They are the key's own shapes. */
   private keyPiece(c: { sx: number; sy: number }, piece: 'bow' | 'blade', cls: string): void {
     const g = el('g', { class: `key ${cls}`, transform: `translate(${c.sx.toFixed(1)} ${c.sy.toFixed(1)})` }, this.keys);
-    if (piece === 'blade') el('path', { d: 'M0 -2.2 H30 V2.2 H16 V8 H12 V2.2 H8 V6 H4 V2.2 H0 Z', class: 'key-metal' }, g);
+    if (piece === 'blade') el('path', { d: KEY_BLADE, class: 'key-metal' }, g);
     else {
       el('circle', { cx: 38, cy: 0, r: 10, class: 'key-metal' }, g);
       el('circle', { cx: 40, cy: 0, r: 3.5, class: 'key-hole' }, g);

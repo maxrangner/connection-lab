@@ -5,7 +5,9 @@ import { bitField, FieldList, type Field, type LayerPdu } from './types';
 export const DNS_TYPE_A = 1;
 export const DNS_CLASS_IN = 1;
 export const DNS_FLAGS_QUERY = 0x0100; // standard query, recursion desired
-export const DNS_FLAGS_RESPONSE = 0x8180; // response, recursion desired + available, no error
+export const DNS_FLAGS_RESPONSE = 0x8180; // response, recursion desired + available; the low 4 bits carry the rcode
+export const DNS_RCODE_OK = 0;
+export const DNS_RCODE_NXDOMAIN = 3; // no such name
 
 export interface DnsAnswerA {
   ttl: number;
@@ -26,9 +28,12 @@ export function buildDnsQuery(id: number, name: string): Uint8Array {
   return w.u16(DNS_TYPE_A).u16(DNS_CLASS_IN).toBytes();
 }
 
-/** Response repeating the question, with answers that point back at the question name (0xc00c). */
-export function buildDnsResponse(id: number, name: string, answers: DnsAnswerA[]): Uint8Array {
-  const w = new ByteWriter().u16(id).u16(DNS_FLAGS_RESPONSE).u16(1).u16(answers.length).u16(0).u16(0);
+/**
+ * Response repeating the question, with answers that point back at the question name (0xc00c).
+ * A name the server does not know gets no answers and rcode 3 (NXDOMAIN).
+ */
+export function buildDnsResponse(id: number, name: string, answers: DnsAnswerA[], rcode = DNS_RCODE_OK): Uint8Array {
+  const w = new ByteWriter().u16(id).u16(DNS_FLAGS_RESPONSE | (rcode & 0xf)).u16(1).u16(answers.length).u16(0).u16(0);
   encodeName(w, name);
   w.u16(DNS_TYPE_A).u16(DNS_CLASS_IN);
   for (const a of answers) {
@@ -76,6 +81,7 @@ export interface ParsedDns {
   id: number;
   flags: number;
   isResponse: boolean;
+  rcode: number;
   questions: { name: string; type: number; cls: number }[];
   answers: { name: string; type: number; cls: number; ttl: number; ip?: Ip4 }[];
 }
@@ -107,11 +113,20 @@ export function parseDns(b: Uint8Array, o: number): ParsedDns {
     i += 10 + rdlen;
   }
   const flags = u16(b, o + 2);
-  return { id: u16(b, o), flags, isResponse: (flags & 0x8000) !== 0, questions, answers };
+  return { id: u16(b, o), flags, isResponse: (flags & 0x8000) !== 0, rcode: flags & 0xf, questions, answers };
 }
 
 function typeName(t: number): string {
   return t === DNS_TYPE_A ? 'A' : t === 28 ? 'AAAA' : String(t);
+}
+
+function rcodeName(c: number): string {
+  return c === 0 ? 'no error' : c === 3 ? 'no such name (NXDOMAIN)' : c === 2 ? 'server failure' : `error ${c}`;
+}
+
+/** The name as it sits in the bytes: each label behind its length, then a zero: 7 "example" 3 "com" 0. */
+function labelsOf(name: string): string {
+  return name.split('.').filter(Boolean).map((l) => `${l.length} "${l}"`).join(' ') + ' 0';
 }
 
 export function describeDns(b: Uint8Array, o: number, end: number): LayerPdu {
@@ -119,9 +134,11 @@ export function describeDns(b: Uint8Array, o: number, end: number): LayerPdu {
   const f = new FieldList();
   f.add('dns.id', 'Transaction ID', o, 2, hex(p.id, 4), 'key', 'Random number picked by the client. The reply must carry the same value, which is how the client matches answers to questions and rejects spoofed ones.');
   const fl = p.flags;
-  f.add('dns.flags', 'Flags', o + 2, 2, `${hex(fl, 4)} (${p.isResponse ? 'standard response, no error' : 'standard query'})`, 'key', p.isResponse
-    ? '0x8180: this is a response (QR=1), recursion was desired and is available, and the result code is 0 (no error).'
-    : '0x0100: a standard query (QR=0) with Recursion Desired, asking the resolver to do the full lookup on our behalf.', {
+  const rd = (fl >>> 8) & 1;
+  const ra = (fl >>> 7) & 1;
+  f.add('dns.flags', 'Flags', o + 2, 2, `${hex(fl, 4)} (${p.isResponse ? `standard response, ${rcodeName(p.rcode)}` : 'standard query'})`, 'key', p.isResponse
+    ? `${hex(fl, 4)}: this is a response (QR=1), recursion was ${rd ? '' : 'not '}desired and is ${ra ? '' : 'not '}available, and the result code is ${p.rcode} (${rcodeName(p.rcode)}).`
+    : `${hex(fl, 4)}: a standard query (QR=0) ${rd ? 'with' : 'without'} Recursion Desired${rd ? ', asking the resolver to do the full lookup on our behalf' : ''}.`, {
     children: [
       bitField('dns.flags.qr', 'QR', o + 2, 2, 0, 1, (fl >>> 15) & 1, 'detail', '0 = query, 1 = response.'),
       bitField('dns.flags.opcode', 'Opcode', o + 2, 2, 1, 4, (fl >>> 11) & 0xf, 'detail', '0 = standard query.'),
@@ -144,7 +161,7 @@ export function describeDns(b: Uint8Array, o: number, end: number): LayerPdu {
     i += n.length;
     f.add('dns.question', 'Question', start, n.length + 4, `${q.name} ${typeName(q.type)} IN`, 'key', 'The name being looked up and the record type wanted. "A" asks for IPv4 addresses.', {
       children: [
-        { key: 'dns.qname', name: 'Name', offset: start, length: n.length, display: `${q.name} (length-prefixed labels)`, importance: 'detail', explain: 'Each label is preceded by its length and the name ends with a zero byte: 7 "example" 3 "com" 0.' },
+        { key: 'dns.qname', name: 'Name', offset: start, length: n.length, display: `${q.name} (length-prefixed labels)`, importance: 'detail', explain: `Each label is preceded by its length and the name ends with a zero byte: ${labelsOf(q.name)}.` },
         { key: 'dns.qtype', name: 'Type', offset: i, length: 2, display: `${q.type} (${typeName(q.type)})`, importance: 'detail', explain: 'Record type requested. 1 = A (IPv4 address).' },
         { key: 'dns.qclass', name: 'Class', offset: i + 2, length: 2, display: `${q.cls} (IN)`, importance: 'detail', explain: 'Class 1 = Internet.' },
       ],
@@ -162,7 +179,7 @@ export function describeDns(b: Uint8Array, o: number, end: number): LayerPdu {
       { key: 'dns.rr.class', name: 'Class', offset: i + 2, length: 2, display: `${a.cls} (IN)`, importance: 'detail', explain: 'Internet class.' },
       { key: 'dns.rr.ttl', name: 'TTL', offset: i + 4, length: 4, display: `${a.ttl} s`, importance: 'detail', explain: 'How long this answer may be cached. A resolver answering from its cache sends the remaining time.' },
       { key: 'dns.rr.rdlength', name: 'Data length', offset: i + 8, length: 2, display: String(rdlen), importance: 'detail', explain: 'Length of the record data: 4 bytes for an IPv4 address.' },
-      { key: 'dns.rr.addr', name: 'Address', offset: i + 10, length: rdlen, display: a.ip ?? '?', importance: 'key', explain: 'The answer: an IPv4 address where example.com can be reached.' },
+      { key: 'dns.rr.addr', name: 'Address', offset: i + 10, length: rdlen, display: a.ip ?? '?', importance: 'key', explain: `The answer: an IPv4 address where ${a.name} can be reached.` },
     ];
     f.add('dns.answer', 'Answer', start, n.length + 10 + rdlen, `${a.name} ${typeName(a.type)} ${a.ip ?? ''} (TTL ${a.ttl} s)`, 'key', 'One resource record. Large sites often return several addresses; clients usually try the first.', { children });
     i += 10 + rdlen;
@@ -176,7 +193,7 @@ export function describeDns(b: Uint8Array, o: number, end: number): LayerPdu {
     payloadEnd: end,
     end,
     summary: p.isResponse
-      ? `DNS response ${hex(p.id, 4)}: ${q?.name ?? ''} A ${p.answers.map((a) => a.ip).join(', ')}`
+      ? `DNS response ${hex(p.id, 4)}: ${q?.name ?? ''} A ${p.rcode ? rcodeName(p.rcode) : p.answers.map((a) => a.ip).join(', ')}`
       : `DNS query ${hex(p.id, 4)}: ${q?.name ?? ''} A?`,
     fields: f.list,
   };

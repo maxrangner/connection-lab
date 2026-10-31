@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { ascii, hexBytes } from '../bytes/bytes';
+import { ascii, hexBytes, setU16 } from '../bytes/bytes';
+import { transportChecksum } from '../bytes/checksum';
+import { natRewrite } from '../stack/Router';
 import { buildArp, parseArp } from './arp';
 import { decodePdu } from './decode';
 import { buildDnsQuery, buildDnsResponse, parseDns } from './dns';
@@ -68,6 +70,24 @@ describe('IPv4 + UDP + DNS', () => {
     const csums = allFields(layers).filter((f) => f.key.endsWith('checksum'));
     expect(csums).toHaveLength(2);
     for (const c of csums) expect(c.display).toContain('✓');
+  });
+
+  it('NAT keeps a UDP checksum that works out to 0 as 0xffff, so it still verifies', () => {
+    // Pick the two payload bytes so that the checksum after the rewrite sums to zero.
+    const src = { ip: '203.0.113.7', port: 40000 };
+    let udp: Uint8Array = new Uint8Array(0);
+    for (let word = 0; word < 0x10000; word++) {
+      udp = buildUdp(src.port, 53, Uint8Array.from([word >>> 8, word & 0xff]), src.ip, '1.1.1.1');
+      setU16(udp, 6, 0);
+      if (transportChecksum(src.ip, '1.1.1.1', IPPROTO_UDP, udp) === 0) break;
+    }
+    expect(transportChecksum(src.ip, '1.1.1.1', IPPROTO_UDP, udp)).toBe(0);
+    const inside = buildUdp(55391, 53, udp.subarray(8), '192.168.1.23', '1.1.1.1');
+    const packet = buildIpv4({ id: 7, df: true, ttl: 64, protocol: IPPROTO_UDP, src: '192.168.1.23', dst: '1.1.1.1' }, inside);
+    const out = natRewrite(packet, { src });
+    expect(parseUdp(out, 20).checksum).toBe(0xffff);
+    expect(transportChecksum(src.ip, '1.1.1.1', IPPROTO_UDP, out.subarray(20))).toBe(0);
+    expect(parseIpv4(out, 0).checksumValid).toBe(true);
   });
 
   it('round-trips a response with name compression and two A records', () => {

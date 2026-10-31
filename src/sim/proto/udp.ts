@@ -45,7 +45,6 @@ export function portName(p: number): string {
   if (p === 53) return ' (DNS)';
   if (p === 80) return ' (HTTP)';
   if (p === 443) return ' (HTTPS)';
-  if (p >= 49152) return ' (ephemeral)';
   if (p >= 32768) return ' (ephemeral)';
   return '';
 }

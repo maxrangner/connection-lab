@@ -168,17 +168,8 @@ export class Host extends Device {
         protocol: 'ipv4',
         pduId: sim.pdu(packetId, l4, 'tcp', { ...ctx, appHint: app }),
       });
+      // The connection unwraps the payload for the application only when it really hands the bytes over.
       const payload = l4.slice(t.payloadStart);
-      if (payload.length && app) {
-        sim.emit({
-          type: 'decapsulate',
-          deviceId: this.id,
-          packetId,
-          layer: 4,
-          protocol: 'tcp',
-          pduId: sim.pdu(packetId, payload, app),
-        });
-      }
       if (!conn) {
         const listener = this.tcpListeners.get(t.dstPort);
         if (listener && t.flags & TCP_SYN && !(t.flags & TCP_ACK)) {

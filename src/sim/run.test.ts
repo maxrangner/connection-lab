@@ -210,6 +210,42 @@ describe('packet loss', () => {
     expect(appActions(r)).toContain('laptop:done');
   });
 
+  it("a lost FIN is resent after the RTO, and the page still counts as done", () => {
+    const r = run(536, [{ packetId: pkt(/^FIN$/, 'bb2'), linkId: 'bb2' }]);
+    const rt = of(r, 'tcp:retransmit');
+    expect(rt.map((e) => `${e.deviceId}:${e.cause}`)).toEqual(['server:rto']);
+    expect(r.packets.get(rt[0]!.packetId)!.label).toBe('FIN (retransmission)');
+    expect(appActions(r)).toContain('laptop:done');
+    expect(of(r, 'tcp:state').filter((e) => e.to === 'CLOSED')).toHaveLength(2);
+  });
+
+  it('a lost ACK of the last FIN: the laptop resends its FIN and the server answers again from TIME_WAIT', () => {
+    const acks = of(base, 'tx').filter((e) => e.linkId === 'bb2' && e.fromDevice === 'server' && base.packets.get(e.packetId)!.label === 'ACK');
+    const r = run(536, [{ packetId: acks[acks.length - 1]!.packetId, linkId: 'bb2' }]);
+    const rt = of(r, 'tcp:retransmit');
+    expect(rt.map((e) => `${e.deviceId}:${e.cause}`)).toEqual(['laptop:rto']);
+    expect(r.packets.get(rt[0]!.packetId)!.label).toBe('FIN (retransmission)');
+    const timeWait = of(r, 'tcp:state').find((e) => e.deviceId === 'server' && e.to === 'TIME_WAIT')!;
+    expect(timeWait.seq).toBeLessThan(rt[0]!.seq);
+    const again = of(r, 'tx').filter((e) => e.seq > rt[0]!.seq && e.fromDevice === 'server' && r.packets.get(e.packetId)!.label === 'ACK');
+    expect(again).toHaveLength(1);
+    expect(of(r, 'tcp:state').filter((e) => e.to === 'CLOSED')).toHaveLength(2);
+    expect(appActions(r)).toContain('laptop:done');
+  });
+
+  it('the DNS lookup gives up after its second question is lost too: two questions 5 s apart, then an error', () => {
+    const first = pkt(/^DNS query/, 'wan');
+    const once = run(1460, [{ packetId: first, linkId: 'wan' }]);
+    const retry = of(once, 'tx').find((e) => e.linkId === 'wan' && /retry/.test(once.packets.get(e.packetId)!.label))!.packetId;
+    const r = run(1460, [{ packetId: first, linkId: 'wan' }, { packetId: retry, linkId: 'wan' }]);
+    const lookups = of(r, 'app').filter((e) => e.action === 'dns-lookup');
+    expect(lookups).toHaveLength(2);
+    const err = of(r, 'app').find((e) => e.action === 'error')!;
+    expect(err.info?.reason).toBe('DNS lookup timed out');
+    expect(err.t - lookups[0]!.t).toBeCloseTo(10, 3);
+    expect([...r.packets.values()].some((p) => p.kind === 'tcp')).toBe(false);
+  });
+
   it('survives 20% random loss on every link', () => {
     for (let seed = 1; seed <= 20; seed++) {
       const r = runScenario(fetchWebPage(), { seed, faults: { randomLoss: 0.2, manual: [] } });

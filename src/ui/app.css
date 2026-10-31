@@ -2,7 +2,7 @@
   --paper: #f4eee4;
   --paper-2: #ebe3d6;
   --ink: #3d352c;
-  --ink-soft: #8a7f71;
+  --ink-soft: #6f655a;
   --app: #4f9d69;
   --out: #2f8f5b;
   --back: #c2562f;
@@ -216,7 +216,16 @@ body {
   bottom: calc(18px + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%);
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 8px;
+  width: max-content;
+  max-width: calc(100vw - 32px);
+}
+
+/* Where the bar breaks into two rows on a narrow screen */
+.bar-break {
+  display: none;
 }
 
 .net-controls button,
@@ -251,20 +260,6 @@ body {
   cursor: default;
 }
 
-.net-controls button.big {
-  background: var(--app);
-  border-color: #3b7a50;
-  color: #fff;
-  transform: scale(1.1);
-}
-
-.net-controls {
-  flex-wrap: wrap;
-  justify-content: center;
-  width: max-content;
-  max-width: calc(100vw - 32px);
-}
-
 .net-controls button.off {
   text-decoration: line-through;
   opacity: 0.55;
@@ -286,6 +281,8 @@ body {
   font-size: 14px;
   font-weight: 650;
   color: var(--ink);
+  font-family: inherit;
+  cursor: pointer;
 }
 
 .chapter[hidden] {
@@ -383,7 +380,9 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .chapter.enter {
+  .chapter.enter,
+  .tunnel-flow,
+  .menu-panel {
     animation: none;
   }
 }
@@ -410,7 +409,7 @@ body {
 .paper-num {
   font-size: 16px;
   font-weight: 800;
-  fill: #b8ad9d;
+  fill: #9a8f7f;
 }
 
 .paper-title {
@@ -468,11 +467,6 @@ body {
 }
 
 /* The chapter label is a button that opens the chapter list */
-.chapter {
-  font-family: inherit;
-  cursor: pointer;
-}
-
 .chapter::after {
   content: '▾';
   font-size: 18px;
@@ -639,8 +633,8 @@ body {
 }
 
 .spy-top button {
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   padding: 0;
   font: inherit;
   font-size: 20px;
@@ -692,7 +686,7 @@ body {
 .spy-scrambled .spy-text,
 .spy-name .spy-more {
   font-weight: 400;
-  color: #9a9288;
+  color: #7d7468;
 }
 
 .spy-name .spy-text:not(.spy-more) {
@@ -869,12 +863,6 @@ body {
   fill: #8b6fd0;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .tunnel-flow {
-    animation: none;
-  }
-}
-
 /* The bar and its popups */
 .menu-button {
   min-width: 92px;
@@ -955,23 +943,33 @@ body {
   stroke-width: 1.5;
 }
 
+/* A narrow screen gets two rows, each the same every time: the playback buttons, then the popups. Buttons stay big enough for a thumb. */
 @media (max-width: 520px) {
   .net-controls {
-    gap: 5px;
+    gap: 6px;
   }
 
   .net-controls button {
-    height: 38px;
-    padding: 0 8px;
+    height: 44px;
+    padding: 0 12px;
     font-size: 13px;
   }
 
   .net-controls button:not(.menu-button) {
-    width: 38px;
+    width: 44px;
+    order: 0;
+  }
+
+  .bar-break {
+    display: block;
+    order: 1;
+    flex-basis: 100%;
+    height: 0;
   }
 
   .menu-button {
-    min-width: 72px;
+    order: 2;
+    min-width: 88px;
   }
 }
 
