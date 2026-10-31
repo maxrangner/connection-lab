@@ -7,6 +7,7 @@
   --out: #2f8f5b;
   --back: #c2562f;
   --swap: #1f9a8c;
+  --burst: #ffd84a;
 }
 
 * {
@@ -247,6 +248,8 @@ body {
 .net-controls button:not(.menu-button) {
   width: 46px;
   padding: 0;
+  font-size: 20px;
+  line-height: 1;
 }
 
 .follow {
@@ -260,16 +263,24 @@ body {
   cursor: default;
 }
 
-/* These two are thin marks: at text size they read smaller than the rest of the bar */
-.net-controls button.glyph {
-  font-size: 22px;
-  line-height: 1;
+.net-controls button.off {
+  position: relative;
+  color: #fffaf2;
+  background: var(--ink);
+  border-color: var(--ink);
 }
 
-.net-controls button.off {
-  color: #fffaf2;
-  background: var(--back);
-  border-color: var(--back);
+/* The slash says "no sound", which a filled button alone does not. A border, as High Contrast keeps those and drops fills. */
+.net-controls button.off::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 30px;
+  margin-left: -15px;
+  border-top: 2px solid currentColor;
+  box-shadow: 0 0 0 1px var(--ink);
+  transform: translateY(-50%) rotate(45deg);
 }
 
 /* Chapter name, top left */
@@ -340,6 +351,7 @@ body {
 
 /* Knocked off: anime impact */
 .burst-star {
+  fill: var(--burst);
   stroke: var(--ink);
   stroke-width: 2.5;
   stroke-linejoin: round;
@@ -443,7 +455,7 @@ body {
 
 /* What the devices say */
 .speech-bg {
-  fill: #ffd84a; /* The same yellow as an impact: a voice has to stand out from the labels around it */
+  fill: var(--burst); /* A voice has to stand out from the labels around it */
   stroke: #3d352c;
   stroke-width: 2;
   stroke-linejoin: round;
@@ -1163,7 +1175,7 @@ body {
 }
 
 .swap-spark {
-  fill: #ffd84a;
+  fill: var(--burst);
   stroke: var(--swap);
   stroke-width: 0.8;
 }

@@ -441,8 +441,7 @@ const soundBtn = button('♪', 'Mute', () => {
     // Not remembered; fine.
   }
 });
-const resetBtn = button('↺', 'Reset', reset);
-for (const b of [soundBtn, resetBtn]) b.classList.add('glyph');
+button('↺', 'Reset', reset);
 // On a narrow screen the bar breaks into two rows here (see app.css).
 controls.appendChild(Object.assign(document.createElement('span'), { className: 'bar-break' }));
 root.appendChild(controls);
