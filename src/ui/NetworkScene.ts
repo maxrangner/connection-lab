@@ -7,7 +7,7 @@ import type { Details, PartKey, Row, Story, Trip, Wrap } from './story';
 import { bandPoint, pageContent, Paper, PAPER_H, PAPER_W, photoContent } from './paper';
 import { screenAt } from './readout';
 import { drawBook, drawShelf, SERVER } from './stations';
-import { addressBefore, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, LEVEL, lockPose, NO_LOCK, NOTE_LIFE, packetPos, packetPose, pageParts, segAt, swapLanding, swapMoment, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
+import { addressBefore, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, LEVEL, lockPose, NO_LOCK, NOTE_LIFE, packetPos, packetPose, pageParts, segAt, swapLanding, swapMoment, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowHop, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
 
 export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', vpn: '#2e5e6e', eth: '#e08b33', wifi: '#2a9d8f' } as const;
 const DEVICE = '#d9d0c2';
@@ -52,6 +52,9 @@ const NOTE_HEAD_RIGHT = 'M0 3 L0 12 C3 11 7 8 7 5 C7 3 3 3 0 3 Z';
 const NOTE_STEM = 'M7 5 V-16 C8 -10 14 -9 14 -3';
 /** How far to the side of its phone a note drifts, in SVG units. */
 const NOTE_SIDE = 70;
+/** How far to the side of its cable a small block rides, in tiles, so blocks going opposite ways pass each other; and how soon it gets there. */
+const LANE = 0.55;
+const LANE_IN = 0.14;
 /** The terminal ping and traceroute print to: the width of a character and the height of a line at its font size, and its margin. */
 const TERM_CHAR = 7.3;
 const TERM_LINE = 17;
@@ -1157,7 +1160,18 @@ export class NetworkScene {
   private blockAt(p: FlowPacket, v: number): Vec3 | null {
     const hop = p.hops.find((h) => v < h.t1);
     if (!hop || v < p.t0) return null;
-    return travelPose(this.tl.pos, this.tl.trayZ, hop.from, hop.to, ((v - hop.t0) / (hop.t1 - hop.t0)) * hop.fall, 0, this.tl.sky.get(hop.link) ?? 0, this.tl.air.has(hop.link)).pos;
+    // Waiting its turn for this cable: still at the device before it.
+    return this.onLane(hop, clamp01((v - hop.t0) / (hop.t1 - hop.t0)) * hop.fall);
+  }
+
+  /** A block a share k along a hop, on its own side of the cable: each way keeps right, like traffic on a road. */
+  private onLane(hop: FlowHop, k: number): Vec3 {
+    const at = travelPose(this.tl.pos, this.tl.trayZ, hop.from, hop.to, k, 0, this.tl.sky.get(hop.link) ?? 0, this.tl.air.has(hop.link)).pos;
+    const a = this.tl.pos.get(hop.from) ?? { x: 0, y: 0 };
+    const b = this.tl.pos.get(hop.to) ?? { x: 0, y: 0 };
+    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    const side = LANE * easeInOut(clamp01(Math.min(k, 1 - k) / LANE_IN));
+    return v3(at.x + (-(b.y - a.y) / len) * side, at.y + ((b.x - a.x) / len) * side, at.z);
   }
 
   /** A stream: its packets as small blocks on the cables, far ones first. A part flies onto the sheet, a lost one falls. */
@@ -1177,7 +1191,7 @@ export class NetworkScene {
         blocks.push({ at, size, color, op: 1, named: named.includes(p) });
       } else if (end.lost) {
         const tau = v - end.t1;
-        const at = travelPose(this.tl.pos, this.tl.trayZ, end.from, end.to, end.fall, 0, this.tl.sky.get(end.link) ?? 0, this.tl.air.has(end.link)).pos;
+        const at = this.onLane(end, end.fall);
         blocks.push({ at: v3(at.x, at.y, at.z - 5 * tau * tau), size, color, op: 1 - clamp01(tau / FLOW_FALL) });
       } else if (p.landed !== null && p.trip.part) {
         const q = easeInOut(clamp01((v - end.t1) / FLOW_FLY));

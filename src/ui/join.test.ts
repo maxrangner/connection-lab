@@ -62,6 +62,35 @@ describe('a card dropped in during a run', () => {
     }
   }, 120_000);
 
+  it('blocks take turns on a cable, each way on its own, and each still crosses the cables in order', () => {
+    for (const a of JOBS) {
+      for (const b of JOBS) {
+        const { after } = dropped(a, b, 0.1);
+        const blocks = after.segs.find((x) => x.trip.chapter === 'traffic')?.flow ?? [];
+        const ways = new Map<string, number[]>();
+        for (const p of blocks) {
+          for (const [i, h] of p.hops.entries()) {
+            ways.set(`${h.link}|${h.from}`, [...(ways.get(`${h.link}|${h.from}`) ?? []), h.t0]);
+            if (i) expect(h.t0).toBeGreaterThanOrEqual(p.hops[i - 1]!.t1);
+          }
+        }
+        for (const [way, times] of ways) {
+          const sorted = [...times].sort((x, y) => x - y);
+          sorted.slice(1).forEach((t, i) => expect(t - sorted[i]!, `${b} into ${a} on ${way}`).toBeGreaterThan(0.25));
+        }
+      }
+    }
+  });
+
+  it('a block that waits its turn is never overtaken by the same sender', () => {
+    const { after } = dropped('photo', 'photo', 0.1);
+    const blocks = after.segs.find((x) => x.trip.chapter === 'traffic')!.flow!;
+    for (const client of ['laptop', 'phone']) {
+      const server = blocks.filter((p) => p.trip.client === client && p.trip.origin === 'server').map((p) => p.t0);
+      expect(server).toEqual([...server].sort((x, y) => x - y));
+    }
+  });
+
   it('a question never comes back answered before it set off', () => {
     const { after, s } = dropped('page', 'trace', 0.2);
     const blocks = after.segs.find((x) => x.trip.chapter === 'traffic')!.flow!.filter((p) => p.trip.client === 'phone');
