@@ -154,10 +154,10 @@ export interface Probe {
   kind: 'ping' | 'traceroute';
   /** What was asked for ("example.com"). */
   to: string;
-  /** Ping: each echo reply as it came in. */
-  replies: { seq: number; from: string; ttl: number; rttMs: number }[];
-  /** Traceroute: each answered probe; `reached` when the answer came from the destination itself. */
-  hops: { ttl: number; probe: number; from: string; rttMs: number; reached: boolean }[];
+  /** Ping: each echo reply as it came in, and the packet that brought it. */
+  replies: { seq: number; from: string; ttl: number; rttMs: number; packetId: string }[];
+  /** Traceroute: each answered probe and the packet that answered it; `reached` when that came from the destination itself. */
+  hops: { ttl: number; probe: number; from: string; rttMs: number; reached: boolean; packetId: string }[];
   /** The closing line (ping: sent, received, lossPct, minMs, avgMs, maxMs; traceroute: hops, reached, path), once it is there. */
   done: Record<string, string | number | string[]> | null;
 }
@@ -666,13 +666,16 @@ function probeOf(r: SimResult, client: string): Probe | undefined {
   if (start?.type !== 'app') return undefined;
   const infos = (action: AppAction): Record<string, string | number | string[]>[] =>
     r.events.flatMap((e) => (e.type === 'app' && e.deviceId === client && e.action === action ? [e.info ?? {}] : []));
+  /** The packet each of these events was about, in the same order as `infos`. */
+  const packets = (action: AppAction): string[] =>
+    r.events.flatMap((e) => (e.type === 'app' && e.deviceId === client && e.action === action ? [r.pdus.get(e.pduId ?? '')?.packetId ?? ''] : []));
   const num = (v: unknown): number => Number(v ?? 0);
   const str = (v: unknown): string => String(v ?? '');
   return {
     kind: start.app === 'ping' ? 'ping' : 'traceroute',
     to: str(start.info?.to),
-    replies: infos('ping-reply').map((i) => ({ seq: num(i.seq), from: str(i.from), ttl: num(i.ttl), rttMs: num(i.rttMs) })),
-    hops: infos('trace-hop').map((i) => ({ ttl: num(i.ttl), probe: num(i.probe), from: str(i.from), rttMs: num(i.rttMs), reached: i.reached === 1 })),
+    replies: infos('ping-reply').map((i, n) => ({ seq: num(i.seq), from: str(i.from), ttl: num(i.ttl), rttMs: num(i.rttMs), packetId: packets('ping-reply')[n]! })),
+    hops: infos('trace-hop').map((i, n) => ({ ttl: num(i.ttl), probe: num(i.probe), from: str(i.from), rttMs: num(i.rttMs), reached: i.reached === 1, packetId: packets('trace-hop')[n]! })),
     done: infos('ping-done')[0] ?? infos('trace-done')[0] ?? null,
   };
 }
@@ -726,7 +729,8 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
   const title = pageTitle(r, client);
   addLookups(trips, title);
   const voice = voiceOf(r, client);
-  const shown = voice ? gatherCall(trips) : streams(r) ? gatherStream(trips, client) : smallAcks(trips);
+  const gathered = gatherProbes(trips);
+  const shown = voice ? gatherCall(gathered) : streams(r) ? gatherStream(gathered, client) : smallAcks(gathered);
   const url = start?.type === 'app' ? String(start.info?.url ?? '') : '';
   const wifiIfaces = new Set(r.scenario.devices.flatMap((d) => d.ifaces.filter((i) => i.wifi).map((i) => i.id)));
   const ifaceDevice = new Map(r.scenario.devices.flatMap((d) => d.ifaces.map((i) => [i.id, d.id] as const)));
@@ -810,6 +814,31 @@ function gatherCall(trips: Trip[]): Trip[] {
   const packets = trips.slice(first).filter((t) => t.chapter === 'call');
   const call: Trip = { ...trips[first]!, part: undefined, retry: false, timedOut: false, lost: false, kind: 'call', steps: [{ kind: 'flow', packets }] };
   return [...smallAcks(trips.slice(0, first)), call, ...smallAcks(trips.slice(first).filter((t) => t.chapter !== 'call'), 'call')];
+}
+
+/**
+ * Traceroute's three probes of a TTL differ only in their port and their timing. The first and its answer go in full; the
+ * others and their answers run as small blocks, so all of them are there but each hop is only watched once.
+ */
+function gatherProbes(trips: Trip[]): Trip[] {
+  const shown: Trip[] = [];
+  const seen = new Set<number>();
+  let quick: Trip[] = [];
+  const flush = (): void => {
+    if (quick.length) shown.push({ ...quick[0]!, retry: false, timedOut: false, lost: false, steps: [{ kind: 'flow', packets: quick }] });
+    quick = [];
+  };
+  for (const t of trips) {
+    const again = t.probeTtl !== undefined && seen.has(t.probeTtl);
+    if (t.probeTtl !== undefined) seen.add(t.probeTtl);
+    if (again || (quick.length && t.chapter === 'trace' && t.probeTtl === undefined)) quick.push(t);
+    else {
+      flush();
+      shown.push(t);
+    }
+  }
+  flush();
+  return shown;
 }
 
 /**

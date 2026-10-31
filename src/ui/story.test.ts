@@ -1006,7 +1006,9 @@ describe('ping and traceroute stories', () => {
 
   it('traceroute: probes say their TTL, routers answer "TTL ran out", the server "no such port", and the story knows the hops', () => {
     const s = probe('traceroute');
-    const trace = s.trips.filter((t) => t.chapter === 'trace');
+    // The first probe of each TTL and its answer go in full; the others run as small blocks.
+    expect(s.trips.filter((t) => t.chapter === 'trace').map((t) => (t.steps[0]!.kind === 'flow' ? t.steps[0]!.packets.length : t.card))).toEqual(['TTL 1', 'TTL ran out', 4, 'TTL 2', 'TTL ran out', 4, 'TTL 3', 'no such port', 4]);
+    const trace = s.trips.filter((t) => t.chapter === 'trace').flatMap((t) => (t.steps[0]!.kind === 'flow' ? t.steps[0]!.packets : [t]));
     expect(trace.map((t) => t.card)).toEqual([
       'TTL 1', 'TTL ran out', 'TTL 1', 'TTL ran out', 'TTL 1', 'TTL ran out',
       'TTL 2', 'TTL ran out', 'TTL 2', 'TTL ran out', 'TTL 2', 'TTL ran out',

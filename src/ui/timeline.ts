@@ -1,6 +1,7 @@
 import type { PduSnapshot } from '../sim';
 import { toneOf } from './notes';
 import { clamp01, easeIn, easeInOut, easeOutBack, easeOutBounce, lerpV, v3, type Vec3 } from './project';
+import { buildReadout, type Readout } from './readout';
 import type { Details, Frame, Seen, Step, Story, Trip, Wrap } from './story';
 
 /**
@@ -114,6 +115,8 @@ export interface Timeline {
   reactions: Reaction[];
   /** A call's notes, in order. */
   notes: Note[];
+  /** What ping or traceroute has printed, and the hops it has found. */
+  readout: Readout;
   /** HTTPS: when each end has worked out the session key (it can lock and open cards from then on). */
   keys: Map<string, number>;
   /** HTTPS: when each end has made the half of its key that it keeps to itself. */
@@ -186,6 +189,8 @@ export const FLOW_FALL = 0.9;
 const FLOW_TIMER = 1.6;
 /** Seconds per cable of an ACK on its own: small, and not what you came to watch. */
 const ACK_HOP = 0.7;
+/** How much quicker the steps of a trace go once its first probe has been answered. */
+const PROBE_PACE = 0.55;
 
 /** Tiles between the home router and the ISP router as drawn, and the real fibre each tile stands for. */
 export const WAN_TILES = 8;
@@ -228,8 +233,10 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   const seen = new Map<string, number>();
   // Resend after resend goes by faster and faster, so a long outage stays watchable; only the waits keep growing.
   let streak = 0;
+  // A trace is one idea, shown on the first probe and its answer; after that only the hop is new.
+  const shownOnce = story.trips.filter((x) => x.chapter === 'trace').slice(0, 2);
   const pace = (s: TStep, trip: Trip): number => {
-    const tired = Math.max(0.35, 0.8 ** streak);
+    const tired = Math.max(0.35, 0.8 ** streak) * (trip.chapter === 'trace' && !shownOnce.includes(trip) ? PROBE_PACE : 1);
     // An address changing is a moment to watch, the first few times.
     if (s.kind === 'nat') {
       const m = seen.get('nat') ?? 0;
@@ -286,7 +293,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
           d *= linkPace(step.link);
           break;
         case 'flow':
-          ({ packets: seg.flow, waits: seg.waits } = planFlow(step.packets, t, story, knocks, linkPace, cues, reactions, step.packets.length > 1 ? FLOW_HOP : ACK_HOP, trip.kind === 'call' ? notes : null));
+          ({ packets: seg.flow, waits: seg.waits } = planFlow(step.packets, t, story, knocks, linkPace, cues, reactions, step.packets.length > 1 && !story.probe ? FLOW_HOP : ACK_HOP, trip.kind === 'call' ? notes : null));
           // A call stays until its last notes have gone.
           d = Math.max(t, ...seg.flow.map((p) => p.t1), ...seg.waits.map((w) => w.t1)) - t + (trip.kind === 'call' ? NOTE_LIFE : step.packets.length > 1 ? 0.5 : 0);
           break;
@@ -342,7 +349,19 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   // Each end makes its private half when it first has a hello to answer or to send.
   const halves = new Map<string, number>();
   for (const s of segs) if (s.trip.keyShare && (s.step.kind === 'appear' || s.step.kind === 'read') && !halves.has(s.step.device)) halves.set(s.step.device, s.t0);
-  return { segs, reactions, notes, keys, halves, real: realClock(segs, story), cues, total: t, pos, kind, trayZ, isRouter, sky, air, client: story.client, stretch };
+  const readout = buildReadout(story, timing(segs), t);
+  for (const f of readout.flags) cues.push({ t: f.t, sound: 'found' });
+  return { segs, reactions, notes, readout, keys, halves, real: realClock(segs, story), cues, total: t, pos, kind, trayZ, isRouter, sky, air, client: story.client, stretch };
+}
+
+/** When each packet set off and when it was done. */
+function timing(segs: Seg[]): Map<string, { t0: number; t1: number }> {
+  const times = new Map<string, { t0: number; t1: number }>();
+  for (const s of segs) {
+    for (const p of s.flow ?? []) times.set(p.trip.packetId, { t0: p.t0, t1: p.t1 });
+    if (!s.flow) times.set(s.trip.packetId, { t0: times.get(s.trip.packetId)?.t0 ?? s.t0, t1: s.t1 });
+  }
+  return times;
 }
 
 /** The real clock along the visual time, from when each frame really left and arrived. */
@@ -487,7 +506,8 @@ function planFlow(
  */
 function arrivalFace(trip: Trip, device: string, arrived: Set<string>, filled: Set<number>): Face | null {
   if (trip.quiet) return null;
-  const key = `${device}|${trip.chapter}|${trip.card ?? trip.l4Label}|${trip.part?.n ?? 0}`;
+  // The same words from someone else are news: each router says "TTL ran out".
+  const key = `${device}|${trip.chapter}|${trip.from}|${trip.card ?? trip.l4Label}|${trip.part?.n ?? 0}`;
   if (arrived.has(key)) return 'confused';
   arrived.add(key);
   if (trip.part) {

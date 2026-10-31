@@ -5,6 +5,7 @@ import { drawSatellite, drawScissors, drawShield, drawSpyglass } from './icons';
 import { shade } from './shade';
 import type { Details, PartKey, Row, Story, Trip, Wrap } from './story';
 import { bandPoint, pageContent, Paper, PAPER_H, PAPER_W, photoContent, type Parts } from './paper';
+import { screenAt } from './readout';
 import { drawBook, drawShelf, SERVER } from './stations';
 import { addressBefore, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, LEVEL, lockPose, NO_LOCK, NOTE_LIFE, packetPos, packetPose, segAt, swapLanding, swapMoment, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
 
@@ -52,6 +53,10 @@ const NOTE_HEAD_RIGHT = 'M0 3 L0 12 C3 11 7 8 7 5 C7 3 3 3 0 3 Z';
 const NOTE_STEM = 'M7 5 V-16 C8 -10 14 -9 14 -3';
 /** How far to the side of its phone a note drifts, in SVG units. */
 const NOTE_SIDE = 70;
+/** The terminal ping and traceroute print to: the width of a character and the height of a line at its font size, and its margin. */
+const TERM_CHAR = 7.3;
+const TERM_LINE = 17;
+const TERM_PAD = 12;
 /** The colours of a voice: its packets on the cables and its notes at the far end. */
 const VOICE_OF_CALLER = '#8b6fd0';
 const VOICE_OF_FRIEND = '#1f9a8c';
@@ -150,6 +155,10 @@ export class NetworkScene {
   private readonly noteLayer: SVGGElement;
   /** Whether any note is up, so an empty frame costs nothing. */
   private notesUp = false;
+  /** What ping or traceroute printed, and the hops flagged; behind the packet, which still has to get past them. */
+  private readonly readoutLayer: SVGGElement;
+  /** What that layer was last drawn as, so it is not drawn again every frame. */
+  private readoutDrawn = '';
   private readonly fx: SVGGElement;
   /** What the spyglass reads, and the line it is on. */
   private readonly spyGlass: SVGGElement;
@@ -211,6 +220,7 @@ export class NetworkScene {
     this.sheet = new Paper(world);
     // Effects (impact bursts, timers) sit behind the packet, the way an anime impact star does.
     this.fx = el('g', { class: 'fx' }, world);
+    this.readoutLayer = el('g', { class: 'moods' }, world);
     this.packet = el('g', { class: 'packet' }, world);
     this.tags = el('g', { class: 'tags' }, world);
     this.keys = el('g', { class: 'keys' }, world);
@@ -525,6 +535,9 @@ export class NetworkScene {
       for (const [dx, dy] of [[-2, -2], [2, 2.4], [-2, 2.4], [2, -2]] as const) for (const z of [0, 3.2]) pts.push(iso(p.x + dx, p.y + dy, z));
     }
     pts.push(...this.onTable);
+    // What a probe printed stays up after the run, so the view between runs keeps it in frame.
+    const printed = this.terminalBox();
+    if (printed) pts.push({ sx: printed.x, sy: printed.y }, { sx: printed.x + printed.w, sy: printed.y + printed.h });
     const minX = Math.min(...pts.map((p) => p.sx)) - 20;
     const maxX = Math.max(...pts.map((p) => p.sx)) + 20;
     const minY = Math.min(...pts.map((p) => p.sy)) - 10;
@@ -570,6 +583,7 @@ export class NetworkScene {
   followCamera(v: number): Camera {
     const hit = segAt(this.tl, v);
     if (hit?.seg.flow && hit.seg.flow.length > 1) return this.flowCamera(hit.seg.flow);
+    if (!hit && this.story.probe) return this.resultCamera();
     let p: Vec3;
     const laptop = this.tl.pos.get(this.tl.client) ?? { x: 0, y: 0 };
     const mood = this.tl.reactions.find((r) => v >= r.t && v < r.t + 1.1);
@@ -598,19 +612,45 @@ export class NetworkScene {
   private flowCamera(flow: FlowPacket[]): Camera {
     const paper = this.paperAt();
     // Room above the sheet for the chapter name; a call has no sheet, but needs room for the notes above each device.
+    // Probes have no sheet either, only what they print.
     const pts = this.story.call
       ? []
-      : [
-          { sx: paper.sx - 100, sy: paper.sy - 170 },
-          { sx: paper.sx + 100, sy: paper.sy + 110 },
-        ];
+      : this.story.probe
+        ? this.terminalCorners()
+        : [
+            { sx: paper.sx - 100, sy: paper.sy - 170 },
+            { sx: paper.sx + 100, sy: paper.sy + 110 },
+          ];
     const above = this.story.call ? 300 : 90;
-    const beside = this.story.call ? 70 + NOTE_SIDE + 34 : 70;
+    const beside = this.story.call ? 70 + NOTE_SIDE + 34 : this.story.probe ? 110 : 70;
     for (const id of new Set(flow.flatMap((p) => p.hops.flatMap((h) => [h.from, h.to])))) {
       const d = this.tl.pos.get(id) ?? { x: 0, y: 0 };
       const c = iso(d.x, d.y);
       pts.push({ sx: c.sx - beside, sy: c.sy - above }, { sx: c.sx + beside, sy: c.sy + 100 });
     }
+    return this.framing(pts);
+  }
+
+  private terminalCorners(): { sx: number; sy: number }[] {
+    const b = this.terminalBox();
+    return b ? [{ sx: b.x - 20, sy: b.y - 80 }, { sx: b.x + b.w + 20, sy: b.y + b.h + 20 }] : [];
+  }
+
+  /** A probe has run: what it printed and the path it found. On a tall phone screen the printout alone is big enough to read. */
+  private resultCamera(): Camera {
+    const pts = this.terminalCorners();
+    const tall = (this.svg.clientHeight || 1) > (this.svg.clientWidth || 1) * 1.2;
+    const devices = tall ? [] : this.tl.readout.flags.map((f) => f.device);
+    for (const id of [this.tl.client, ...devices]) {
+      const d = this.tl.pos.get(id) ?? { x: 0, y: 0 };
+      const c = iso(d.x, d.y);
+      pts.push({ sx: c.sx - 110, sy: c.sy - 90 }, { sx: c.sx + 110, sy: c.sy + 100 });
+    }
+    return this.framing(pts);
+  }
+
+  /** The camera that just fits these points. */
+  private framing(pts: { sx: number; sy: number }[]): Camera {
     const x0 = Math.min(...pts.map((p) => p.sx));
     const x1 = Math.max(...pts.map((p) => p.sx));
     const y0 = Math.min(...pts.map((p) => p.sy));
@@ -788,6 +828,7 @@ export class NetworkScene {
     this.sheet.draw(this.paperAt(), isoV(this.screenPoint()), parts, v);
     this.renderMoods(v);
     this.renderNotes(v);
+    this.renderReadout(v);
     this.renderSpy();
     for (const [id, screen] of this.screens) {
       if (this.story.clients.includes(id) && v >= 0) continue;
@@ -860,6 +901,44 @@ export class NetworkScene {
       if (n.broken) this.brokenNote(g, dt);
       else this.wholeNote(g);
     }
+  }
+
+  /** The terminal's place: its size is for everything it will print, so it does not grow as it goes. */
+  private terminalBox(): { x: number; y: number; w: number; h: number } | null {
+    const all = this.tl.readout.screens.at(-1)?.lines;
+    if (!all) return null;
+    const c = isoV(this.screenPoint());
+    const w = Math.max(...all.map((l) => l.length)) * TERM_CHAR + TERM_PAD * 2;
+    const h = all.length * TERM_LINE + TERM_PAD * 2;
+    // Above the laptop is open table. Up from the phone is the home router and left of it the cards, so it goes below.
+    return this.tl.kind.get(this.tl.client) === 'phone' ? { x: c.sx + 50, y: c.sy + 40, w, h } : { x: c.sx - w / 2, y: c.sy - 150 - h, w, h };
+  }
+
+  /** The terminal beside the device that ran the tool, and each hop flagged under the name of whoever answered. */
+  private renderReadout(v: number): void {
+    const { readout } = this.tl;
+    const lines = v < 0 ? null : screenAt(readout, v);
+    const flags = v < 0 ? [] : readout.flags.filter((f) => v >= f.t);
+    const sizes = flags.map((f) => easeOutBack(clamp01((v - f.t) / 0.3)));
+    const drawn = `${lines?.join('\n')}|${sizes.map((s) => s.toFixed(2)).join(' ')}`;
+    if (drawn === this.readoutDrawn) return;
+    this.readoutDrawn = drawn;
+    this.readoutLayer.replaceChildren();
+    flags.forEach((f, i) => {
+      const d = this.tl.pos.get(f.device) ?? { x: 0, y: 0 };
+      const s = iso(d.x, d.y + 1.9, 0);
+      const g = el('g', { class: 'mood', transform: `translate(${s.sx.toFixed(1)} ${(s.sy + 50).toFixed(1)}) scale(${sizes[i]!.toFixed(3)})` }, this.readoutLayer);
+      const w = f.text.length * 7.4 + 22;
+      el('rect', { x: -w / 2, y: -13, width: w, height: 26, rx: 13, class: 'hop-bg' }, g);
+      el('text', { 'text-anchor': 'middle', dy: '0.36em', class: 'hop-text' }, g).textContent = f.text;
+    });
+    const box = this.terminalBox();
+    if (!lines || !box) return;
+    const g = el('g', { class: 'mood', transform: `translate(${box.x.toFixed(1)} ${box.y.toFixed(1)})` }, this.readoutLayer);
+    el('rect', { width: box.w, height: box.h, rx: 8, class: 'term-bg' }, g);
+    lines.forEach((line, i) => {
+      el('text', { x: TERM_PAD, y: TERM_PAD + (i + 0.75) * TERM_LINE, class: i ? 'term-text' : 'term-text term-title' }, g).textContent = line;
+    });
   }
 
   private wholeNote(g: SVGGElement): void {

@@ -434,6 +434,36 @@ body {
   font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
 }
 
+/* What ping and traceroute print, and the hops they find */
+.term-bg {
+  fill: #3b4049;
+  filter: drop-shadow(0 3px 6px rgba(61, 53, 44, 0.3));
+}
+
+.term-text {
+  font-size: 12px;
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  fill: #f3efe6;
+  white-space: pre;
+}
+
+.term-title {
+  fill: #a9c8b4;
+}
+
+.hop-bg {
+  fill: #fffaf2;
+  stroke: #4a84d4;
+  stroke-width: 1.5;
+}
+
+.hop-text {
+  font-size: 12px;
+  font-weight: 700;
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  fill: #2f5f9e;
+}
+
 /* A call's notes: one colour for what each phone hears */
 .note-caller {
   --note: #1f9a8c; /* Sam's voice, as the caller hears it */
