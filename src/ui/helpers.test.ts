@@ -100,6 +100,21 @@ describe('stretching the fibre to the ISP', () => {
   });
 });
 
+describe('a call in the timeline', () => {
+  it('the friend speaks only once the first word has reached it, then both talk on their own clocks', () => {
+    const call = buildTimeline(buildStory(runScenario(fetchWebPage({ call: true }), { seed: 1, faults: { randomLoss: 0, manual: [] }, maxTime: 1000 })));
+    const flow = call.segs.find((s) => (s.flow?.length ?? 0) > 1)!.flow!;
+    const caller = flow.filter((p) => p.trip.origin === 'laptop');
+    const friend = flow.filter((p) => p.trip.origin === 'friend');
+    const arrived = caller[0]!.hops[caller[0]!.hops.length - 1]!.t1;
+    expect(friend[0]!.t0).toBeGreaterThanOrEqual(arrived);
+    // The caller does not wait for the friend's words: its second packet follows its first by the usual gap.
+    expect(caller[1]!.t0 - caller[0]!.t0).toBeLessThan(1);
+    expect(friend[1]!.t0 - friend[0]!.t0).toBeLessThan(1);
+    expect(call.total).toBeLessThan(90);
+  });
+});
+
 describe('stepping through the spyglass reads', () => {
   it('goes back through older reads and returns to following the newest', () => {
     expect(stepRead(null, 5, -1)).toBe(3);

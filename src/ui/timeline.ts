@@ -381,7 +381,9 @@ function planFlow(
   let puzzled = false;
   const planned = packets.map((trip): FlowPacket => {
     let t = Math.max(from, (lastSent.get(trip.origin) ?? -Infinity) + FLOW_GAP);
-    if (!independent) for (const h of heard) if (h.sim <= trip.start) t = Math.max(t, h.v);
+    // In a call each side's first word still waits for what it answers (the friend speaks only once called); after that
+    // a side talks on its own clock.
+    if (!independent || !lastSent.has(trip.origin)) for (const h of heard) if (h.sim <= trip.start) t = Math.max(t, h.v);
     const key = `${trip.origin}|${trip.part?.n ?? trip.l4Label}`;
     const before = sent.get(key);
     sent.set(key, trip);
