@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const outFile = process.argv[2] ?? 'dist-bundle/get-example-com.html';
+const outFile = process.argv[2] ?? 'dist-bundle/connection-lab.html';
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'net-'));
 await build({
   logLevel: 'warn',
@@ -17,7 +17,7 @@ const html = fs.readFileSync(path.join(tmp, 'index.html'), 'utf8');
 const read = (href) => fs.readFileSync(path.join(tmp, href.replace(/^\.?\//, '')), 'utf8');
 const css = [...html.matchAll(/<link rel="stylesheet"[^>]*href="([^"]+)"/g)].map((m) => read(m[1])).join('\n');
 const js = [...html.matchAll(/<script type="module"[^>]*src="([^"]+)"/g)].map((m) => read(m[1])).join('\n');
-const title = /<title>([^<]*)<\/title>/.exec(html)?.[1] ?? 'Get example.com';
+const title = /<title>([^<]*)<\/title>/.exec(html)?.[1] ?? 'Connection Lab';
 
 const viewport = /<meta name="viewport"[^>]*>/.exec(html)?.[0] ?? '<meta name="viewport" content="width=device-width, initial-scale=1.0" />';
 

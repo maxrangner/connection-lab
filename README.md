@@ -1,4 +1,4 @@
-# How the Internet Works
+# Connection Lab
 
 An interactive, protocol-accurate visualization of what happens when a computer fetches a web page.
 

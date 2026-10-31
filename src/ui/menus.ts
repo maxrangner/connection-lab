@@ -61,6 +61,12 @@ export class Menu<T extends string> {
     root.appendChild(this.panel);
   }
 
+  /** Sets the button and its popup apart with a class of their own. */
+  mark(name: string): void {
+    this.button.classList.add(name);
+    this.panel.classList.add(name);
+  }
+
   get isOpen(): boolean {
     return !this.panel.hidden;
   }
