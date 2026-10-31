@@ -67,12 +67,16 @@ export type AppAction =
   | 'trace-probe' // traceroute sends a UDP probe (ttl, probe, port)
   | 'trace-hop' // a router's Time Exceeded, or the destination's Port Unreachable, answered one (ttl, probe, from, rttMs, reached)
   | 'trace-done' // the path: hops, the addresses that answered, whether the destination was reached
+  | 'overheard' // a radio picked a frame out of the air: pduId is the frame
+  | 'flood-start' // a bot starts sending junk (to, packets)
+  | 'scan-start' // a scan starts (to, ports)
+  | 'scan-port' // a scan heard about a port (port, open)
   | 'done'
   | 'error';
 
 /** Everything that can happen, in the order it happens. Narration text is derived in the UI. */
 export type SimEventPayload =
-  | { type: 'app'; deviceId: string; app: 'browser' | 'dns-client' | 'dns-server' | 'dns-authority' | 'dhcp-client' | 'dhcp-server' | 'http-server' | 'voice-call' | 'voice-peer' | 'ping' | 'traceroute'; action: AppAction; pduId?: string; info?: Record<string, string | number | string[]> }
+  | { type: 'app'; deviceId: string; app: 'browser' | 'dns-client' | 'dns-server' | 'dns-authority' | 'dhcp-client' | 'dhcp-server' | 'http-server' | 'voice-call' | 'voice-peer' | 'ping' | 'traceroute' | 'wifi-listener' | 'flood' | 'port-scan'; action: AppAction; pduId?: string; info?: Record<string, string | number | string[]> }
   | { type: 'encapsulate'; deviceId: string; packetId: string; layer: LayerNum; protocol: Protocol; pduId: string }
   | { type: 'decapsulate'; deviceId: string; packetId: string; layer: LayerNum; protocol: Protocol; pduId: string }
   | { type: 'arp:miss'; deviceId: string; ip: Ip4; packetId: string }

@@ -5,12 +5,14 @@ import { drawSatellite, drawScissors, drawShield, drawSpyglass } from './icons';
 import { shade } from './shade';
 import type { Details, PartKey, Row, Story, Trip, Wrap } from './story';
 import { bandPoint, pageContent, Paper, PAPER_H, PAPER_W, photoContent } from './paper';
-import { screenAt } from './readout';
+import { screenAt, type Readout } from './readout';
 import { drawBook, drawShelf, SERVER } from './stations';
-import { addressBefore, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, LEVEL, lockPose, NO_LOCK, NOTE_LIFE, packetPos, packetPose, pageParts, segAt, swapLanding, swapMoment, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowHop, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
+import { addressBefore, ATTACKER_KINDS, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, LEVEL, lockPose, NO_LOCK, NOTE_LIFE, packetPos, packetPose, pageParts, segAt, swapLanding, swapMoment, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowHop, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
 
 export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', vpn: '#2e5e6e', eth: '#e08b33', wifi: '#2a9d8f' } as const;
 const DEVICE = '#d9d0c2';
+/** Everything an attacker brings to the table. */
+const ATTACKER = '#d23b3b';
 /** A locked (encrypted) card: dark, under a padlock. */
 const LOCKED = '#3d4654';
 
@@ -68,7 +70,7 @@ const SPEECH_CHAR = 7.1;
 /** The colours of a voice: its packets on the cables and its notes at the far end. */
 const VOICE_OF_CALLER = '#8b6fd0';
 const VOICE_OF_FRIEND = '#1f9a8c';
-/** Once a card has been dropped in, whose packet a block is: the first device's, then the one that joined in. */
+/** Once a card has been dropped in, whose packet a block is: the first device's, or the one that joined in. */
 const OWNERS = [COLOR.app, '#d6488f'];
 /** The blade of the session key, with its teeth; the tip at the origin. */
 const KEY_BLADE = 'M0 -2.2 H30 V2.2 H16 V8 H12 V2.2 H8 V6 H4 V2.2 H0 Z';
@@ -259,7 +261,7 @@ export class NetworkScene {
     for (const d of order) {
       const p = this.tl.pos.get(d.id) ?? { x: 0, y: 0 };
       const trays = el('g', { class: 'trays', opacity: 0 }, this.devs);
-      const g = el('g', { class: 'device' }, this.devs);
+      const g = el('g', { class: ATTACKER_KINDS.has(d.kind) ? 'device attacker' : 'device' }, this.devs);
       // The ISP router can be dragged further away between runs.
       if (d.kind === 'router') g.setAttribute('data-grab', d.id);
       const screen = this.buildDevice(g, d.kind, p.x, p.y);
@@ -285,7 +287,7 @@ export class NetworkScene {
     this.tl = tl;
     if (this.layoutKey() !== this.laidOut) this.buildDevices();
     const stops = (t: Trip): string[] => t.steps.flatMap((s) => (s.kind === 'flow' ? s.packets.flatMap(stops) : 'device' in s ? [s.device] : [s.from, s.to]));
-    this.used = new Set(story.trips.flatMap(stops));
+    this.used = new Set([...story.trips.flatMap(stops), ...(story.listener ? [story.listener] : [])]);
     this.fit();
     this.buildCables();
     const sheetImage = story.image ?? '';
@@ -380,7 +382,7 @@ export class NetworkScene {
     for (const l of this.story.links) {
       const path = this.linkWorld(l.id);
       if (!path.length) continue;
-      const g = el('g', { class: 'link' }, this.cables);
+      const g = el('g', { class: [l.a, l.b].some((d) => ATTACKER_KINDS.has(this.tl.kind.get(d) ?? '')) ? 'link attacker' : 'link' }, this.cables);
       if (this.tl.air.has(l.id)) {
         // Shaken (tapped between runs), the radio is noisy: the arc wobbles and frames get lost and sent again.
         // The whole group is the tap target: the arc, its ripples and its note alike.
@@ -436,6 +438,13 @@ export class NetworkScene {
       this.cableViews.push({ g, a: l.a, b: l.b });
     }
     if (this.story.vpn) this.buildTunnel();
+    // The stranger joins nothing: a dotted line says what it has its ear on.
+    const ear = this.story.listener && this.tl.pos.get(this.story.listener);
+    if (ear) {
+      const from = iso(ear.x, ear.y, 1.6);
+      const to = this.linkSpot('wlan', 0.5, 0);
+      el('line', { x1: from.sx, y1: from.sy, x2: to.sx, y2: to.sy, class: 'ear-beam' }, this.cables);
+    }
   }
 
   /** A tube along the whole way from the device to the VPN server: inside it, nobody sees what is going on. */
@@ -538,7 +547,8 @@ export class NetworkScene {
     }
     pts.push(...this.onTable);
     // What a probe printed stays up after the run, so the view between runs keeps it in frame.
-    for (const printed of [this.terminalBox(), this.terminalBox(this.tl.joinReadout, this.story.clients[1])]) {
+    for (const t of this.terminals()) {
+      const printed = this.terminalBox(t.readout, t.device);
       if (printed) pts.push({ sx: printed.x, sy: printed.y }, { sx: printed.x + printed.w, sy: printed.y + printed.h });
     }
     const minX = Math.min(...pts.map((p) => p.sx)) - 20;
@@ -637,7 +647,10 @@ export class NetworkScene {
   }
 
   private terminalCorners(): { sx: number; sy: number }[] {
-    return [this.terminalBox(), this.terminalBox(this.tl.joinReadout, this.story.clients[1])].flatMap((b) => (b ? [{ sx: b.x - 20, sy: b.y - 80 }, { sx: b.x + b.w + 20, sy: b.y + b.h + 20 }] : []));
+    return this.terminals().flatMap((t) => {
+      const b = this.terminalBox(t.readout, t.device);
+      return b ? [{ sx: b.x - 20, sy: b.y - 80 }, { sx: b.x + b.w + 20, sy: b.y + b.h + 20 }] : [];
+    });
   }
 
   /** A probe has run: what it printed and the path it found. On a tall phone screen the printout alone is big enough to read. */
@@ -702,8 +715,10 @@ export class NetworkScene {
   }
 
   private buildDevice(g: SVGGElement, kind: string, x: number, y: number): Screen | null {
-    const neutral = { color: DEVICE, cls: 'dev-body' };
+    const neutral = { color: ATTACKER_KINDS.has(kind) ? ATTACKER : DEVICE, cls: 'dev-body' };
     switch (kind) {
+      case 'stranger':
+      case 'scanner':
       case 'laptop': {
         box(g, { x: x - 1.3, y: y - 0.9, z: 0, w: 2.6, d: 1.8, h: 0.14, ...neutral });
         box(g, { x: x - 1.3, y: y - 1.05, z: 0.14, w: 2.6, d: 0.1, h: 1.56, ...neutral });
@@ -722,6 +737,11 @@ export class NetworkScene {
         box(g, { x: x - 0.7, y: y - 0.12, z: 0, w: 1.4, d: 0.22, h: 2.3, ...neutral });
         const a = iso(x - 0.6, y + 0.1, 2.18);
         el('rect', { x: 0, y: 0, width: 1.2 * U, height: 2.0 * U, fill: '#3b4049', transform: faceTf(a, '+y') }, g);
+        return null;
+      }
+      case 'bot': {
+        box(g, { x: x - 0.7, y: y - 0.7, z: 0, w: 1.4, d: 1.4, h: 1.8, ...neutral });
+        for (const z of [1.4, 1.0, 0.6]) line(g, v3(x - 0.5, y + 0.7, z), v3(x + 0.5, y + 0.7, z), { class: 'slot' });
         return null;
       }
       case 'home-router': {
@@ -910,21 +930,28 @@ export class NetworkScene {
 
   /** The terminal's place: its size is for everything it will print, so it does not grow as it goes. */
   private terminalBox(readout = this.tl.readout, device = this.tl.client): { x: number; y: number; w: number; h: number } | null {
-    const all = readout.screens.at(-1)?.lines;
-    if (!all) return null;
+    if (!readout.screens.length) return null;
     const c = isoV(this.screenPoint(device));
-    const w = Math.max(...all.map((l) => l.length)) * TERM_CHAR + TERM_PAD * 2;
-    const h = all.length * TERM_LINE + TERM_PAD * 2;
+    const w = Math.max(...readout.screens.flatMap((s) => s.lines.map((l) => l.length))) * TERM_CHAR + TERM_PAD * 2;
+    const h = Math.max(...readout.screens.map((s) => s.lines.length)) * TERM_LINE + TERM_PAD * 2;
+    // An attacker's goes under it, where the view has room.
+    if (ATTACKER_KINDS.has(this.tl.kind.get(device) ?? '')) return { x: c.sx - w / 2, y: c.sy + 112, w, h };
     // Above the laptop is open table. Up from the phone is the home router and left of it the cards, so it goes below.
     return this.tl.kind.get(device) === 'phone' ? { x: c.sx + 50, y: c.sy + 40, w, h } : { x: c.sx - w / 2, y: c.sy - 150 - h, w, h };
   }
 
+  /** Everything that prints this run, with the device it prints beside. */
+  private terminals(): { readout: Readout; device: string; red?: boolean }[] {
+    return [
+      { readout: this.tl.readout, device: this.tl.client },
+      { readout: this.tl.joinReadout, device: this.story.joiner ?? this.tl.client },
+      ...this.tl.attackReadouts.map((x) => ({ ...x, red: true })),
+    ];
+  }
+
   /** The terminal beside the device that ran the tool, and each hop flagged under the name of whoever answered. */
   private renderReadout(v: number): void {
-    const terminals = [
-      { readout: this.tl.readout, device: this.tl.client },
-      { readout: this.tl.joinReadout, device: this.story.clients[1] ?? this.tl.client },
-    ];
+    const terminals = this.terminals();
     const lines = terminals.map((x) => (v < 0 ? null : screenAt(x.readout, v)));
     const flags = v < 0 ? [] : terminals.flatMap((x) => x.readout.flags).filter((f) => v >= f.t);
     const sizes = flags.map((f) => easeOutBack(clamp01((v - f.t) / 0.3)));
@@ -942,11 +969,11 @@ export class NetworkScene {
       el('rect', { x: -w / 2, y: -13, width: w, height: 26, rx: 13, class: 'hop-bg' }, g);
       el('text', { 'text-anchor': 'middle', dy: '0.36em', class: 'hop-text' }, g).textContent = f.text;
     });
-    terminals.forEach(({ readout, device }, n) => {
+    terminals.forEach(({ readout, device, red }, n) => {
       const box = this.terminalBox(readout, device);
       if (!lines[n] || !box) return;
       const g = el('g', { class: 'mood', transform: `translate(${box.x.toFixed(1)} ${box.y.toFixed(1)})` }, this.readoutLayer);
-      el('rect', { width: box.w, height: box.h, rx: 8, class: 'term-bg' }, g);
+      el('rect', { width: box.w, height: box.h, rx: 8, class: red ? 'term-bg term-red' : 'term-bg' }, g);
       lines[n].forEach((line, i) => {
         el('text', { x: TERM_PAD, y: TERM_PAD + (i + 0.75) * TERM_LINE, class: i ? 'term-text' : 'term-text term-title' }, g).textContent = line;
       });
@@ -1174,6 +1201,12 @@ export class NetworkScene {
     return v3(at.x + (-(b.y - a.y) / len) * side, at.y + ((b.x - a.x) / len) * side, at.z);
   }
 
+  /** Whose block this is, once several jobs run at once. */
+  private ownerColor(client: string): string {
+    if (this.story.attackers.includes(client)) return ATTACKER;
+    return OWNERS[client === this.story.client ? 0 : 1]!;
+  }
+
   /** A stream: its packets as small blocks on the cables, far ones first. A part flies onto the sheet, a lost one falls. */
   private drawFlow(flow: FlowPacket[], waits: FlowWait[], v: number, traffic: boolean): void {
     for (const w of waits) if (v >= w.t0 && v < w.t1) this.drawWait(w.step, (v - w.t0) / (w.t1 - w.t0), w.t1 - w.t0);
@@ -1183,7 +1216,7 @@ export class NetworkScene {
     for (const p of flow) {
       if (v < p.t0 || v >= p.t1) continue;
       const data = p.trip.dataBytes > 0;
-      const color = traffic ? OWNERS[this.story.clients.indexOf(p.trip.client)]! : this.story.call ? (p.trip.outward ? VOICE_OF_CALLER : VOICE_OF_FRIEND) : !data ? COLOR.tcp : p.trip.locked ? LOCKED : COLOR.app;
+      const color = traffic ? this.ownerColor(p.trip.client) : this.story.call ? (p.trip.outward ? VOICE_OF_CALLER : VOICE_OF_FRIEND) : !data ? COLOR.tcp : p.trip.locked ? LOCKED : COLOR.app;
       const size = data ? 0.9 : 0.5;
       const end = p.hops[p.hops.length - 1]!;
       const at = this.blockAt(p, v);

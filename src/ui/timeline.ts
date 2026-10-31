@@ -2,8 +2,8 @@ import type { PduSnapshot } from '../sim';
 import { toneOf } from './notes';
 import type { Parts } from './paper';
 import { clamp01, easeIn, easeInOut, easeOutBack, easeOutBounce, lerp, lerpV, v3, type Vec3 } from './project';
-import { buildReadout, type Readout } from './readout';
-import { buildSpeech, type Bubble } from './speech';
+import { buildReadout, listenReadout, scanReadout, type Readout } from './readout';
+import { buildSpeech, listenerSpeech, type Bubble } from './speech';
 import type { Details, Frame, Seen, Step, Story, Trip, Wrap } from './story';
 
 /**
@@ -121,6 +121,8 @@ export interface Timeline {
   readout: Readout;
   /** The same for one dropped in on the other device. */
   joinReadout: Readout;
+  /** What the attackers print: what the stranger overhears, and what a scan finds. */
+  attackReadouts: { device: string; readout: Readout }[];
   /** What the devices say as packets set off, in plain words. */
   speech: Bubble[];
   /** HTTPS: when each end has worked out the session key (it can lock and open cards from then on). */
@@ -166,11 +168,19 @@ const POS: Record<string, { x: number; y: number }> = {
   'auth-server': { x: 24, y: -16 },
   // The friend's phone, on the far side of the internet, in front of the web server.
   peer: { x: 24, y: 8 },
+  // Red, once dragged in. The stranger sits within reach of the Wi-Fi, the others out on the internet by the ISP router.
+  stranger: { x: 13, y: 7 },
+  scanner: { x: 18, y: 8 },
+  bot1: { x: 1, y: -7 },
+  bot2: { x: 5, y: -9 },
+  bot3: { x: 9, y: -7 },
 };
 
-export const DEVICE_TOP: Record<string, number> = { laptop: 1.7, phone: 2.0, 'home-router': 0.55, router: 0.8, 'web-server': 2.6, 'dns-resolver': 1.1, 'vpn-server': 1.3, 'root-server': 1.5, 'tld-server': 1.1, 'auth-server': 1.1, peer: 2.0 };
+export const DEVICE_TOP: Record<string, number> = { laptop: 1.7, phone: 2.0, 'home-router': 0.55, router: 0.8, 'web-server': 2.6, 'dns-resolver': 1.1, 'vpn-server': 1.3, 'root-server': 1.5, 'tld-server': 1.1, 'auth-server': 1.1, peer: 2.0, stranger: 1.7, scanner: 1.7, bot: 1.8 };
 /** The servers only a cold resolver talks to; off the table otherwise. */
 export const UPSTREAM_KINDS = new Set(['root-server', 'tld-server', 'auth-server']);
+/** The devices a red card puts on the table. */
+export const ATTACKER_KINDS = new Set(['stranger', 'scanner', 'bot']);
 export const CABLE_Z = 0.55;
 /** Tray levels: 0 Ethernet, 1 IP, 2 transport, 3 app. The VPN case goes on just above Ethernet. */
 export const LEVEL: Record<Wrap | 'app', number> = { eth: 0, vpn: 0.5, ip: 1, l4: 2, app: 3 };
@@ -228,10 +238,12 @@ const crosses = (t: Trip): boolean => t.steps.some((s) => s.kind === 'travel' ||
  */
 export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> = new Map(), stretch = 0, mix = Infinity): Timeline {
   const kind = new Map(story.devices.map((d) => [d.id, d.kind]));
+  // An attacker is already at it when the run starts, so nothing runs by itself.
+  const alone = story.attackers.length ? 0 : mix;
   // Stretching the cable to the ISP moves the ISP router and everything beyond it further along +x.
   const pos = new Map(
     story.devices.map((d, i) => {
-      const p = POS[d.kind] ?? { x: i * 8, y: 0 };
+      const p = POS[d.id] ?? POS[d.kind] ?? { x: i * 8, y: 0 };
       return [d.id, p.x >= POS.router!.x ? { x: p.x + stretch, y: p.y } : p];
     }),
   );
@@ -290,7 +302,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   const resent = new Set(story.trips.map((x) => x.retransmitOf));
   let t = 0;
   story.trips.forEach((trip, ti) => {
-    if (left.length || t >= mix || trip.client !== story.client) {
+    if (left.length || t >= alone || trip.client !== story.client) {
       left.push(trip);
       return;
     }
@@ -328,7 +340,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
           break;
         case 'flow': {
           const state = newFlow();
-          const plan = planFlow(step.packets, t, story, knocks, linkPace, cues, reactions, story.probe ? (trip.chapter === 'dns' ? ACK_HOP : PROBE_HOP) : step.packets.length > 1 ? FLOW_HOP : ACK_HOP, notes, state, mix);
+          const plan = planFlow(step.packets, t, story, knocks, linkPace, cues, reactions, story.probe ? (trip.chapter === 'dns' ? ACK_HOP : PROBE_HOP) : step.packets.length > 1 ? FLOW_HOP : ACK_HOP, notes, state, alone);
           ({ packets: seg.flow, waits: seg.waits } = plan);
           left.push(...plan.rest);
           if (plan.rest.length) cutShort = state;
@@ -353,7 +365,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
       t += d;
       p = seg.p1;
       // A card was dropped in: this step finishes, and what the packet has left to cross goes with the rest.
-      if (t > mix) {
+      if (t > alone) {
         const rest = trip.steps.slice(i + 1);
         if (rest.some((s) => s.kind === 'travel' || s.kind === 'lost' || s.kind === 'flow')) left.push({ ...trip, steps: rest, timedOut: false });
       }
@@ -422,8 +434,15 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   const times = timing(segs);
   const readout = buildReadout(story, times, t);
   const joinReadout = buildReadout(story, times, t, true);
+  // The stranger reads a frame as it goes by, a quarter of the way along, like a spyglass.
+  const heardAt = new Map(crossings({ segs }).filter((c) => c.link === 'wlan').map((c) => [c.trip.packetId, c.t0 + (c.t1 - c.t0) * 0.25]));
+  const attackReadouts = [
+    ...(story.listener ? [{ device: story.listener, readout: listenReadout(story, heardAt, t) }] : []),
+    ...(story.scan ? [{ device: story.scan.device, readout: scanReadout(story.scan, times, t) }] : []),
+  ];
   for (const f of [...readout.flags, ...joinReadout.flags]) cues.push({ t: f.t, sound: 'found' });
-  return { segs, reactions, notes, readout, joinReadout, speech: buildSpeech(story, segs), keys, halves, real: realClock(segs, story), cues, total: t, pos, kind, trayZ, isRouter, sky, air, client: story.client, pages, answers, stretch };
+  const speech = [...buildSpeech(story, segs), ...(story.listener ? listenerSpeech(story.listener, story.heard, heardAt) : [])];
+  return { segs, reactions, notes, readout, joinReadout, attackReadouts, speech, keys, halves, real: realClock(segs, story), cues, total: t, pos, kind, trayZ, isRouter, sky, air, client: story.client, pages, answers, stretch };
 }
 
 /** When each packet set off and when it was done. */
@@ -626,8 +645,9 @@ function planFlow(
     const chain = trip.chapter === 'call' ? sender : trip.client;
     let t = Math.max(from, (lastSent.get(sender) ?? -Infinity) + FLOW_GAP);
     // In a call each side's first word still waits for what it answers (the friend speaks only once called); after that
-    // a side talks on its own clock.
-    if (trip.chapter !== 'call' || trip.part?.n === 1) for (const h of heard) if (h.client === trip.client && h.sim <= trip.start) t = Math.max(t, h.v);
+    // a side talks on its own clock. An attacker's junk and knocks answer nothing either, and go at their own pace.
+    const ownClock = trip.chapter === 'call' ? trip.part?.n !== 1 : trip.chapter === 'attack' && trip.outward && !trip.l4Label.includes('RST');
+    if (!ownClock) for (const h of heard) if (h.client === trip.client && h.sim <= trip.start) t = Math.max(t, h.v);
     if (t > until || stopped.has(chain)) {
       stopped.add(chain);
       rest.push(trip);

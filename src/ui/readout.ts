@@ -1,4 +1,4 @@
-import type { Probe, Story, Trip } from './story';
+import type { Probe, Scan, Story, Trip } from './story';
 
 /**
  * What ping and traceroute print, and when. A line goes up when the answer reaches the program, since that is when the
@@ -29,7 +29,7 @@ const packetsOf = (trips: Trip[]): Trip[] =>
 
 export function buildReadout(story: Story, timing: Timing, total: number, joined = false): Readout {
   const probe = joined ? story.joinProbe : story.probe;
-  const client = joined ? story.clients[1] : story.client;
+  const client = joined ? story.joiner : story.client;
   if (!probe) return { screens: [], flags: [] };
   const title = `${probe.kind} ${probe.to}`;
   const trips = packetsOf(story.trips).filter((t) => t.client === client);
@@ -77,6 +77,46 @@ function traceReadout(probe: Probe, title: string, trips: Trip[], timing: Timing
   const done = probe.done;
   if (done && screens.length > 1) screens[screens.length - 1]!.lines.push(done.reached ? `reached in ${done.hops} hops` : `not reached in ${done.hops} hops`);
   return { screens, flags };
+}
+
+/** Lines the stranger's terminal keeps up. */
+const HEARD_LINES = 7;
+
+/** What the stranger reads off the air, line by line as frames go by. Scrambled bytes all look alike, so they count once. */
+export function listenReadout(story: Story, heardAt: ReadonlyMap<string, number>, total: number): Readout {
+  const title = 'listening on open Wi-Fi';
+  const rows: string[] = [];
+  const screens: Readout['screens'] = [{ t: 0, lines: [title] }];
+  const heard = story.heard.flatMap((h) => {
+    const t = heardAt.get(h.packetId);
+    return t === undefined || h.seen.kind === 'empty' ? [] : [{ t, seen: h.seen }];
+  });
+  let scrambled = false;
+  for (const { t, seen } of heard.sort((a, b) => a.t - b.t)) {
+    // Past the name in an open hello there are only bytes.
+    const lines = seen.kind === 'scrambled' ? (scrambled ? [] : [`scrambled: ${seen.lines[0]}`]) : seen.kind === 'name' ? seen.lines.slice(0, 1) : seen.lines.map((l) => (l.startsWith('voice') ? 'voice, anyone can listen' : l));
+    scrambled ||= seen.kind === 'scrambled';
+    const fresh = lines.filter((l) => !rows.includes(l));
+    if (!fresh.length) continue;
+    rows.push(...fresh);
+    screens.push({ t, lines: [title, ...rows.slice(-HEARD_LINES)] });
+  }
+  if (!rows.length) screens.push({ t: total, lines: [title, 'heard nothing'] });
+  return { screens, flags: [] };
+}
+
+/** A port scan's report: each port as its answer comes in, and a last line on what is open. */
+export function scanReadout(scan: Scan, timing: Timing, total: number): Readout {
+  const title = `port scan of ${scan.to}`;
+  const rows: string[] = [];
+  const screens: Readout['screens'] = [{ t: 0, lines: [title] }];
+  const answers = scan.ports.map((p) => ({ ...p, t: timing.get(p.packetId)?.t1 ?? total }));
+  for (const p of answers.sort((a, b) => a.t - b.t)) {
+    rows.push(`${String(p.port).padEnd(6)}${p.open ? 'open' : 'closed'}`);
+    screens.push({ t: p.t, lines: [title, ...rows] });
+  }
+  if (rows.length) screens[screens.length - 1]!.lines.push(`${answers.filter((p) => p.open).length} doors open`);
+  return { screens, flags: [] };
 }
 
 /** The terminal at visual time v, if it has anything to say yet. */

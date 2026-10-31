@@ -101,6 +101,24 @@ export function drawTrace(g: SVGGElement): void {
   for (const [x, y] of [[-24, 14], [-8, -6], [8, 8], [24, -14]] as const) el('circle', { cx: x, cy: y, r: 4.5, class: 'trace-hop' }, g);
 }
 
+/** An ear: the stranger, listening. */
+export function drawEar(g: SVGGElement): void {
+  el('path', { d: 'M-14 6 C-20 -24 22 -30 18 -2 C16 10 2 8 2 20 C2 28 -10 28 -12 18', class: 'ear-line' }, g);
+  el('path', { d: 'M-4 -4 C-2 -14 10 -12 8 -2', class: 'ear-line' }, g);
+}
+
+/** Many small machines at once: a botnet. */
+export function drawSwarm(g: SVGGElement): void {
+  for (const [x, y] of [[-16, -14], [10, -18], [-4, 4], [18, 8], [-20, 16]] as const) el('rect', { x: x - 6, y: y - 6, width: 12, height: 12, rx: 2, class: 'swarm-bot' }, g);
+}
+
+/** A door ajar, with light in it: a port. */
+export function drawDoor(g: SVGGElement): void {
+  el('path', { d: 'M-14 26 V-24 H14 V26', class: 'ear-line' }, g);
+  el('path', { d: 'M-14 -24 L6 -16 V26 L-14 26 Z', class: 'ear-line' }, g);
+  el('circle', { cx: 0, cy: 4, r: 2.5, class: 'swarm-bot' }, g);
+}
+
 /** A long page: the bigger page. */
 export function drawPage(g: SVGGElement): void {
   el('path', { d: 'M-17 -27 H9 L19 -17 V27 H-17 Z', class: 'page-sheet' }, g);

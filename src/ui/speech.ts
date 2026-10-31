@@ -1,4 +1,4 @@
-import type { Story, Trip } from './story';
+import type { Heard, Story, Trip } from './story';
 import type { Seg } from './timeline';
 
 /**
@@ -26,6 +26,12 @@ const DHCP: Record<string, (rest: string) => string> = {
 
 /** The plain meaning of a packet, if it has one worth saying. */
 function lineOf(t: Trip): string | null {
+  if (t.chapter === 'attack') {
+    if (t.card === 'junk') return 'Flood it!';
+    if (t.l4Label === 'SYN') return 'Anyone home?';
+    if (t.l4Label === 'SYN-ACK') return "Yes, that one's open";
+    return t.l4Label.includes('RST') ? (t.outward ? 'Noted. Bye.' : 'Nobody here') : null;
+  }
   if (t.retry) return 'Sending that again';
   const card = t.card ?? '';
   if (card === 'bye' || t.l4Label.includes('FIN')) return 'Bye!';
@@ -67,6 +73,17 @@ function lineOf(t: Trip): string | null {
   }
 }
 
+/** What the stranger makes of what it hears: once for what it can read, once for the site's name, once for scrambled bytes. */
+export function listenerSpeech(device: string, heard: Heard[], heardAt: ReadonlyMap<string, number>): Bubble[] {
+  const lines = { open: 'I can read this!', name: "I can see the site's name", scrambled: 'The rest is scrambled', empty: '' };
+  const firsts = new Map<Heard['seen']['kind'], number>();
+  for (const h of heard) {
+    const t = heardAt.get(h.packetId);
+    if (t !== undefined && h.seen.kind !== 'empty' && t < (firsts.get(h.seen.kind) ?? Infinity)) firsts.set(h.seen.kind, t);
+  }
+  return [...firsts].map(([kind, t]) => ({ device, t0: t, t1: t + SAY, text: lines[kind] }));
+}
+
 export function buildSpeech(story: Story, segs: Seg[]): Bubble[] {
   const bubbles: Bubble[] = [];
   const say = (device: string, t0: number, text: string, until = 0): void => {
@@ -85,7 +102,8 @@ export function buildSpeech(story: Story, segs: Seg[]): Bubble[] {
     for (const p of seg.flow ?? []) {
       // The quick repeats of a trace say nothing new.
       const line = p.trip.chapter === 'trace' ? null : lineOf(p.trip);
-      if (line) say(p.trip.origin, p.t0, line);
+      // An attack goes too fast to read line by line: each says what it is once.
+      if (line && (p.trip.chapter !== 'attack' || once(`${p.trip.origin}|${line}`))) say(p.trip.origin, p.t0, line);
     }
     for (const w of [...(seg.waits ?? []).map((x) => ({ step: x.step, t0: x.t0 })), ...(s.kind === 'wait' ? [{ step: s, t0: seg.t0 }] : [])]) {
       say(w.step.device, w.t0, w.step.giveUp ? 'No answer. I give up.' : 'No answer yet...');

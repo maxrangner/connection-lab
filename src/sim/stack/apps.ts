@@ -4,7 +4,8 @@ import type { AppSpec } from '../model';
 import { buildDnsQuery, buildDnsResponse, DNS_RCODE_NXDOMAIN, DNS_RCODE_OK, DNS_RCODE_SERVFAIL, DNS_TYPE_A, dnsAddresses, dnsReferral, dnsSummary, parseDns } from '../proto/dns';
 import { buildRtp, parseRtp, RTP_PORT, RTP_PT_PCMU, RTP_SAMPLES_PER_PACKET, RTP_VERSION } from '../proto/rtp';
 import { buildIcmp, ICMP_DEST_UNREACHABLE, ICMP_ECHO, ICMP_ECHO_REPLY, ICMP_HEADER_LEN, ICMP_TIME_EXCEEDED, pingData, pingTimestamp } from '../proto/icmp';
-import { IPPROTO_UDP } from '../proto/ipv4';
+import { IPPROTO_TCP, IPPROTO_UDP } from '../proto/ipv4';
+import { buildTcp, TCP_SYN } from '../proto/tcp';
 import type { Host, IcmpHandler } from './Host';
 import { httpsClient } from './https';
 
@@ -588,5 +589,49 @@ export function startHttpServer(host: Host, spec: HttpServerSpec, mss: number): 
         c.close();
       },
     };
+  });
+}
+
+/** Something the server runs besides its web server. It only has to be there: a port with a listener is an open port. */
+export function startTcpService(host: Host, port: number, mss: number): void {
+  host.tcpListen(port, { mss, wscale: 10, app: 'http' }, () => {});
+}
+
+/** How close together a bot's opening burst goes. */
+const BURST_GAP = 0.001;
+
+/** A bot: junk datagrams at a server, an opening burst and then one every `gap` seconds, whatever happens to them. */
+export function startFlood(host: Host, spec: Extract<AppSpec, { kind: 'flood' }>): void {
+  const sim = host.sim;
+  sim.emit({ type: 'app', deviceId: host.id, app: 'flood', action: 'flood-start', info: { to: spec.to, packets: spec.packets } });
+  const port = host.ephemeralPort();
+  const junk = Uint8Array.from({ length: spec.bytes }, () => host.random32() & 0xff);
+  for (let i = 0; i < spec.packets; i++) {
+    sim.after(Math.max(0, i - spec.burst) * spec.gap + Math.min(i, spec.burst) * BURST_GAP, () => {
+      const pk = sim.newPacket(host.id, 'flood', `junk ${i + 1}/${spec.packets}`);
+      host.udpSend(port, spec.to, spec.port, junk, pk.id);
+    });
+  }
+}
+
+/**
+ * A SYN scan: a SYN made by hand to each port, one every `gap` seconds. A SYN-ACK means something answered on that port, a
+ * reset that nothing did. The host's own TCP knows nothing of these SYNs, so it resets any SYN-ACK by itself, and the hello
+ * is never finished.
+ */
+export function startPortScan(host: Host, spec: Extract<AppSpec, { kind: 'port-scan' }>): void {
+  const sim = host.sim;
+  sim.emit({ type: 'app', deviceId: host.id, app: 'port-scan', action: 'scan-start', info: { to: spec.to, ports: spec.ports.map(String) } });
+  const port = host.ephemeralPort();
+  host.tcpWatcher = (from, seg, pduId) => {
+    if (from !== spec.to || seg.dstPort !== port) return;
+    sim.emit({ type: 'app', deviceId: host.id, app: 'port-scan', action: 'scan-port', pduId, info: { port: seg.srcPort, open: seg.flags & TCP_SYN ? 1 : 0 } });
+  };
+  spec.ports.forEach((dst, i) => {
+    sim.after(i * spec.gap, () => {
+      const seg = buildTcp({ srcPort: port, dstPort: dst, seq: host.random32(), ack: 0, flags: TCP_SYN, window: 1024, options: [{ kind: 'mss', mss: 1460 }] }, new Uint8Array(0), host.ip, spec.to);
+      const pk = sim.newPacket(host.id, 'tcp', `SYN to port ${dst}`, { tcp: { connId: `${host.id}:${port}-${spec.to}:${dst}`, relSeq: 0, relAck: 0, len: 0, flags: TCP_SYN } });
+      host.ipOutput(IPPROTO_TCP, spec.to, seg, pk.id, true);
+    });
   });
 }

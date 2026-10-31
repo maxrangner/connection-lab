@@ -7,6 +7,7 @@ import {
   TCP_ACK,
   TCP_FIN,
   TCP_PSH,
+  TCP_RST,
   TCP_SYN,
   type ParsedTcp,
   type TcpOption,
@@ -179,6 +180,16 @@ export class TcpConnection {
     const syn = (seg.flags & TCP_SYN) !== 0;
     const fin = (seg.flags & TCP_FIN) !== 0;
     const ack = (seg.flags & TCP_ACK) !== 0;
+
+    if (seg.flags & TCP_RST) {
+      // The other end wants nothing more to do with this connection.
+      this.host.sim.cancel(this.rtoTimer);
+      this.rtoTimer = undefined;
+      this.setState('CLOSED');
+      this.host.tcpRemove(this);
+      this.handlers.onClosed?.(this);
+      return;
+    }
 
     if (this.state === 'SYN_SENT') {
       if (syn && ack && seg.ack === seqAdd(this.iss, 1)) {

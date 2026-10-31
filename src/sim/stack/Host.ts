@@ -3,7 +3,7 @@ import type { IfaceSpec } from '../model';
 import { DHCP_CLIENT_PORT } from '../proto/dhcp';
 import { ICMP_DEST_UNREACHABLE, ICMP_ECHO, ICMP_PORT_UNREACHABLE, parseIcmp, type ParsedIcmp } from '../proto/icmp';
 import { buildIpv4, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP, parseIpv4, type ParsedIpv4 } from '../proto/ipv4';
-import { parseTcp, TCP_ACK, TCP_SYN } from '../proto/tcp';
+import { buildTcp, parseTcp, TCP_ACK, TCP_RST, TCP_SYN, type ParsedTcp } from '../proto/tcp';
 import type { Protocol } from '../proto/types';
 import { buildUdp, parseUdp, UDP_HEADER_LEN } from '../proto/udp';
 import { WG_PORT } from '../proto/wireguard';
@@ -25,6 +25,11 @@ export class Host extends Device {
   private tcpListeners = new Map<number, { opts: TcpConnOptions; onAccept: (c: TcpConnection) => void }>();
   private tcpConns = new Map<string, TcpConnection>();
   private ipId = this.rng.int(0, 0xffff);
+  /** When each address last got an ICMP error, for a host that limits them. */
+  private lastError = new Map<Ip4, number>();
+
+  /** A scanner, which sees the answers to SYNs it made by hand. */
+  tcpWatcher?: (from: Ip4, seg: ParsedTcp, pduId: string) => void;
 
   /** With a VPN, everything this host makes goes through this tunnel. */
   tunnel?: TunnelClient;
@@ -122,6 +127,18 @@ export class Host extends Device {
     return c;
   }
 
+  /** RFC 9293: a segment for no connection gets a reset, unless it is one. This is how a closed port says no. */
+  private refuse(ip: ParsedIpv4, t: ParsedTcp, length: number): void {
+    if (t.flags & TCP_RST) return;
+    const acked = (t.flags & TCP_ACK) !== 0;
+    const flags = acked ? TCP_RST : TCP_RST | TCP_ACK;
+    const seq = acked ? t.ack : 0;
+    const ack = acked ? 0 : (t.seq + length + (t.flags & TCP_SYN ? 1 : 0)) >>> 0;
+    const seg = buildTcp({ srcPort: t.dstPort, dstPort: t.srcPort, seq, ack, flags, window: 0, options: [] }, new Uint8Array(0), ip.dst, ip.src);
+    const pk = this.sim.newPacket(this.id, 'tcp', 'TCP RST', { tcp: { connId: `${this.id}:${t.dstPort}-${ip.src}:${t.srcPort}`, relSeq: 0, relAck: 0, len: 0, flags } });
+    this.ipOutput(IPPROTO_TCP, ip.src, seg, pk.id, true, undefined, ip.dst);
+  }
+
   tcpRemove(c: TcpConnection): void {
     this.tcpConns.delete(c.key);
   }
@@ -189,6 +206,8 @@ export class Host extends Device {
       if (!sock) {
         sim.emit({ type: 'drop', packetId, reason: 'no-socket', deviceId: this.id });
         // Nobody on that port: the sender is told, from the address it wrote to. This is the answer traceroute waits for.
+        if (this.spec.icmpLimit && sim.now - (this.lastError.get(ip.src) ?? -Infinity) < 1) return;
+        this.lastError.set(ip.src, sim.now);
         this.icmpError(ICMP_DEST_UNREACHABLE, ICMP_PORT_UNREACHABLE, ip.dst, ipBytes);
         return;
       }
@@ -200,14 +219,8 @@ export class Host extends Device {
       const t = parseTcp(l4, 0);
       let conn = this.tcpConns.get(`${t.dstPort}|${ip.src}|${t.srcPort}`);
       const app = conn?.opts.app ?? this.tcpListeners.get(t.dstPort)?.opts.app;
-      sim.emit({
-        type: 'decapsulate',
-        deviceId: this.id,
-        packetId,
-        layer: 3,
-        protocol: 'ipv4',
-        pduId: sim.pdu(packetId, l4, 'tcp', { ...ctx, appHint: app }),
-      });
+      const pduId = sim.pdu(packetId, l4, 'tcp', { ...ctx, appHint: app });
+      sim.emit({ type: 'decapsulate', deviceId: this.id, packetId, layer: 3, protocol: 'ipv4', pduId });
       // The connection unwraps the payload for the application only when it really hands the bytes over.
       const payload = l4.slice(t.payloadStart);
       if (!conn) {
@@ -219,7 +232,9 @@ export class Host extends Device {
           conn.acceptSyn(t);
           return;
         }
+        this.tcpWatcher?.(ip.src, t, pduId);
         sim.emit({ type: 'drop', packetId, reason: 'no-socket', deviceId: this.id });
+        this.refuse(ip, t, payload.length);
         return;
       }
       conn.input(t, payload, packetId);
