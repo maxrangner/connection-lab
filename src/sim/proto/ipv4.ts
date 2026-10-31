@@ -3,6 +3,7 @@ import { ByteWriter, hex, setU16, u16, u8 } from '../bytes/bytes';
 import { internetChecksum } from '../bytes/checksum';
 import { bitField, FieldList, type LayerPdu } from './types';
 
+export const IPPROTO_ICMP = 1;
 export const IPPROTO_TCP = 6;
 export const IPPROTO_UDP = 17;
 export const IPV4_HEADER_LEN = 20;
@@ -10,6 +11,7 @@ export const IPV4_HEADER_LEN = 20;
 export function ipProtoName(p: number): string {
   if (p === IPPROTO_TCP) return 'TCP';
   if (p === IPPROTO_UDP) return 'UDP';
+  if (p === IPPROTO_ICMP) return 'ICMP';
   return `proto ${p}`;
 }
 
@@ -106,7 +108,7 @@ export function describeIpv4(b: Uint8Array, o: number): LayerPdu {
     ],
   });
   f.add('ipv4.ttl', 'Time to Live', o + 8, 1, p.ttl, 'key', 'Every router subtracts 1 and drops the packet at 0, so a routing loop cannot circulate a packet forever. Linux sends with 64.');
-  f.add('ipv4.proto', 'Protocol', o + 9, 1, `${p.protocol} (${ipProtoName(p.protocol)})`, 'key', 'Which transport protocol is inside: 6 is TCP, 17 is UDP.');
+  f.add('ipv4.proto', 'Protocol', o + 9, 1, `${p.protocol} (${ipProtoName(p.protocol)})`, 'key', 'What is inside: 6 is TCP, 17 is UDP, 1 is ICMP (ping and the error messages routers send back).');
   f.add('ipv4.checksum', 'Header checksum', o + 10, 2, `${hex(p.checksum, 4)} ${p.checksumValid ? '✓' : '✗'}`, 'detail', "Ones' complement sum over the header only. Because TTL changes at every hop, every router recomputes it.");
   f.add('ipv4.src', 'Source IP', o + 12, 4, p.src, 'key', 'Address of the sender. A home router doing NAT replaces a private source address with its own public one.');
   f.add('ipv4.dst', 'Destination IP', o + 16, 4, p.dst, 'key', 'Final destination. Routers read it to choose the next hop; it normally stays the same end to end.');

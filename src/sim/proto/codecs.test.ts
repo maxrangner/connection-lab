@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { bytesToIp6 } from '../bytes/addr';
 import { ascii, fromBase64, hexBytes, setU16 } from '../bytes/bytes';
-import { transportChecksum } from '../bytes/checksum';
+import { internetChecksum, transportChecksum } from '../bytes/checksum';
 import { DNS_TRACES } from '../scenarios/dnsTraceCapture';
 import { natRewrite } from '../stack/Router';
 import { buildArp, parseArp } from './arp';
@@ -9,8 +9,9 @@ import { decodePdu } from './decode';
 import { BOOTREPLY, BOOTREQUEST, buildDhcp, DHCP_ACK, DHCP_DISCOVER, DHCP_OFFER, DHCP_REQUEST, parseDhcp, type DhcpMessage } from './dhcp';
 import { buildDnsQuery, buildDnsResponse, DNS_TYPE_A, DNS_TYPE_AAAA, DNS_TYPE_CNAME, DNS_TYPE_NS, dnsAddresses, dnsReferral, parseDns } from './dns';
 import { buildEthernet, ETHERTYPE_ARP, ETHERTYPE_IPV4, parseEthernet } from './ethernet';
-import { buildIpv4, IPPROTO_TCP, IPPROTO_UDP, parseIpv4 } from './ipv4';
 import { buildRtp, describeRtp, parseRtp, RTP_PT_PCMU } from './rtp';
+import { buildIcmp, ICMP_DEST_UNREACHABLE, ICMP_ECHO, ICMP_ECHO_REPLY, ICMP_PORT_UNREACHABLE, ICMP_TIME_EXCEEDED, ICMP_TTL_EXCEEDED, parseIcmp, pingData, pingTimestamp } from './icmp';
+import { buildIpv4, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP, parseIpv4 } from './ipv4';
 import { buildTcp, encodeOptions, parseTcp, TCP_SYN } from './tcp';
 import type { Field, LayerPdu } from './types';
 import { buildUdp, parseUdp } from './udp';
@@ -353,5 +354,84 @@ describe('TCP', () => {
     const layers = decodePdu(frame, 'ethernet');
     expect(layers.map((l) => l.protocol)).toEqual(['ethernet', 'ipv4', 'tcp', 'http']);
     expect(layers[3]!.summary).toBe('HTTP GET / HTTP/1.1');
+  });
+});
+
+describe('ICMP (RFC 792)', () => {
+  const data = pingData(12.345678);
+  const echo = buildIcmp({ type: ICMP_ECHO, id: 0x1234, seq: 1, data });
+
+  it('builds an echo request: type 8, code 0, checksum, id, seq, then ping’s 56 data bytes', () => {
+    expect(echo.length).toBe(64);
+    expect(hexBytes(echo, 0, 2, '')).toBe('0800');
+    expect(hexBytes(echo, 4, 8, '')).toBe('12340001');
+    // The inverse-sum rule: with the checksum in place the whole message sums to all ones, so the sum comes out 0.
+    expect(internetChecksum(echo)).toBe(0);
+    expect(internetChecksum(echo, 0, 2) === 0).toBe(false);
+    // Hand-checked: an empty echo request is 08 00 00 00 … → the only word is 0x0800, so the checksum is ~0x0800 = 0xf7ff.
+    expect(hexBytes(buildIcmp({ type: ICMP_ECHO, id: 0, seq: 0, data: new Uint8Array(0) }), 0, 8, '')).toBe('0800f7ff00000000');
+    expect(hexBytes(buildIcmp({ type: ICMP_ECHO_REPLY, id: 0, seq: 0, data: new Uint8Array(0) }), 0, 4, '')).toBe('0000ffff');
+    const p = parseIcmp(echo, 0, echo.length);
+    expect(p).toMatchObject({ type: 8, code: 0, checksumValid: true, id: 0x1234, seq: 1, dataStart: 8 });
+  });
+
+  it('ping’s data: a little-endian struct timeval of the sending time, then the bytes 0x10 … 0x37', () => {
+    expect(data.length).toBe(56);
+    expect(hexBytes(data, 0, 16, '')).toBe('0c00000000000000' + '4e46050000000000'); // 12 s, 345678 µs = 0x0000000000054 64e
+    expect([...data.subarray(16)]).toEqual(Array.from({ length: 40 }, (_, i) => 0x10 + i));
+    expect(pingTimestamp(data)).toBeCloseTo(12.345678, 6);
+  });
+
+  it('a Time Exceeded quotes the offending datagram’s IP header and its first 8 bytes, and decodes with every field explained', () => {
+    const probe = buildIpv4({ id: 9, df: true, ttl: 1, protocol: IPPROTO_UDP, src: '203.0.113.7', dst: '104.20.23.154' }, buildUdp(24186, 33434, new Uint8Array(32), '203.0.113.7', '104.20.23.154'));
+    const err = buildIcmp({ type: ICMP_TIME_EXCEEDED, code: ICMP_TTL_EXCEEDED, original: probe });
+    expect(err.length).toBe(8 + 20 + 8);
+    expect(hexBytes(err, 0, 2, '')).toBe('0b00');
+    expect(hexBytes(err, 4, 8, '')).toBe('00000000');
+    expect(err.slice(8)).toEqual(probe.slice(0, 28));
+    expect(internetChecksum(err)).toBe(0);
+    const p = parseIcmp(err, 0, err.length);
+    expect(p.quoted).toMatchObject({ start: 8, srcPort: 24186, dstPort: 33434 });
+    expect(p.quoted!.ip).toMatchObject({ src: '203.0.113.7', dst: '104.20.23.154', ttl: 1, protocol: IPPROTO_UDP });
+    const ip = buildIpv4({ id: 1, df: false, ttl: 64, protocol: IPPROTO_ICMP, src: '203.0.113.1', dst: '203.0.113.7' }, err);
+    expect(ip.length).toBe(56);
+    const layers = decodePdu(ip, 'ipv4');
+    expect(layers.map((l) => l.protocol)).toEqual(['ipv4', 'icmp']);
+    expect(layers[1]!.summary).toBe('ICMP time exceeded: TTL expired in transit · about UDP 203.0.113.7:24186 → 104.20.23.154:33434');
+    const fields = allFields(layers);
+    expect(fields.map((f) => f.key)).toEqual(expect.arrayContaining(['icmp.type', 'icmp.code', 'icmp.checksum', 'icmp.unused', 'icmp.original', 'icmp.orig.src', 'icmp.orig.dst', 'icmp.orig.ttl', 'icmp.orig.proto', 'icmp.orig.sport', 'icmp.orig.dport']));
+    for (const f of fields) {
+      expect(f.explain.length, f.key).toBeGreaterThan(10);
+      expect(f.display, f.key).not.toContain('✗');
+    }
+    const port = buildIcmp({ type: ICMP_DEST_UNREACHABLE, code: ICMP_PORT_UNREACHABLE, original: probe });
+    expect(decodePdu(port, 'icmp')[0]!.summary).toMatch(/^ICMP destination unreachable: port unreachable · about UDP/);
+    const echoLayers = decodePdu(buildIpv4({ id: 1, df: true, ttl: 64, protocol: IPPROTO_ICMP, src: '192.168.1.23', dst: '104.20.23.154' }, echo), 'ipv4');
+    expect(allFields(echoLayers).map((f) => f.key)).toEqual(expect.arrayContaining(['icmp.id', 'icmp.seq', 'icmp.data', 'icmp.timestamp', 'icmp.pattern']));
+    for (const f of allFields(echoLayers)) expect(f.explain.length, f.key).toBeGreaterThan(10);
+  });
+
+  it('NAT translates an echo’s identifier like a port, and an error’s quoted header back, keeping every checksum right', () => {
+    const inside = { ip: '192.168.1.23', port: 41879 };
+    const outside = { ip: '203.0.113.7', port: 24186 };
+    const request = buildIpv4({ id: 3, df: true, ttl: 64, protocol: IPPROTO_ICMP, src: inside.ip, dst: '104.20.23.154' }, buildIcmp({ type: ICMP_ECHO, id: 0x9977, seq: 2, data }));
+    const out = natRewrite(request, { src: { ip: outside.ip, port: 0x5e7a } });
+    expect(parseIpv4(out, 0)).toMatchObject({ src: outside.ip, checksumValid: true });
+    expect(parseIcmp(out, 20, out.length)).toMatchObject({ id: 0x5e7a, seq: 2, checksumValid: true });
+    expect(out.slice(28)).toEqual(request.slice(28));
+
+    // A probe leaves the home: its ports and checksums change. A router's error about it quotes the outside header; the
+    // home router turns the quote back into the probe as the laptop sent it, byte for byte, UDP checksum included.
+    const probe = buildIpv4({ id: 9, df: true, ttl: 2, protocol: IPPROTO_UDP, src: inside.ip, dst: '104.20.23.154' }, buildUdp(inside.port, 33437, Uint8Array.from({ length: 32 }, (_, i) => 0x40 + i), inside.ip, '104.20.23.154'));
+    const translated = natRewrite(probe, { src: outside });
+    expect(translated.slice(0, 28)).not.toEqual(probe.slice(0, 28));
+    const err = buildIpv4({ id: 1, df: false, ttl: 64, protocol: IPPROTO_ICMP, src: '203.0.113.1', dst: outside.ip }, buildIcmp({ type: ICMP_TIME_EXCEEDED, code: ICMP_TTL_EXCEEDED, original: translated }));
+    const back = natRewrite(err, { dst: inside });
+    expect(parseIpv4(back, 0)).toMatchObject({ src: '203.0.113.1', dst: inside.ip, checksumValid: true });
+    const m = parseIcmp(back, 20, back.length);
+    expect(m.checksumValid).toBe(true);
+    expect(m.quoted).toMatchObject({ srcPort: inside.port, dstPort: 33437 });
+    expect(back.slice(28)).toEqual(probe.slice(0, 28));
+    expect(parseIpv4(back, 28).checksumValid).toBe(true);
   });
 });

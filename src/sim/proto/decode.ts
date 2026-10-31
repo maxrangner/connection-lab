@@ -4,7 +4,8 @@ import { describeDhcp, DHCP_CLIENT_PORT, DHCP_SERVER_PORT } from './dhcp';
 import { describeDns } from './dns';
 import { describeEthernet, ETHERTYPE_ARP, ETHERTYPE_IPV4, parseEthernet } from './ethernet';
 import { describeHttp } from './http';
-import { describeIpv4, IPPROTO_TCP, IPPROTO_UDP, parseIpv4 } from './ipv4';
+import { describeIcmp } from './icmp';
+import { describeIpv4, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP, parseIpv4 } from './ipv4';
 import { describeRtp, RTP_PORT } from './rtp';
 import { describeTcp, parseTcp } from './tcp';
 import { describeTls } from './tls';
@@ -64,7 +65,12 @@ function walk(b: Uint8Array, proto: Protocol, o: number, end: number, ctx: Decod
       const inner = { ...ctx, srcIp: ip.src, dstIp: ip.dst };
       if (ip.protocol === IPPROTO_UDP) walk(b, 'udp', pdu.headerEnd, pdu.end, inner, out);
       else if (ip.protocol === IPPROTO_TCP) walk(b, 'tcp', pdu.headerEnd, pdu.end, inner, out);
+      else if (ip.protocol === IPPROTO_ICMP) walk(b, 'icmp', pdu.headerEnd, pdu.end, inner, out);
       return pdu.end;
+    }
+    case 'icmp': {
+      out.push(describeIcmp(b, o, end));
+      return end;
     }
     case 'udp': {
       const u = parseUdp(b, o);

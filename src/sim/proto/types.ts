@@ -1,4 +1,4 @@
-export type Protocol = 'ethernet' | 'wifi' | 'arp' | 'ipv4' | 'udp' | 'tcp' | 'tls' | 'dns' | 'dhcp' | 'http' | 'wireguard' | 'rtp';
+export type Protocol = 'ethernet' | 'wifi' | 'arp' | 'ipv4' | 'icmp' | 'udp' | 'tcp' | 'tls' | 'dns' | 'dhcp' | 'http' | 'wireguard' | 'rtp';
 
 /**
  * Layer numbers in the 5-layer TCP/IP model: 1 physical, 2 link, 3 network, 4 transport, 5 application.
@@ -11,6 +11,7 @@ export const PROTOCOL_LAYER: Record<Protocol, LayerNum> = {
   wifi: 2,
   arp: 2, // ARP rides directly in Ethernet; it serves layer 3 but is carried as a link-layer payload.
   ipv4: 3,
+  icmp: 3, // ICMP rides in IP and serves IP: no transport, the message is the payload.
   udp: 4,
   tcp: 4,
   dns: 5,

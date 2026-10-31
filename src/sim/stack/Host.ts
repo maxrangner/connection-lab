@@ -1,7 +1,8 @@
 import { BROADCAST_IP, type Ip4 } from '../bytes/addr';
 import type { IfaceSpec } from '../model';
 import { DHCP_CLIENT_PORT } from '../proto/dhcp';
-import { buildIpv4, IPPROTO_TCP, IPPROTO_UDP, parseIpv4 } from '../proto/ipv4';
+import { ICMP_DEST_UNREACHABLE, ICMP_ECHO, ICMP_PORT_UNREACHABLE, parseIcmp, type ParsedIcmp } from '../proto/icmp';
+import { buildIpv4, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP, parseIpv4, type ParsedIpv4 } from '../proto/ipv4';
 import { parseTcp, TCP_ACK, TCP_SYN } from '../proto/tcp';
 import type { Protocol } from '../proto/types';
 import { buildUdp, parseUdp, UDP_HEADER_LEN } from '../proto/udp';
@@ -11,10 +12,16 @@ import { TcpConnection, type TcpConnOptions, type TcpHandlers } from './tcp';
 import type { TunnelClient } from './vpn';
 
 export type UdpHandler = (from: { ip: Ip4; port: number }, data: Uint8Array, packetId: string, pduId: string) => void;
+/**
+ * A program waiting for ICMP (ping for echo replies, traceroute for the errors about its probes): returns true when the
+ * message was for it. The kernel does this matching by the identifier or the quoted header, as here.
+ */
+export type IcmpHandler = (ip: ParsedIpv4, msg: ParsedIcmp, bytes: Uint8Array, packetId: string, pduId: string) => boolean;
 
 /** An end host: owns IP addresses, sockets and applications. Never forwards packets. */
 export class Host extends Device {
-  private udpSockets = new Map<number, { handler: UdpHandler; app: Protocol }>();
+  private udpSockets = new Map<number, { handler: UdpHandler; app?: Protocol }>();
+  private icmpListeners: IcmpHandler[] = [];
   private tcpListeners = new Map<number, { opts: TcpConnOptions; onAccept: (c: TcpConnection) => void }>();
   private tcpConns = new Map<string, TcpConnection>();
   private ipId = this.rng.int(0, 0xffff);
@@ -48,7 +55,7 @@ export class Host extends Device {
   }
 
   /** The next IPv4 identification value: this host counts up from a random start. */
-  nextIpId(): number {
+  override nextIpId(): number {
     this.ipId = (this.ipId + 1) & 0xffff;
     return this.ipId;
   }
@@ -61,7 +68,8 @@ export class Host extends Device {
     }
   }
 
-  udpBind(port: number, app: Protocol, handler: UdpHandler): void {
+  /** `app` says what the datagrams carry, for decoding; a socket that only reserves its port (traceroute's) has none. */
+  udpBind(port: number, app: Protocol | undefined, handler: UdpHandler): void {
     this.udpSockets.set(port, { handler, app });
   }
 
@@ -69,7 +77,16 @@ export class Host extends Device {
     this.udpSockets.delete(port);
   }
 
-  udpSend(srcPort: number, dst: Ip4, dstPort: number, data: Uint8Array, packetId: string): void {
+  icmpListen(handler: IcmpHandler): void {
+    this.icmpListeners.push(handler);
+  }
+
+  icmpUnlisten(handler: IcmpHandler): void {
+    this.icmpListeners = this.icmpListeners.filter((h) => h !== handler);
+  }
+
+  /** `ttl` is for traceroute's probes, which set their own; everything else goes out with the host's default. */
+  udpSend(srcPort: number, dst: Ip4, dstPort: number, data: Uint8Array, packetId: string, ttl?: number): void {
     const sim = this.sim;
     const app = this.udpSockets.get(srcPort)?.app;
     const seg = buildUdp(srcPort, dstPort, data, this.ip, dst);
@@ -82,7 +99,15 @@ export class Host extends Device {
       pduId: sim.pdu(packetId, seg, 'udp', { srcIp: this.ip, dstIp: dst, appHint: app }),
     });
     // Linux sets Don't Fragment on UDP too when path-MTU discovery is on (the default).
-    this.ipOutput(IPPROTO_UDP, dst, seg, packetId, true, app);
+    this.ipOutput(IPPROTO_UDP, dst, seg, packetId, true, app, this.ip, ttl);
+  }
+
+  /** An ICMP message of a program's own (ping's echo request), sent like any packet of the host's. */
+  icmpSend(dst: Ip4, msg: Uint8Array, packetId: string): void {
+    const sim = this.sim;
+    sim.emit({ type: 'encapsulate', deviceId: this.id, packetId, layer: 3, protocol: 'icmp', pduId: sim.pdu(packetId, msg, 'icmp') });
+    // ping's requests get Don't Fragment from the kernel's path-MTU discovery default, like UDP.
+    this.ipOutput(IPPROTO_ICMP, dst, msg, packetId, true);
   }
 
   tcpListen(port: number, opts: TcpConnOptions, onAccept: (c: TcpConnection) => void): void {
@@ -102,7 +127,7 @@ export class Host extends Device {
   }
 
   /** Wraps a transport segment in an IPv4 header and routes it. A socket bound to one of several addresses sends from that one. */
-  ipOutput(protocol: number, dst: Ip4, l4: Uint8Array, packetId: string, df: boolean, app?: Protocol, src: Ip4 = this.ip): void {
+  ipOutput(protocol: number, dst: Ip4, l4: Uint8Array, packetId: string, df: boolean, app?: Protocol, src: Ip4 = this.ip, ttl = this.spec.initialTtl ?? 64): void {
     const sim = this.sim;
     if (protocol === IPPROTO_TCP) {
       sim.emit({
@@ -114,7 +139,7 @@ export class Host extends Device {
         pduId: sim.pdu(packetId, l4, 'tcp', { srcIp: src, dstIp: dst, appHint: app }),
       });
     }
-    const ip = buildIpv4({ id: this.nextIpId(), df, ttl: this.spec.initialTtl ?? 64, protocol, src, dst }, l4);
+    const ip = buildIpv4({ id: this.nextIpId(), df, ttl, protocol, src, dst }, l4);
     sim.emit({
       type: 'encapsulate',
       deviceId: this.id,
@@ -123,8 +148,12 @@ export class Host extends Device {
       protocol: 'ipv4',
       pduId: sim.pdu(packetId, ip, 'ipv4', { appHint: app }),
     });
-    if (this.tunnel) this.tunnel.send(ip, packetId);
-    else this.sendIp(ip, packetId);
+    this.transmitIp(ip, packetId);
+  }
+
+  protected override transmitIp(ipBytes: Uint8Array, packetId: string): void {
+    if (this.tunnel) this.tunnel.send(ipBytes, packetId);
+    else this.sendIp(ipBytes, packetId);
   }
 
   protected onIpv4(iface: IfaceSpec, ipBytes: Uint8Array, packetId: string): void {
@@ -159,10 +188,12 @@ export class Host extends Device {
       });
       if (!sock) {
         sim.emit({ type: 'drop', packetId, reason: 'no-socket', deviceId: this.id });
+        // Nobody on that port: the sender is told, from the address it wrote to. This is the answer traceroute waits for.
+        this.icmpError(ICMP_DEST_UNREACHABLE, ICMP_PORT_UNREACHABLE, ip.dst, ipBytes);
         return;
       }
       const data = l4.slice(u.payloadStart, u.payloadEnd);
-      const pduId = sim.pdu(packetId, data, sock.app);
+      const pduId = sim.pdu(packetId, data, sock.app ?? 'udp');
       sim.emit({ type: 'decapsulate', deviceId: this.id, packetId, layer: 4, protocol: 'udp', pduId });
       sock.handler({ ip: ip.src, port: u.srcPort }, data, packetId, pduId);
     } else if (ip.protocol === IPPROTO_TCP) {
@@ -192,6 +223,14 @@ export class Host extends Device {
         return;
       }
       conn.input(t, payload, packetId);
+    } else if (ip.protocol === IPPROTO_ICMP) {
+      const m = parseIcmp(l4, 0, l4.length);
+      const pduId = sim.pdu(packetId, l4, 'icmp');
+      sim.emit({ type: 'decapsulate', deviceId: this.id, packetId, layer: 3, protocol: 'ipv4', pduId });
+      if (!m.checksumValid) sim.emit({ type: 'drop', packetId, reason: 'bad-checksum', deviceId: this.id });
+      // The kernel answers echo requests itself; replies and errors go to the program they concern, if one is waiting.
+      else if (m.type === ICMP_ECHO && ip.dst !== BROADCAST_IP) this.echoReply(ip, l4, m);
+      else if (!this.icmpListeners.some((h) => h(ip, m, l4, packetId, pduId))) sim.emit({ type: 'drop', packetId, reason: 'no-socket', deviceId: this.id });
     }
   }
 }

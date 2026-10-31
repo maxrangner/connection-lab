@@ -119,6 +119,12 @@ export interface FetchWebPageOptions {
    * first natural packet loss, with no cable cut. With `slow` the satellite line stays as it is: `slow` wins.
    */
   thin?: boolean;
+  /**
+   * Instead of fetching the page, the device pings the site (`ping -c 4`: four echo requests a second apart, each
+   * answered by the web server) or traces the path to it (`traceroute -m 8`: UDP probes with TTL 1, 2, 3 …, three per
+   * hop; the home router, the ISP router and finally the server itself answer). The name is looked up first, as always.
+   */
+  probe?: 'ping' | 'traceroute';
 }
 
 /**
@@ -210,7 +216,11 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
             clip: fromBase64(VOICE_CLIP_CALLER_BASE64),
             ...(revisit ? { knownAddress: ADDR.friend.ip } : {}),
           }
-        : {
+        : opts.probe === 'ping'
+          ? { kind: 'ping' as const, to: host, ...(dhcp ? {} : { resolver: ADDR.resolver.ip }), count: 4 }
+          : opts.probe === 'traceroute'
+            ? { kind: 'traceroute' as const, to: host, ...(dhcp ? {} : { resolver: ADDR.resolver.ip }), maxHops: 8 }
+            : {
             kind: 'browser' as const,
             url,
             ...(dhcp ? {} : { resolver: ADDR.resolver.ip }),
@@ -248,7 +258,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
   const remembered = from === 'phone' ? ADDR.phone : ADDR.laptop;
   return {
     id: 'fetch-web-page',
-    title: opts.call ? `Call ${ADDR.friend.name}` : `Fetch ${url}`,
+    title: opts.call ? `Call ${ADDR.friend.name}` : opts.probe === 'ping' ? `Ping ${host}` : opts.probe === 'traceroute' ? `Trace the path to ${host}` : `Fetch ${url}`,
     startDevice: from,
     ...(opts.together ? { companion: { device: other, at: COMPANION_DELAY } } : {}),
     tcp: { clientMss: opts.vpn ? Math.min(mss, 1380) : mss, serverMss: 1460 },

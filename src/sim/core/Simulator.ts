@@ -11,8 +11,11 @@ export interface PduSnapshot {
   layers: LayerPdu[];
 }
 
-/** 'stream' = application bytes handed to TCP (or reassembled from it); not itself a packet on the wire. */
-export type PacketKind = 'arp' | 'dhcp' | 'dns' | 'tcp' | 'rtp' | 'stream';
+/**
+ * 'stream' = application bytes handed to TCP (or reassembled from it); not itself a packet on the wire.
+ * 'icmp' = an echo request or reply, or an error a router or host sends back; 'probe' = traceroute's UDP probe.
+ */
+export type PacketKind = 'arp' | 'dhcp' | 'dns' | 'tcp' | 'rtp' | 'icmp' | 'probe' | 'stream';
 
 /** A logical packet. It keeps its id across hops even as MACs, TTL or NAT change its bytes. */
 export interface PacketInfo {

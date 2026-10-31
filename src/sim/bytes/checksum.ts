@@ -13,6 +13,21 @@ export function internetChecksum(data: Uint8Array, start = 0, end = data.length)
   return ~sum & 0xffff;
 }
 
+/**
+ * RFC 1624 incremental update: the checksum a message would have had if the words in `before` had been `after` all
+ * along. For a header whose data is no longer at hand (the 8 bytes an ICMP error quotes of a UDP datagram) this is the
+ * only way to keep the stored checksum consistent, and it is what netfilter does.
+ */
+export function adjustChecksum(old: number, before: Uint8Array, after: Uint8Array): number {
+  let sum = ~old & 0xffff;
+  for (let i = 0; i + 1 < before.length; i += 2) {
+    sum += ~(((before[i] ?? 0) << 8) | (before[i + 1] ?? 0)) & 0xffff;
+    sum += ((after[i] ?? 0) << 8) | (after[i + 1] ?? 0);
+  }
+  while (sum > 0xffff) sum = (sum & 0xffff) + (sum >>> 16);
+  return ~sum & 0xffff;
+}
+
 /** The 12-byte IPv4 pseudo-header that UDP and TCP checksums cover (RFC 768 / RFC 9293). */
 export function pseudoHeader(src: Ip4, dst: Ip4, protocol: number, length: number): number[] {
   return [...ipToBytes(src), ...ipToBytes(dst), 0, protocol, (length >>> 8) & 0xff, length & 0xff];

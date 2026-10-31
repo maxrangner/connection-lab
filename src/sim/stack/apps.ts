@@ -3,7 +3,9 @@ import { concat, setU16, toAscii } from '../bytes/bytes';
 import type { AppSpec } from '../model';
 import { buildDnsQuery, buildDnsResponse, DNS_RCODE_NXDOMAIN, DNS_RCODE_OK, DNS_RCODE_SERVFAIL, DNS_TYPE_A, dnsAddresses, dnsReferral, dnsSummary, parseDns } from '../proto/dns';
 import { buildRtp, parseRtp, RTP_PORT, RTP_PT_PCMU, RTP_SAMPLES_PER_PACKET, RTP_VERSION } from '../proto/rtp';
-import type { Host } from './Host';
+import { buildIcmp, ICMP_DEST_UNREACHABLE, ICMP_ECHO, ICMP_ECHO_REPLY, ICMP_HEADER_LEN, ICMP_TIME_EXCEEDED, pingData, pingTimestamp } from '../proto/icmp';
+import { IPPROTO_UDP } from '../proto/ipv4';
+import type { Host, IcmpHandler } from './Host';
 import { httpsClient } from './https';
 
 const DNS_TIMEOUT = 5; // glibc resolv.conf default "timeout:5"
@@ -18,6 +20,14 @@ const NO_ANSWER_WAIT = 2;
 type BrowserSpec = Extract<AppSpec, { kind: 'browser' }>;
 type VoiceCallSpec = Extract<AppSpec, { kind: 'voice-call' }>;
 type VoicePeerSpec = Extract<AppSpec, { kind: 'voice-peer' }>;
+const PING_INTERVAL = 1; // ping sends one request a second (-i 1), and waits that long for the last reply
+const TRACE_WAIT = 1; // how long traceroute waits for an answer to a probe before sending the next (Linux: -w, 5 s by default)
+const TRACE_PROBES = 3; // probes per hop (-q 3)
+const TRACE_PORT = 33434; // the first destination port; each probe gets the next one (-p 33434)
+const TRACE_DATA_LEN = 32; // 60-byte IP packets: 20 IP + 8 UDP + 32 data, the default packet length
+
+type PingSpec = Extract<AppSpec, { kind: 'ping' }>;
+type TracerouteSpec = Extract<AppSpec, { kind: 'traceroute' }>;
 type DnsServerSpec = Extract<AppSpec, { kind: 'dns-server' }>;
 type DnsAuthoritySpec = Extract<AppSpec, { kind: 'dns-authority' }>;
 type HttpServerSpec = Extract<AppSpec, { kind: 'http-server' }>;
@@ -160,6 +170,158 @@ export function startBrowser(host: Host, spec: BrowserSpec, mss: number, leased?
       });
     },
     (reason) => sim.emit({ type: 'app', deviceId: host.id, app: 'browser', action: 'error', info: { reason } }),
+  );
+}
+
+const round = (ms: number): number => Math.round(ms * 1000) / 1000;
+
+/** An address is used as it is, like ping and traceroute do; a name is looked up first. */
+function lookup(host: Host, name: string, resolver: string | undefined, done: (ips: string[]) => void, fail: (reason: string) => void): void {
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(name)) return done([name]);
+  if (!resolver) return fail('no DNS resolver configured');
+  resolve(host, name, resolver, done, fail);
+}
+
+/**
+ * `ping -c count`, like Linux: an echo request a second, each with 56 data bytes (the time of sending, then a pattern),
+ * the identifier a process id and the sequence number counting from 1. A reply's round trip is the clock on arrival less
+ * the time the request carries. After the last request ping waits a second for its reply, then sums up.
+ */
+export function startPing(host: Host, spec: PingSpec, leased?: string): void {
+  const sim = host.sim;
+  sim.emit({ type: 'app', deviceId: host.id, app: 'ping', action: 'start', info: { to: spec.to, count: spec.count } });
+  lookup(
+    host,
+    spec.to,
+    spec.resolver ?? leased,
+    (ips) => {
+      const target = ips[0]!;
+      const id = host.random32() & 0xffff;
+      const rtts: number[] = [];
+      let sent = 0;
+      let timer: number | undefined;
+      let timerId = '';
+      const finish = (): void => {
+        host.icmpUnlisten(listener);
+        const received = rtts.length;
+        const stats = received ? { minMs: Math.min(...rtts), avgMs: round(rtts.reduce((a, b) => a + b) / received), maxMs: Math.max(...rtts) } : { minMs: 0, avgMs: 0, maxMs: 0 };
+        sim.emit({
+          type: 'app',
+          deviceId: host.id,
+          app: 'ping',
+          action: 'ping-done',
+          info: { to: spec.to, target, sent, received, lossPct: Math.round(((sent - received) / sent) * 100), ...stats },
+        });
+      };
+      const listener: IcmpHandler = (ip, m, bytes, _packetId, pduId) => {
+        if (m.type !== ICMP_ECHO_REPLY || m.id !== id) return false;
+        const stamp = pingTimestamp(bytes.subarray(m.dataStart, m.end));
+        const rttMs = round((sim.now - (stamp ?? sim.now)) * 1000);
+        rtts.push(rttMs);
+        sim.emit({ type: 'app', deviceId: host.id, app: 'ping', action: 'ping-reply', pduId, info: { seq: m.seq ?? 0, from: ip.src, ttl: ip.ttl, bytes: m.end - m.dataStart + ICMP_HEADER_LEN, rttMs } });
+        if (m.seq === spec.count) {
+          sim.cancel(timer);
+          sim.emit({ type: 'timer:cancel', deviceId: host.id, timerId, kind: 'ping-wait' });
+          finish();
+        }
+        return true;
+      };
+      host.icmpListen(listener);
+      const send = (): void => {
+        const seq = ++sent;
+        const msg = buildIcmp({ type: ICMP_ECHO, id, seq, data: pingData(sim.now) });
+        const pk = sim.newPacket(host.id, 'icmp', `ICMP echo request · seq ${seq}`);
+        const pduId = sim.pdu(pk.id, msg, 'icmp');
+        sim.emit({ type: 'app', deviceId: host.id, app: 'ping', action: 'ping-request', pduId, info: { seq, to: target, id } });
+        host.icmpSend(target, msg, pk.id);
+        timerId = host.newTimerId('ping');
+        sim.emit({ type: 'timer:set', deviceId: host.id, timerId, kind: 'ping-wait', fireAt: sim.now + PING_INTERVAL });
+        timer = sim.after(PING_INTERVAL, () => {
+          sim.emit({ type: 'timer:fire', deviceId: host.id, timerId, kind: 'ping-wait' });
+          if (sent < spec.count) send();
+          else finish();
+        });
+      };
+      send();
+    },
+    (reason) => sim.emit({ type: 'app', deviceId: host.id, app: 'ping', action: 'error', info: { reason } }),
+  );
+}
+
+/**
+ * `traceroute`, like Linux: UDP probes from one port to ports 33434 and up, one port per probe, 60-byte packets, three
+ * probes per hop, TTL 1, 2, 3 … Each router whose TTL count hits zero sends Time Exceeded back, and that is a hop; the
+ * destination, with nobody on that port, sends Port Unreachable, and that is the end. The next probe goes when the
+ * previous one is answered, or after a second (a real traceroute keeps up to 16 in flight and waits up to 5 s).
+ */
+export function startTraceroute(host: Host, spec: TracerouteSpec, leased?: string): void {
+  const sim = host.sim;
+  sim.emit({ type: 'app', deviceId: host.id, app: 'traceroute', action: 'start', info: { to: spec.to, maxHops: spec.maxHops } });
+  lookup(
+    host,
+    spec.to,
+    spec.resolver ?? leased,
+    (ips) => {
+      const target = ips[0]!;
+      const port = host.ephemeralPort();
+      // The socket only reserves the port: the answers come as ICMP errors about its probes, not as datagrams.
+      host.udpBind(port, undefined, () => {});
+      // traceroute fills its probes with 0x40, 0x41, … ("@ABCDEFG…").
+      const data = Uint8Array.from({ length: TRACE_DATA_LEN }, (_, i) => 0x40 + (i & 0x3f));
+      const sentAt = new Map<number, number>();
+      const path: string[] = [];
+      let ttl = 1;
+      let probe = 0;
+      let n = 0;
+      let reached = false;
+      let timer: number | undefined;
+      let timerId = '';
+      const finish = (): void => {
+        host.icmpUnlisten(listener);
+        host.udpUnbind(port);
+        sim.emit({ type: 'app', deviceId: host.id, app: 'traceroute', action: 'trace-done', info: { to: spec.to, target, hops: ttl, reached: reached ? 1 : 0, path } });
+      };
+      const sendProbe = (): void => {
+        const dport = TRACE_PORT + n++;
+        const pk = sim.newPacket(host.id, 'probe', `traceroute probe · TTL ${ttl} · ${probe + 1}/${TRACE_PROBES}`);
+        sentAt.set(dport, sim.now);
+        sim.emit({ type: 'app', deviceId: host.id, app: 'traceroute', action: 'trace-probe', info: { ttl, probe: probe + 1, port: dport, to: target } });
+        host.udpSend(port, target, dport, data, pk.id, ttl);
+        timerId = host.newTimerId('trace');
+        sim.emit({ type: 'timer:set', deviceId: host.id, timerId, kind: 'trace-wait', fireAt: sim.now + TRACE_WAIT });
+        timer = sim.after(TRACE_WAIT, () => {
+          sim.emit({ type: 'timer:fire', deviceId: host.id, timerId, kind: 'trace-wait' });
+          advance();
+        });
+      };
+      const advance = (): void => {
+        if (++probe === TRACE_PROBES) {
+          if (reached || ttl === spec.maxHops) return finish();
+          probe = 0;
+          ttl++;
+        }
+        sendProbe();
+      };
+      const listener: IcmpHandler = (ip, m, _bytes, _packetId, pduId) => {
+        const q = m.quoted;
+        // Mine: an error about a UDP datagram from my port to the target.
+        if (!q || q.ip.protocol !== IPPROTO_UDP || q.srcPort !== port || q.ip.dst !== target) return false;
+        if (m.type !== ICMP_TIME_EXCEEDED && m.type !== ICMP_DEST_UNREACHABLE) return false;
+        const at = sentAt.get(q.dstPort);
+        // The quoted destination port says which probe; an answer to one already given up on is noted no further.
+        if (at === undefined || q.dstPort !== TRACE_PORT + n - 1) return true;
+        if (m.type === ICMP_DEST_UNREACHABLE) reached = true;
+        if (path[path.length - 1] !== ip.src) path.push(ip.src);
+        sim.emit({ type: 'app', deviceId: host.id, app: 'traceroute', action: 'trace-hop', pduId, info: { ttl, probe: probe + 1, from: ip.src, rttMs: round((sim.now - at) * 1000), reached: reached ? 1 : 0 } });
+        sim.cancel(timer);
+        sim.emit({ type: 'timer:cancel', deviceId: host.id, timerId, kind: 'trace-wait' });
+        advance();
+        return true;
+      };
+      host.icmpListen(listener);
+      sendProbe();
+    },
+    (reason) => sim.emit({ type: 'app', deviceId: host.id, app: 'traceroute', action: 'error', info: { reason } }),
   );
 }
 
