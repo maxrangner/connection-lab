@@ -51,7 +51,7 @@ export interface Frame {
   head: number;
   tail: number;
 }
-export type Chapter = 'dns' | 'hello' | 'secret' | 'page';
+export type Chapter = 'arp' | 'dns' | 'hello' | 'secret' | 'page';
 
 /** One piece of a packet, by where it sits. */
 export type PartKey = 'ethH' | 'vpn' | 'ip' | 'l4' | 'card' | 'ethT';
@@ -79,20 +79,23 @@ export type Step = (
   | { kind: 'unlock'; device: string }
   /** A reply of many packets: they and their ACKs stream along the cables at once, drawn small. */
   | { kind: 'flow'; packets: Trip[] }
-) & { /** The packet's header fields once this step is done, if it changes them. */ details?: Details };
+) & { /** The packet's header fields once this step is done, if it changes them. */ details?: Details; /** The exact bytes it left behind, for the hex view. */ pdu?: PduSnapshot };
 
 export interface Trip {
   packetId: string;
   chapter: Chapter;
   /** Sim time the packet was made. */
   start: number;
+  /** Sim time it first set off on a cable: the order the trips are told in. A question made before the router's address was known comes after the ARP that found it. */
+  sent: number;
   origin: string;
   /** Sent by the device the page is opened on (rather than coming back to it). */
   outward: boolean;
   /** Text on the data card ("GET /", "example.com?"), or null for a packet with no data (SYN, ACK). */
   card: string | null;
   dataBytes: number;
-  l4: 'tcp' | 'udp';
+  /** The transport, or none: an ARP message rides straight in the frame. */
+  l4: 'tcp' | 'udp' | 'none';
   /** What the transport collar says: "TCP", "UDP", or the flags of an empty segment ("SYN-ACK"). */
   l4Label: string;
   /** Header bytes per wrap, and the Ethernet trailer (FCS). */
@@ -171,6 +174,13 @@ export function cardLabel(summary: string): string {
   return s;
 }
 
+/** "ARP who has 192.168.1.1? tell 192.168.1.23" → "who has 192.168.1.1?", "ARP 192.168.1.1 is at a4:…" → "at a4:…". */
+export function arpCardLabel(summary: string): string {
+  const who = /^ARP (who has \S+\?)/.exec(summary);
+  if (who) return who[1]!;
+  return /is at (\S+)/.exec(summary)?.[1] !== undefined ? `at ${/is at (\S+)/.exec(summary)![1]}` : 'ARP';
+}
+
 /** "DNS query 0x85bb: example.com A?" → "example.com?", a response → its first address. */
 export function dnsCardLabel(summary: string): string {
   const q = /^DNS query \S+: (\S+)/.exec(summary);
@@ -200,6 +210,8 @@ function readable(b: Uint8Array): string[] {
 
 /** Reads a frame the way a snoop on the line would: from its bytes, with no keys. */
 function seenOn(pdu: PduSnapshot | undefined, p: PacketInfo): Seen | undefined {
+  const arp = pdu && layer(pdu, 'arp');
+  if (arp) return { from: field(arp, 'arp.spa'), to: field(arp, 'arp.tpa'), lines: [arpCardLabel(arp.summary)], kind: 'open' };
   const ip = pdu && layer(pdu, 'ipv4');
   if (!pdu || !ip) return undefined;
   const base = { from: field(ip, 'ipv4.src'), to: field(ip, 'ipv4.dst') };
@@ -241,7 +253,7 @@ function detailsOf(pdu: PduSnapshot | undefined): Details {
   if (ip) d.ip = rowsOf(ip.fields);
   const l4 = layer(pdu, 'tcp') ?? layer(pdu, 'udp');
   if (l4) d.l4 = rowsOf(l4.fields);
-  const app = layer(pdu, 'http') ?? layer(pdu, 'dns') ?? layer(pdu, 'tls');
+  const app = layer(pdu, 'http') ?? layer(pdu, 'dns') ?? layer(pdu, 'tls') ?? layer(pdu, 'arp');
   if (app) d.card = rowsOf(app.fields);
   return d;
 }
@@ -259,12 +271,12 @@ function messageOf(app: LayerPdu | undefined): Message | undefined {
   return undefined;
 }
 
-/** Which packets the story follows. */
-function chosen(r: SimResult): PacketInfo[] {
+/** Which packets the story follows. ARP only when asked for: it is the first thing on the cable, and the dullest. */
+function chosen(r: SimResult, arp: boolean): PacketInfo[] {
   const out: PacketInfo[] = [];
   const helloAckFrom = new Set<string>();
   for (const p of r.packets.values()) {
-    if (p.kind === 'dns') {
+    if (p.kind === 'dns' || (p.kind === 'arp' && arp)) {
       out.push(p);
       continue;
     }
@@ -303,8 +315,10 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, client: s
   let onLink: Frame | undefined;
   /** The packet as it is right now: built up by the sender, then rewritten hop by hop. */
   let now: Details = {};
+  let nowPdu: PduSnapshot | undefined;
   const update = (pduId: string): void => {
-    now = { ...now, ...detailsOf(r.pdus.get(pduId)) };
+    nowPdu = r.pdus.get(pduId);
+    now = { ...now, ...detailsOf(nowPdu) };
   };
   for (const e of r.events as SimEvent[]) {
     if (done) break;
@@ -314,6 +328,8 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, client: s
     switch (e.type) {
       case 'encapsulate': {
         update(e.pduId);
+        // The ARP message itself is made, not wrapped: its frame comes next.
+        if (e.protocol === 'arp') break;
         if (e.layer === 3) inner ??= r.pdus.get(e.pduId);
         const w = WRAP_OF_LAYER[e.layer];
         if (w === 'eth') {
@@ -328,7 +344,7 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, client: s
       case 'decapsulate': {
         const w = WRAP_OF_LAYER[e.layer];
         if (w) steps.push({ kind: 'unwrap', device: e.deviceId, layer: w, ...(w === 'eth' && onLink ? { frame: onLink } : {}) });
-        if (w === 'l4') done = true;
+        if (w === 'l4' || (w === 'eth' && p.kind === 'arp')) done = true;
         break;
       }
       case 'forward':
@@ -372,25 +388,29 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, client: s
         break;
       }
     }
-    if (steps.length > count) steps[steps.length - 1]!.details = now;
+    if (steps.length > count) Object.assign(steps[steps.length - 1]!, { details: now, pdu: nowPdu });
   }
   if (!frame || !steps.some((s) => s.kind === 'travel' || s.kind === 'lost')) return null;
 
   const eth = layer(frame, 'ethernet') ?? layer(frame, 'wifi')!;
   const packet = inner ?? frame;
-  const ip = layer(packet, 'ipv4')!;
-  const l4 = layer(packet, 'tcp') ?? layer(packet, 'udp')!;
+  // An ARP message has no IP or transport: the whole thing is its card.
+  const arp = p.kind === 'arp' ? layer(packet, 'arp') : undefined;
+  const ip = layer(packet, 'ipv4');
+  const l4 = layer(packet, 'tcp') ?? layer(packet, 'udp');
+  if (!arp && (!ip || !l4)) return null;
   const app = layer(packet, 'http') ?? layer(packet, 'dns');
-  const dataBytes = l4.payloadEnd - l4.headerEnd;
-  const card = dataBytes > 0 ? (app ? (app.protocol === 'http' ? cardLabel(app.summary) : dnsCardLabel(app.summary)) : 'data') : null;
-  const isTcp = l4.protocol === 'tcp';
+  const dataBytes = arp ? arp.end - arp.start : l4!.payloadEnd - l4!.headerEnd;
+  const card = arp ? arpCardLabel(arp.summary) : dataBytes > 0 ? (app ? (app.protocol === 'http' ? cardLabel(app.summary) : dnsCardLabel(app.summary)) : 'data') : null;
+  const isTcp = l4?.protocol === 'tcp';
   const origin = steps[0]!.kind === 'travel' || steps[0]!.kind === 'lost' ? (steps[0] as { from: string }).from : (steps[0] as { device: string }).device;
 
-  if (card) steps.unshift({ kind: 'appear', device: origin, details: detailsOf(packet) });
+  if (card) steps.unshift({ kind: 'appear', device: origin, details: detailsOf(packet), pdu: packet });
   const last = steps[steps.length - 1];
-  if (card && last?.kind === 'unwrap' && last.layer === 'l4') steps.push({ kind: 'read', device: last.device });
+  if (card && last?.kind === 'unwrap' && (last.layer === 'l4' || (arp && last.layer === 'eth'))) steps.push({ kind: 'read', device: last.device });
 
   const flags = p.tcp?.flags ?? 0;
+  const firstTx = steps.find((s): s is Extract<Step, { kind: 'travel' | 'lost' }> => s.kind === 'travel' || s.kind === 'lost');
   // A DNS question asked again by the same device: its stub resolver's timer ran out.
   const askedAt = p.kind === 'dns' ? asked.get(origin) : undefined;
   if (p.kind === 'dns' && !packet.layers.some((x) => x.summary.startsWith('DNS response'))) asked.set(origin, p.createdAt);
@@ -398,19 +418,20 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, client: s
   const timer = resend?.type === 'tcp:retransmit' && resend.cause === 'rto' ? resend.rto : askedAt !== undefined ? p.createdAt - askedAt : undefined;
   return {
     packetId: p.id,
-    chapter: p.kind === 'dns' ? 'dns' : dataBytes > 0 ? 'page' : 'hello',
+    chapter: arp ? 'arp' : p.kind === 'dns' ? 'dns' : dataBytes > 0 ? 'page' : 'hello',
     start: p.createdAt,
+    sent: firstTx?.at ?? p.createdAt,
     origin,
     outward: origin === client,
     card,
     dataBytes,
-    l4: isTcp ? 'tcp' : 'udp',
-    l4Label: isTcp ? (dataBytes > 0 ? 'TCP' : flagNames(flags).replace(/, /g, '-')) : 'UDP',
-    header: { eth: eth.headerEnd - eth.start, ip: ip.headerEnd - ip.start, l4: l4.headerEnd - l4.start },
+    l4: arp ? 'none' : isTcp ? 'tcp' : 'udp',
+    l4Label: arp ? '' : isTcp ? (dataBytes > 0 ? 'TCP' : flagNames(flags).replace(/, /g, '-')) : 'UDP',
+    header: { eth: eth.headerEnd - eth.start, ip: ip ? ip.headerEnd - ip.start : 0, l4: l4 ? l4.headerEnd - l4.start : 0 },
     tunnel,
     trailer: eth.end - eth.payloadEnd,
-    from: field(ip, 'ipv4.src'),
-    to: field(ip, 'ipv4.dst'),
+    from: arp ? field(arp, 'arp.spa') : field(ip, 'ipv4.src'),
+    to: arp ? field(arp, 'arp.tpa') : field(ip, 'ipv4.dst'),
     message: messageOf(app),
     steps,
     lost,
@@ -464,14 +485,19 @@ function dnsAnswer(r: SimResult, action: 'dns-answer' | 'dns-cache-hit' = 'dns-a
   return Array.isArray(a) ? (a[0] ?? null) : null;
 }
 
-export function buildStory(r: SimResult): Story {
+export interface StoryOptions {
+  /** Follow the ARP exchange too (who has the router's address?), before the DNS question. */
+  arp?: boolean;
+}
+
+export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
   const asked = new Map<string, number>();
   const start = r.events.find((e) => e.type === 'app' && e.action === 'start');
   const client = start?.type === 'app' ? start.deviceId : r.scenario.startDevice;
-  const trips = chosen(r)
+  const trips = chosen(r, !!opts.arp)
     .map((p) => trip(r, p, asked, client))
     .filter((t): t is Trip => !!t)
-    .sort((a, b) => a.start - b.start);
+    .sort((a, b) => a.sent - b.sent || a.start - b.start);
   const tls = r.scenario.devices.flatMap((d) => d.apps).find((a) => a.kind === 'browser')?.tls;
   if (tls) labelTls(trips, r, tls);
   numberParts(trips, r);

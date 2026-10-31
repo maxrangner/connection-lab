@@ -56,9 +56,9 @@ const SECTION: Record<Layer, { d: number; h: number }> = { app: { d: 1.0, h: 0.7
 
 type L2 = 'ethernet' | 'wifi';
 const colorOf = (layer: Layer, trip: Trip, l2: L2 = 'ethernet'): string =>
-  layer === 'l4' ? COLOR[trip.l4] : layer === 'eth' && l2 === 'wifi' ? COLOR.wifi : COLOR[layer];
+  layer === 'l4' ? (trip.l4 === 'udp' ? COLOR.udp : COLOR.tcp) : layer === 'eth' && l2 === 'wifi' ? COLOR.wifi : COLOR[layer];
 const layerName = (layer: Layer, trip: Trip, l2: L2 = 'ethernet'): string =>
-  ({ app: 'App', l4: trip.l4 === 'udp' ? 'UDP' : 'TCP', ip: 'IP', vpn: 'VPN', eth: l2 === 'wifi' ? 'Wi-Fi' : 'Ethernet' })[layer];
+  ({ app: 'App', l4: trip.l4 === 'udp' ? 'UDP' : trip.l4 === 'none' ? '' : 'TCP', ip: 'IP', vpn: 'VPN', eth: l2 === 'wifi' ? 'Wi-Fi' : 'Ethernet' })[layer];
 const cardFont = (label: string): number => (label.length <= 7 ? 13 : label.length <= 14 ? 10.5 : 9);
 const cardLen = (trip: Trip): number => {
   const label = trip.card ?? '';
@@ -688,7 +688,7 @@ export class NetworkScene {
       setAttr(d.g, 'transform', `translate(0 ${(-this.hop(d.id, v) * U).toFixed(2)})`);
       if (d.l4Name && hit) {
         const udp = hit.seg.trip.l4 === 'udp';
-        setText(d.l4Name, udp ? 'UDP' : 'TCP');
+        setText(d.l4Name, layerName('l4', hit.seg.trip));
         setAttr(d.l4Name, 'fill', shade(udp ? COLOR.udp : COLOR.tcp, 0.75));
       }
       if (d.l2Tray && d.l2Name && hit) {
@@ -1226,11 +1226,12 @@ export class NetworkScene {
     };
     const frame = frameAt(seg) ?? { l2: 'ethernet', head: trip.header.eth, tail: trip.trailer };
     const L = TILES_PER_BYTE;
+    // A piece the packet does not have (an ARP message has no IP or transport) is not there at all.
     const list = [
       mk('ethH', 'eth', frame.head, frame.head * L),
       ...(trip.tunnel ? [mk('vpn', 'vpn', trip.tunnel, trip.tunnel * L)] : []),
-      mk('ip', 'ip', trip.header.ip, trip.header.ip * L),
-      mk('l4', 'l4', trip.header.l4, trip.header.l4 * L),
+      ...(trip.header.ip ? [mk('ip', 'ip', trip.header.ip, trip.header.ip * L)] : []),
+      ...(trip.header.l4 ? [mk('l4', 'l4', trip.header.l4, trip.header.l4 * L)] : []),
     ];
     if (trip.card) list.push(mk('card', 'app', trip.dataBytes, cardLen(trip)));
     list.push(mk('ethT', 'eth', frame.tail, Math.max(frame.tail * L, 0.12)));
@@ -1273,10 +1274,10 @@ export class NetworkScene {
     if (open) this.pillPanel(open.x, y - 18, open.w, open.p.key, open.c, open.rows, this.pill!.k);
   }
 
-  /** A pill's fields, growing upwards out of the pill. */
+  /** A pill's fields, growing upwards out of the pill, with a last row that opens the bytes themselves. */
   private pillPanel(x: number, bottom: number, pillW: number, key: PartKey, color: string, rows: Row[], k: number): void {
     const ROW = 19;
-    const h = rows.length * ROW + 12;
+    const h = (rows.length + 1) * ROW + 12;
     const w = Math.max(pillW, ...rows.map((r) => r.name.length * 6.1 + r.value.length * 6.7 + 34));
     const g = el('g', { class: 'pill-panel', 'data-chip': key, opacity: clamp01(k * 2).toFixed(3), transform: `translate(${x.toFixed(1)} ${(bottom - 3).toFixed(1)}) scale(1 ${easeOutBack(k).toFixed(3)})` }, this.tags);
     el('rect', { x: -w / 2, y: -h, width: w, height: h, rx: 10, stroke: color }, g);
@@ -1287,6 +1288,10 @@ export class NetworkScene {
       const value = el('text', { x: w / 2 - 11, y, dy: '0.35em', 'text-anchor': 'end', class: 'pill-value' }, g);
       value.textContent = r.value;
     });
+    const y = -h + 6 + (rows.length + 0.5) * ROW;
+    const bytes = el('g', { 'data-hex': key, class: 'pill-bytes' }, g);
+    el('rect', { x: -w / 2 + 6, y: y - 8, width: w - 12, height: 16, rx: 8 }, bytes);
+    el('text', { x: 0, y, dy: '0.35em', 'text-anchor': 'middle', class: 'pill-name' }, bytes).textContent = 'the bytes ▸';
   }
 
   /** "from → to" on the IP piece. When an address changes it is the big moment of the step, see `swapMoment`. */

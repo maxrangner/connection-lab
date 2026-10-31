@@ -53,6 +53,32 @@ describe('network story', () => {
     expect(story.pageTitle).toBe('Example Domain');
   });
 
+  it('follows the ARP exchange only when asked, as its own chapter with no IP or transport pieces', () => {
+    expect(story.trips.some((t) => t.chapter === 'arp')).toBe(false);
+    const withArp = buildStory(runScenario(fetchWebPage(), { seed: 1, faults: { randomLoss: 0, manual: [] } }), { arp: true });
+    const arp = withArp.trips.filter((t) => t.chapter === 'arp');
+    expect(arp.map((t) => [t.origin, t.card])).toEqual([
+      ['laptop', 'who has 192.168.1.1?'],
+      ['home', 'at a4:91:b1:7d:02:01'],
+    ]);
+    expect(arp[0]).toMatchObject({ l4: 'none', l4Label: '', header: { eth: 14, ip: 0, l4: 0 }, dataBytes: 28, from: '192.168.1.23', to: '192.168.1.1' });
+    expect(kinds(arp[0]!)).toEqual(['appear', 'wrap:eth', 'travel', 'unwrap:eth', 'read']);
+    expect(arp[1]!.outward).toBe(false);
+    expect(withArp.trips.indexOf(arp[1]!)).toBeLessThan(withArp.trips.findIndex((t) => t.chapter === 'dns'));
+    // Everything else is as without.
+    expect(withArp.trips.filter((t) => t.chapter !== 'arp').map((t) => t.card ?? t.l4Label)).toEqual(story.trips.map((t) => t.card ?? t.l4Label));
+  });
+
+  it('keeps the exact bytes each step leaves, for the hex view', () => {
+    const t = get('GET /');
+    const appear = t.steps.find((s) => s.kind === 'appear')!;
+    expect(appear.pdu?.layers.map((l) => l.protocol)).toEqual(['ipv4', 'tcp', 'http']);
+    const framed = t.steps.find((s) => s.kind === 'wrap' && s.layer === 'eth')!;
+    expect(framed.pdu?.layers[0]?.protocol).toBe('ethernet');
+    const nat = t.steps.find((s) => s.kind === 'nat')!;
+    expect(nat.pdu?.layers.find((l) => l.protocol === 'ipv4')?.fields.find((f) => f.key === 'ipv4.src')?.display).toBe('203.0.113.7');
+  });
+
   it('turns summaries into card labels', () => {
     expect(cardLabel('HTTP GET / HTTP/1.1')).toBe('GET /');
     expect(cardLabel('HTTP HTTP/1.1 200 OK')).toBe('200 OK');

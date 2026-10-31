@@ -40,6 +40,12 @@ export function drawPadlock(g: SVGGElement): void {
   el('rect', { x: -1.6, y: 8, width: 3.2, height: 9, class: 'padlock-hole' }, g);
 }
 
+/** A speech bubble with a question in it: the ARP "who has…?" shouted on the cable. */
+export function drawQuestion(g: SVGGElement): void {
+  el('path', { d: 'M-22 -24 H22 V10 H-4 L-14 22 V10 H-22 Z', class: 'bubble' }, g);
+  el('text', { x: 0, y: -6, dy: '0.35em', 'text-anchor': 'middle', class: 'bubble-text' }, g).textContent = '?';
+}
+
 /** A long page: the bigger page. */
 export function drawPage(g: SVGGElement): void {
   el('path', { d: 'M-17 -27 H9 L19 -17 V27 H-17 Z', class: 'page-sheet' }, g);

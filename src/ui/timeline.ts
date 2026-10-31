@@ -1,3 +1,4 @@
+import type { PduSnapshot } from '../sim';
 import { clamp01, easeIn, easeInOut, easeOutBack, easeOutBounce, lerpV, v3, type Vec3 } from './project';
 import type { Details, Frame, Seen, Step, Story, Trip, Wrap } from './story';
 
@@ -755,13 +756,22 @@ export function stepTarget(tl: Timeline, from: number, dir: 1 | -1, grace = 0.2)
 
 /** The fields of the packet at progress k of a segment: as the latest step left them. A translated address counts once it lands. */
 export function detailsAt(seg: Seg, k: number): Details {
+  return latest(seg, k, 'details') ?? {};
+}
+
+/** The exact bytes of the packet at progress k of a segment, as the latest step left them. */
+export function pduAt(seg: Seg, k: number): PduSnapshot | undefined {
+  return latest(seg, k, 'pdu');
+}
+
+function latest<K extends 'details' | 'pdu'>(seg: Seg, k: number, what: K): Step[K] | undefined {
   const steps = seg.trip.steps;
   const s = seg.step;
   for (let i = steps.indexOf(s as Step) - (s.kind === 'nat' && k < swapLanding(s)! ? 1 : 0); i >= 0; i--) {
-    const d = steps[i]!.details;
+    const d = steps[i]![what];
     if (d) return d;
   }
-  return {};
+  return undefined;
 }
 
 /**

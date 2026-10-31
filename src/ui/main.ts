@@ -2,13 +2,14 @@ import './app.css';
 import { fetchWebPage, runScenario, type Cut, type ManualFault } from '../sim';
 import { el } from './svg';
 import { clamp01, easeInOut, easeOutBack, iso, lerp } from './project';
-import { drawPadlock, drawPage, drawSatellite, drawScissors, drawShield, drawSpyglass } from './icons';
+import { HexCard } from './hexCard';
+import { drawPadlock, drawPage, drawQuestion, drawSatellite, drawScissors, drawShield, drawSpyglass } from './icons';
 import { Menu } from './menus';
 import { NetworkScene, type Camera } from './NetworkScene';
 import { Sound } from './sound';
 import { SpyCard } from './spyCard';
 import { buildStory, type Chapter, type PartKey, type Story } from './story';
-import { buildTimeline, chapterAt, formatWait, realAt, ridingOn, seenSoFar, spyLog, stepTarget, type Timeline } from './timeline';
+import { buildTimeline, chapterAt, formatWait, pduAt, realAt, ridingOn, seenSoFar, segAt, spyLog, stepTarget, type Timeline } from './timeline';
 
 /**
  * "Get example.com". Drag the site card onto the laptop or the phone. The bar below holds the playback buttons, and
@@ -22,10 +23,10 @@ const LINGER = 1.4;
 const BACK_GRACE = 1;
 
 /** What the next run is like, set from the Setup menu between runs: changing it mid-run would rewrite what happened. */
-type Setting = 'https' | 'big' | 'slow' | 'vpn';
+type Setting = 'https' | 'big' | 'slow' | 'vpn' | 'arp';
 type Features = Record<Setting, boolean>;
-const SETTINGS: Setting[] = ['https', 'big', 'slow', 'vpn'];
-const features: Features = { https: false, big: false, slow: false, vpn: false };
+const SETTINGS: Setting[] = ['https', 'big', 'slow', 'vpn', 'arp'];
+const features: Features = { https: false, big: false, slow: false, vpn: false, arp: false };
 /** The line the spyglass is on, if any. */
 let spyLine: string | null = null;
 /** The visual time it was put there: it can only read what passes from then on. */
@@ -80,7 +81,7 @@ function simulate(): void {
   const scenario = fetchWebPage({ site: siteName(), revisit, slow: features.slow, vpn: features.vpn, https: features.https, from: client, warmArp });
   const plan = { randomLoss: 0, decided, cuts, manual: faults };
   // Long enough for TCP to give up on a dead line (15 resends, backing off to a minute apart).
-  story = buildStory(runScenario(scenario, { seed: runSeed, faults: plan, maxTime: 1000 }));
+  story = buildStory(runScenario(scenario, { seed: runSeed, faults: plan, maxTime: 1000 }), { arp: features.arp });
   tl = buildTimeline(story, knocks);
 }
 simulate();
@@ -249,6 +250,7 @@ const SETUP: { id: Setting; label: string; draw: (g: SVGGElement) => void; span:
   { id: 'big', label: 'Bigger page', draw: drawPage, span: 34 },
   { id: 'slow', label: 'Satellite', draw: drawSatellite, span: 56 },
   { id: 'vpn', label: 'VPN', draw: drawShield, span: 34 },
+  { id: 'arp', label: 'Show ARP', draw: drawQuestion, span: 34 },
 ];
 function setSetting(id: Setting, on: boolean): void {
   features[id] = on;
@@ -269,7 +271,7 @@ function showSetup(): void {
   setupMenu.button.classList.toggle('on', SETTINGS.some((k) => features[k]));
 }
 
-const CHAPTERS: Record<Chapter, string> = { dns: 'Find the address', hello: 'Say hello', secret: 'Check and agree', page: 'Get the page' };
+const CHAPTERS: Record<Chapter, string> = { arp: 'Find the router', dns: 'Find the address', hello: 'Say hello', secret: 'Check and agree', page: 'Get the page' };
 /** Chapter number in this run (a second visit skips the address, HTTPS adds the secret). */
 const chapterName = (ch: Chapter): string => (ch === 'page' && story.image ? 'Get the photo' : CHAPTERS[ch]);
 
@@ -394,6 +396,7 @@ followBtn.addEventListener('click', () => {
 });
 root.appendChild(followBtn);
 const spyCard = new SpyCard(root, () => setSpyLine(null));
+const hexCard = new HexCard(root, () => hexCard.hide());
 // The animation takes its time so you can watch; this says how long it really took.
 const realClock = document.createElement('div');
 realClock.className = 'real-clock';
@@ -528,6 +531,15 @@ svg.addEventListener('pointerdown', (e) => {
   for (const menu of menus) if (menu !== toolsMenu || !tool) menu.setOpen(false);
   showChapterMenu(false);
   const target = e.target as Element;
+  // The last row of an open pill: the bytes themselves.
+  const hex = target.closest('[data-hex]')?.getAttribute('data-hex') as PartKey | undefined;
+  if (hex) {
+    const hit = segAt(tl, v);
+    const pdu = hit && pduAt(hit.seg, hit.k);
+    if (pdu) hexCard.show(pdu, hex);
+    sound.play('snap');
+    return;
+  }
   const chip = target.closest('[data-chip]')?.getAttribute('data-chip') as PartKey | undefined;
   if (chip) {
     pillTarget = pill === chip && pillTarget ? 0 : 1;
@@ -673,6 +685,7 @@ window.addEventListener('keydown', (e) => {
     pickUp(null);
     for (const menu of menus) menu.setOpen(false);
     showChapterMenu(false);
+    hexCard.hide();
   }
   else if (e.code === 'ArrowRight') step(1);
   else if (e.code === 'ArrowLeft') step(-1);
@@ -756,6 +769,8 @@ function frame(now: number): void {
   }
   peek += (peekTarget - peek) * Math.min(1, dt * 10);
   if (!peekTarget) pillTarget = 0;
+  // The bytes go with the pill they came out of.
+  if (!pillTarget && hexCard.isOpen) hexCard.hide();
   pillOpen += (pillTarget - pillOpen) * Math.min(1, dt * 12);
 
   const bob = mode === 'idle' && !stillness.matches ? Math.sin(clock * 2.4) * 4 : 0;

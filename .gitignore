@@ -6,3 +6,4 @@ dist/
 coverage/
 screenshots/
 dist-bundle/
+.claude/worktrees/
