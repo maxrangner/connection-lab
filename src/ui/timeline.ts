@@ -151,7 +151,7 @@ export const FLOW_FALL = 0.9;
 /** Seconds a sender of a stream visibly waits when only its timer can tell it a packet is gone. */
 const FLOW_TIMER = 1.6;
 /** Seconds per cable of an ACK on its own: small, and not what you came to watch. */
-const ACK_HOP = 0.4;
+const ACK_HOP = 0.7;
 
 export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> = new Map()): Timeline {
   const kind = new Map(story.devices.map((d) => [d.id, d.kind]));

@@ -901,7 +901,9 @@ export class NetworkScene {
   /** A stream: its packets as small blocks on the cables, far ones first. A part flies onto the sheet, a lost one falls. */
   private drawFlow(flow: FlowPacket[], waits: FlowWait[], v: number): void {
     for (const w of waits) if (v >= w.t0 && v < w.t1) this.drawWait(w.step, (v - w.t0) / (w.t1 - w.t0), w.t1 - w.t0);
-    const blocks: { at: Vec3; size: number; color: string; op: number }[] = [];
+    const blocks: { at: Vec3; size: number; color: string; op: number; named?: boolean }[] = [];
+    // A block says nothing by itself: an ACK on its own says what it is, and so do the first few of a stream.
+    const named = flow.filter((p) => !p.trip.dataBytes).slice(0, 3);
     for (const p of flow) {
       if (v < p.t0 || v >= p.t1) continue;
       const data = p.trip.dataBytes > 0;
@@ -910,7 +912,7 @@ export class NetworkScene {
       const end = p.hops[p.hops.length - 1]!;
       const at = this.blockAt(p, v);
       if (at) {
-        blocks.push({ at, size, color, op: 1 });
+        blocks.push({ at, size, color, op: 1, named: named.includes(p) });
       } else if (end.lost) {
         const tau = v - end.t1;
         const at = travelPose(this.tl.pos, this.tl.trayZ, end.from, end.to, end.fall, 0, this.tl.sky.get(end.link) ?? 0, this.tl.air.has(end.link)).pos;
@@ -926,6 +928,10 @@ export class NetworkScene {
     for (const b of blocks) {
       const g = el('g', { opacity: b.op.toFixed(3) }, this.packet);
       box(g, { x: b.at.x - b.size / 2, y: b.at.y - b.size / 2, z: b.at.z, w: b.size, d: b.size, h: b.size * 0.6, color: b.color });
+      if (b.named) {
+        const c = iso(b.at.x, b.at.y, b.at.z + 1);
+        el('text', { x: c.sx.toFixed(1), y: c.sy.toFixed(1), 'text-anchor': 'middle', class: 'ack-name' }, this.tags).textContent = 'ACK: got it';
+      }
     }
   }
 

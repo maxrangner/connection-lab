@@ -813,6 +813,16 @@ body {
   stroke-width: 4px;
 }
 
+/* The small block of an ACK says what it is */
+.ack-name {
+  font-size: 13px;
+  font-weight: 700;
+  fill: #6a4fb0;
+  paint-order: stroke;
+  stroke: var(--paper);
+  stroke-width: 4px;
+}
+
 /* How long it really took: the animation stretches time so you can watch */
 .real-clock {
   position: fixed;
