@@ -9,7 +9,9 @@ import {
 } from './exampleComCapture';
 import * as tlsExample from './tlsCapture_example_com';
 import * as tlsCern from './tlsCapture_info_cern_ch';
+import * as tlsPhoto from './tlsCapture_httpbin_org';
 import { CERN_A_RECORDS, CERN_DNS_TTL, CERN_HOST, CERN_HTTP_REQUEST, CERN_HTTP_RESPONSE_BASE64, CERN_IP, CERN_PATH } from './infoCernCapture';
+import { PHOTO_A_RECORDS, PHOTO_DNS_TTL, PHOTO_HOST, PHOTO_HTTP_REQUEST, PHOTO_HTTP_RESPONSE_BASE64, PHOTO_IP, PHOTO_PATH } from './photoCapture';
 
 /**
  * Addresses used by the "fetch a web page" scenario.
@@ -30,8 +32,12 @@ export const ADDR = {
   ispToServer: { ip: '198.51.100.5', mac: '00:1b:21:3a:4c:03' },
   ispToVpn: { ip: '198.51.100.9', mac: '00:1b:21:3a:4c:04' },
   vpn: { ip: '198.51.100.10', mac: '00:0c:29:5a:cc:03', tunnelIp: '10.8.0.2' },
+  vpnToServer: { mac: '00:0c:29:5a:cc:04' },
+  vpnToResolver: { mac: '00:0c:29:5a:cc:05' },
   resolver: { ip: '1.1.1.1', mac: '00:0c:29:1d:aa:01' },
+  resolverFromVpn: { mac: '00:0c:29:1d:aa:02' },
   server: { ip: CAPTURED_FROM_IP, mac: '00:0c:29:7e:bb:02' },
+  serverFromVpn: { mac: '00:0c:29:7e:bb:03' },
 } as const;
 
 export interface FetchWebPageOptions {
@@ -39,9 +45,10 @@ export interface FetchWebPageOptions {
   mss?: number;
   /**
    * Which real page to fetch: example.com (932 bytes, one packet) or the first website ever,
-   * info.cern.ch/hypertext/WWW/TheProject.html (2450 bytes, so the reply needs more than one packet).
+   * info.cern.ch/hypertext/WWW/TheProject.html (2450 bytes, so the reply needs more than one packet), or a real
+   * JPEG from httpbin.org (35 588 bytes, so it needs about 25 packets and TCP's window really matters).
    */
-  site?: 'example.com' | 'info.cern.ch';
+  site?: 'example.com' | 'info.cern.ch' | 'httpbin.org';
   /**
    * A second visit soon after the first: the laptop still has the address in its DNS cache (within the record's
    * TTL), and the laptop and home router still know each other's MAC addresses, so neither looks anything up.
@@ -56,7 +63,8 @@ export interface FetchWebPageOptions {
   https?: boolean;
   /**
    * A WireGuard VPN: every packet of the device goes sealed to the VPN server, which sends it on from its own address.
-   * Packets are smaller inside a tunnel: MSS 1380, as for WireGuard's usual MTU of 1420.
+   * Packets are smaller inside a tunnel: MSS 1380, as for WireGuard's usual MTU of 1420. A real VPN server sits in
+   * another network, so what it sends on does not pass your ISP again: here it has its own cables to where it goes.
    */
   vpn?: boolean;
   /** The device and its home router already know each other's MAC addresses (ARP caches stay warm for a while). */
@@ -69,6 +77,7 @@ export interface FetchWebPageOptions {
 const SITES = {
   'example.com': { url: 'http://example.com/', ip: CAPTURED_FROM_IP, request: HTTP_REQUEST, response: HTTP_RESPONSE_BASE64, tls: tlsExample },
   'info.cern.ch': { url: `http://${CERN_HOST}${CERN_PATH}`, ip: CERN_IP, request: CERN_HTTP_REQUEST, response: CERN_HTTP_RESPONSE_BASE64, tls: tlsCern },
+  'httpbin.org': { url: `http://${PHOTO_HOST}${PHOTO_PATH}`, ip: PHOTO_IP, request: PHOTO_HTTP_REQUEST, response: PHOTO_HTTP_RESPONSE_BASE64, tls: tlsPhoto },
 } as const;
 
 export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
@@ -172,6 +181,8 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           { network: '172.64.0.0', prefixLen: 13, iface: 'isp.p2' },
           // CERN's own address block, where info.cern.ch lives.
           { network: '188.184.0.0', prefixLen: 15, iface: 'isp.p2' },
+          // The cloud address httpbin.org answered from.
+          { network: PHOTO_IP, prefixLen: 32, iface: 'isp.p2' },
         ],
         arp: {
           [ADDR.homeWan.ip]: ADDR.homeWan.mac,
@@ -187,9 +198,17 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
         sublabel: ADDR.vpn.ip,
         kind: 'vpn-server',
         layout: { x: 1040, y: 735 },
-        ifaces: [{ id: 'vpn.eth0', name: 'eth0', mac: ADDR.vpn.mac, ip: ADDR.vpn.ip, prefixLen: 32 }],
-        routes: [{ network: '0.0.0.0', prefixLen: 0, via: ADDR.ispToVpn.ip, iface: 'vpn.eth0' }],
-        arp: { [ADDR.ispToVpn.ip]: ADDR.ispToVpn.mac },
+        ifaces: [
+          { id: 'vpn.eth0', name: 'eth0', mac: ADDR.vpn.mac, ip: ADDR.vpn.ip, prefixLen: 32 },
+          { id: 'vpn.eth1', name: 'eth1', mac: ADDR.vpnToServer.mac, ip: ADDR.vpn.ip, prefixLen: 32 },
+          { id: 'vpn.eth2', name: 'eth2', mac: ADDR.vpnToResolver.mac, ip: ADDR.vpn.ip, prefixLen: 32 },
+        ],
+        routes: [
+          { network: '0.0.0.0', prefixLen: 0, via: ADDR.ispToVpn.ip, iface: 'vpn.eth0' },
+          { network: server.ip, prefixLen: 32, iface: 'vpn.eth1' },
+          { network: ADDR.resolver.ip, prefixLen: 32, iface: 'vpn.eth2' },
+        ],
+        arp: { [ADDR.ispToVpn.ip]: ADDR.ispToVpn.mac, [server.ip]: ADDR.serverFromVpn.mac, [ADDR.resolver.ip]: ADDR.resolverFromVpn.mac },
         apps: [],
       },
       {
@@ -198,9 +217,15 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
         sublabel: ADDR.resolver.ip,
         kind: 'dns-resolver',
         layout: { x: 1480, y: 205 },
-        ifaces: [{ id: 'resolver.eth0', name: 'eth0', mac: ADDR.resolver.mac, ip: ADDR.resolver.ip, prefixLen: 32 }],
-        routes: [{ network: '0.0.0.0', prefixLen: 0, via: ADDR.ispToResolver.ip, iface: 'resolver.eth0' }],
-        arp: { [ADDR.ispToResolver.ip]: ADDR.ispToResolver.mac },
+        ifaces: [
+          { id: 'resolver.eth0', name: 'eth0', mac: ADDR.resolver.mac, ip: ADDR.resolver.ip, prefixLen: 32 },
+          { id: 'resolver.eth1', name: 'eth1', mac: ADDR.resolverFromVpn.mac, ip: ADDR.resolver.ip, prefixLen: 32 },
+        ],
+        routes: [
+          { network: '0.0.0.0', prefixLen: 0, via: ADDR.ispToResolver.ip, iface: 'resolver.eth0' },
+          { network: ADDR.vpn.ip, prefixLen: 32, iface: 'resolver.eth1' },
+        ],
+        arp: { [ADDR.ispToResolver.ip]: ADDR.ispToResolver.mac, [ADDR.vpn.ip]: ADDR.vpnToResolver.mac },
         apps: [
           {
             kind: 'dns-server',
@@ -208,6 +233,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
             records: {
               'example.com': { ips: [...CAPTURED_A_RECORDS], ttl: CAPTURED_DNS_TTL },
               [CERN_HOST]: { ips: [...CERN_A_RECORDS], ttl: CERN_DNS_TTL },
+              [PHOTO_HOST]: { ips: [...PHOTO_A_RECORDS], ttl: PHOTO_DNS_TTL },
             },
           },
         ],
@@ -218,9 +244,15 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
         sublabel: `${new URL(site.url).hostname} · ${server.ip}`,
         kind: 'web-server',
         layout: { x: 1480, y: 735 },
-        ifaces: [{ id: 'server.eth0', name: 'eth0', mac: server.mac, ip: server.ip, prefixLen: 32 }],
-        routes: [{ network: '0.0.0.0', prefixLen: 0, via: ADDR.ispToServer.ip, iface: 'server.eth0' }],
-        arp: { [ADDR.ispToServer.ip]: ADDR.ispToServer.mac },
+        ifaces: [
+          { id: 'server.eth0', name: 'eth0', mac: server.mac, ip: server.ip, prefixLen: 32 },
+          { id: 'server.eth1', name: 'eth1', mac: ADDR.serverFromVpn.mac, ip: server.ip, prefixLen: 32 },
+        ],
+        routes: [
+          { network: '0.0.0.0', prefixLen: 0, via: ADDR.ispToServer.ip, iface: 'server.eth0' },
+          { network: ADDR.vpn.ip, prefixLen: 32, iface: 'server.eth1' },
+        ],
+        arp: { [ADDR.ispToServer.ip]: ADDR.ispToServer.mac, [ADDR.vpn.ip]: ADDR.vpnToServer.mac },
         apps: [{ kind: 'http-server', processing: 0.0005, response: fromBase64(site.response), ...(tls ? { tls } : {}) }],
       },
     ],
@@ -233,6 +265,8 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
       { id: 'bb1', a: 'isp.p1', b: 'resolver.eth0', bitsPerSecond: 1e10, delay: 0.003, label: 'Backbone · 10 Gbit/s · 3 ms', name: 'a backbone link' },
       { id: 'bb3', a: 'isp.p3', b: 'vpn.eth0', bitsPerSecond: 1e10, delay: 0.005, label: 'Backbone · 10 Gbit/s · 5 ms', name: 'a backbone link' },
       { id: 'bb2', a: 'isp.p2', b: 'server.eth0', bitsPerSecond: 1e10, delay: 0.004, label: 'Backbone · 10 Gbit/s · 4 ms', name: 'a backbone link' },
+      { id: 'bb4', a: 'vpn.eth1', b: 'server.eth1', bitsPerSecond: 1e10, delay: 0.004, label: 'Backbone · 10 Gbit/s · 4 ms', name: 'a backbone link' },
+      { id: 'bb5', a: 'vpn.eth2', b: 'resolver.eth1', bitsPerSecond: 1e10, delay: 0.003, label: 'Backbone · 10 Gbit/s · 3 ms', name: 'a backbone link' },
     ],
   };
 }

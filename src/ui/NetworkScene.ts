@@ -1,11 +1,12 @@
 import { el } from './svg';
 import { box, cylinder, line, rbox, tile } from './prims';
-import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, easeOutBounce, iso, lerp, U, v3, type Vec3 } from './project';
-import { drawBolt, drawSatellite, drawScissors, drawShield, drawSpyglass } from './icons';
+import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, easeOutBounce, iso, isoV, lerp, U, unproject, v3, type Pt, type Vec3 } from './project';
+import { drawSatellite, drawScissors, drawShield, drawSpyglass } from './icons';
 import { shade } from './shade';
-import type { Details, PartKey, Row, Seen, Story, Trip, Wrap } from './story';
+import type { Details, PartKey, Row, Story, Trip, Wrap } from './story';
+import { bandPoint, pageContent, Paper, PAPER_H, PAPER_W, photoContent, type Parts } from './paper';
 import { drawBook, drawShelf, SERVER } from './stations';
-import { addressBefore, detailsAt, DEVICE_TOP, FACE_EMOJI, frameAt, LEVEL, lockPose, packetPos, packetPose, segAt, swapLanding, swapMoment, trayOpacity, wrapsBefore, type LockPose, type Seg, type Timeline } from './timeline';
+import { addressBefore, detailsAt, DEVICE_TOP, FACE_EMOJI, frameAt, LEVEL, lockPose, packetPos, packetPose, segAt, swapLanding, swapMoment, trayOpacity, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
 
 export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', vpn: '#2e5e6e', eth: '#e08b33', wifi: '#2a9d8f' } as const;
 const DEVICE = '#d9d0c2';
@@ -24,6 +25,7 @@ const BURST = '#ffd84a';
 const LABEL_FRESH = '#8fe3d0';
 const LABEL_SETTLED = '#d8f5ee';
 const WAIT = '#c2562f';
+const PHOTO_ID = 'net-photo';
 const sealedInside = (key: PartKey): boolean => key === 'ip' || key === 'l4' || key === 'card';
 /** How far from a device its satellite dish stands. */
 const DISH = 2.4;
@@ -116,6 +118,7 @@ interface Screen {
   dnsName: SVGTextElement;
   dnsAddr: SVGTextElement;
   fail: SVGTextElement;
+  photo: SVGImageElement;
 }
 
 export interface Camera {
@@ -135,17 +138,16 @@ export class NetworkScene {
   private readonly moods: SVGGElement;
   private readonly fx: SVGGElement;
   /** What the spyglass reads, and the line it is on. */
-  private readonly spyNote: SVGGElement;
+  private readonly spyGlass: SVGGElement;
   private spy: string | null = null;
   /** The session keys beside each end, and the one at work. */
   private readonly keys: SVGGElement;
   /** What the laptop and the phone show on their screens. */
   private readonly screens = new Map<string, Screen>();
-  /** The paths of the links that crackle in stormy weather. */
-  private stormy: { id: string; path: Vec3[] }[] = [];
-  private readonly storm: SVGGElement;
   /** Where a page that comes in several parts is put back together, beside the laptop. */
-  private readonly rack: SVGGElement;
+  private readonly sheet: Paper;
+  /** The picture asked for, drawn wherever it shows. */
+  private readonly photo: SVGImageElement;
   private overview = { x: 0, y: 0, w: 1, h: 1 };
   private onTable: { sx: number; sy: number }[] = [];
   private remembered: ReadonlyMap<string, { site: string; ip: string }> = new Map();
@@ -179,19 +181,19 @@ export class NetworkScene {
   ) {
     this.svg = el('svg', { class: 'net-stage', preserveAspectRatio: 'xMidYMid meet' });
     host.appendChild(this.svg);
+    this.photo = el('image', { id: PHOTO_ID, width: PAPER_W, height: PAPER_H, preserveAspectRatio: 'xMidYMid slice' }, el('defs', {}, this.svg));
     const world = el('g', {}, this.svg);
     this.cables = el('g', { class: 'cables' }, world);
     this.hover = el('g', { class: 'hover' }, world);
-    this.storm = el('g', { class: 'storm' }, world);
     const devs = el('g', {}, world);
-    this.rack = el('g', { class: 'rack' }, world);
+    this.sheet = new Paper(world);
     // Effects (impact bursts, timers) sit behind the packet, the way an anime impact star does.
     this.fx = el('g', { class: 'fx' }, world);
     this.packet = el('g', { class: 'packet' }, world);
     this.tags = el('g', { class: 'tags' }, world);
     this.keys = el('g', { class: 'keys' }, world);
     this.moods = el('g', { class: 'moods' }, world);
-    this.spyNote = el('g', { class: 'spy' }, world);
+    this.spyGlass = el('g', { class: 'spy' }, world);
 
     // Draw far devices first: a larger x + y is nearer the viewer.
     const order = [...story.devices].sort((m, n) => this.depthOf(m.id) - this.depthOf(n.id));
@@ -210,17 +212,23 @@ export class NetworkScene {
       name.textContent = d.label;
       this.devices.push({ id: d.id, kind: d.kind, g, trays, l4Name, l2Tray, l2Name });
     }
-    this.fit();
     this.setStory(story, tl);
   }
 
-  /** Swap in a re-simulated story (after a cut or a storm). Devices and cables stay; what's on the laptop screen may change. */
+  /** Swap in a re-simulated story (after a cut). Devices and cables stay; what's on the laptop screen may change. */
   setStory(story: Story, tl: Timeline): void {
     this.story = story;
     this.tl = tl;
+    this.fit();
     this.buildCables();
-    this.used = new Set(story.trips.flatMap((t) => t.steps.flatMap((s) => ('device' in s ? [s.device] : [s.from, s.to]))));
+    const stops =(t: Trip): string[] => t.steps.flatMap((s) => (s.kind === 'flow' ? s.packets.flatMap(stops) : 'device' in s ? [s.device] : [s.from, s.to]));
+    this.used = new Set(story.trips.flatMap(stops));
+    const image = story.image ?? '';
+    if ((this.photo.getAttribute('href') ?? '') !== image) this.photo.setAttribute('href', image);
+    this.sheet.setContent(story.image ? photoContent(PHOTO_ID) : pageContent(story.pageTitle ?? story.site));
     for (const screen of this.screens.values()) {
+      if ((screen.photo.getAttribute('href') ?? '') !== image) screen.photo.setAttribute('href', image);
+      screen.photo.style.display = image ? '' : 'none';
       // A long title wraps onto two lines at the space nearest the middle.
       const t = story.pageTitle ?? '';
       const cut = t.length > 14 ? [...t.matchAll(/ /g)].map((m) => m.index).sort((a, b) => Math.abs(a - t.length / 2) - Math.abs(b - t.length / 2))[0] : undefined;
@@ -278,36 +286,12 @@ export class NetworkScene {
     this.spy = line;
   }
 
-  /** What the spyglass reads: a note with the last thing that passed along its line, staying for a moment. */
-  private renderSpy(v: number): void {
-    this.spyNote.replaceChildren();
-    const line = this.spy;
-    if (!line) return;
-    const glass = this.linkSpot(line, 0.66, 30);
-    drawSpyglass(el('g', { transform: `translate(${glass.sx.toFixed(1)} ${glass.sy.toFixed(1)})` }, this.spyNote));
-    if (v < 0) return;
-    let last: { seen: Seen; t0: number; t1: number } | null = null;
-    for (const s of this.tl.segs) {
-      const st = s.step;
-      if ((st.kind === 'travel' || st.kind === 'lost') && st.link === line && st.seen && s.t0 <= v) last = { seen: st.seen, t0: s.t0, t1: s.t1 };
-    }
-    if (!last || v > last.t1 + 1.4) return;
-    const dt = v - (last.t0 + (last.t1 - last.t0) * 0.25);
-    if (dt < 0) return;
-    const { seen } = last;
-    const c = this.linkSpot(line, 0.66, 132);
-    const op = 1 - clamp01((v - last.t1 - 1) / 0.4);
-    const addr = `${seen.from} → ${seen.to}`;
-    const w = Math.max(...[addr, ...seen.lines].map((l) => l.length * 7)) + 24;
-    const h = 28 + seen.lines.length * 18;
-    const g = el('g', { class: `spy-note spy-${seen.kind}`, opacity: op.toFixed(3), transform: `translate(${c.sx.toFixed(1)} ${c.sy.toFixed(1)}) scale(${easeOutBack(clamp01(dt / 0.25)).toFixed(3)})` }, this.spyNote);
-    el('rect', { x: -w / 2, y: -h, width: w, height: h, rx: 7, class: 'spy-paper' }, g);
-    const t = el('text', { x: 0, y: -h + 18, 'text-anchor': 'middle', class: 'spy-addr' }, g);
-    t.textContent = addr;
-    seen.lines.forEach((l, i) => {
-      const line2 = el('text', { x: 0, y: -h + 38 + i * 18, 'text-anchor': 'middle', class: i === 0 ? 'spy-text' : 'spy-text spy-more' }, g);
-      line2.textContent = l;
-    });
+  /** The spyglass, with its lens on the middle of its line; what it reads goes in the popup above the bar. */
+  private renderSpy(): void {
+    this.spyGlass.replaceChildren();
+    if (!this.spy) return;
+    const glass = this.linkSpot(this.spy, 0.5, 0);
+    drawSpyglass(el('g', { transform: `translate(${glass.sx.toFixed(1)} ${glass.sy.toFixed(1)})` }, this.spyGlass));
   }
 
   /** Cables between devices; a slow link is a radio hop up to a satellite instead. */
@@ -396,111 +380,45 @@ export class NetworkScene {
     el('polyline', { points: this.linkPath(id).map((p) => `${p.sx.toFixed(1)},${p.sy.toFixed(1)}`).join(' '), class: 'line-hover' }, this.hover);
   }
 
-  /** Which links crackle, by id; empty for calm weather. */
-  setStorm(links: readonly string[]): void {
-    this.stormy = links.map((id) => ({ id, path: this.linkWorld(id) })).filter((l) => l.path.length > 1);
+  /** Where the sheet stands: beside the device, clear of it. */
+  private paperAt(): Pt {
+    const d = this.tl.pos.get(this.tl.client) ?? { x: 0, y: 0 };
+    const c = iso(d.x, d.y);
+    return { sx: c.sx - 185, sy: c.sy - 85 };
   }
 
-  /**
-   * Stormy cables crackle: a jittery electric line and the odd spark. This is weather, not story, so it runs on
-   * the wall clock (`time`, seconds) and changes in little jumps.
-   */
-  renderStorm(time: number): void {
-    this.storm.replaceChildren();
-    if (!this.stormy.length) return;
-    const tick = Math.floor(time * 12);
-    const rnd = (n: number): number => {
-      const x = Math.sin(n * 12.9898 + tick * 78.233) * 43758.5453;
-      return x - Math.floor(x);
-    };
-    this.stormy.forEach(({ id, path }, li) => {
-      const length = path.slice(1).reduce((s, p, i) => s + Math.hypot(p.x - path[i]!.x, p.y - path[i]!.y, p.z - path[i]!.z), 0);
-      const steps = Math.max(4, Math.round(length / 0.45));
-      const pts: string[] = [];
-      for (let i = 0; i <= steps; i++) {
-        const t = i / steps;
-        // Ends stay on the ports; the middle jumps around.
-        const amp = Math.sin(Math.PI * t) * 0.34;
-        const off = (rnd(li * 100 + i) - 0.5) * 2 * amp;
-        const z = (rnd(li * 100 + i + 50) - 0.3) * amp * 1.2;
-        const { p, ux, uy } = pointAlong(path, t);
-        const s = iso(p.x - uy * off, p.y + ux * off, Math.max(0, p.z + z));
-        pts.push(`${s.sx.toFixed(1)},${s.sy.toFixed(1)}`);
-      }
-      const flicker = (0.55 + 0.45 * rnd(li + 7)).toFixed(2);
-      // A dark edge under the yellow keeps it readable on the light table.
-      el('polyline', { points: pts.join(' '), class: 'crackle-edge', opacity: flicker }, this.storm);
-      el('polyline', { points: pts.join(' '), class: 'crackle', opacity: flicker }, this.storm);
-      // Now and then a spark jumps off the line.
-      if (rnd(li + 31) > 0.72) {
-        const { p: at } = pointAlong(path, 0.15 + 0.7 * rnd(li + 3));
-        const p = iso(at.x, at.y, at.z + 0.3);
-        const r = 5 + 6 * rnd(li + 9);
-        const spikes = [0, 1, 2, 3, 4, 5, 6, 7].map((j) => {
-          const ang = (j / 8) * Math.PI * 2;
-          const rr = j % 2 ? r * 0.4 : r;
-          return `${(p.sx + Math.cos(ang) * rr).toFixed(1)},${(p.sy + Math.sin(ang) * rr).toFixed(1)}`;
-        });
-        el('polygon', { points: spikes.join(' '), class: 'spark' }, this.storm);
-      }
-      // A chunky bolt stands over every stormy line, trembling.
-      const c = this.linkSpot(id, 0.5, 52);
-      const jump = (rnd(li + 91) - 0.5) * 5;
-      drawBolt(el('g', { class: 'storm-bolt', transform: `translate(${(c.sx + jump).toFixed(1)} ${c.sy.toFixed(1)}) scale(${(0.92 + 0.12 * rnd(li + 77)).toFixed(3)})` }, this.storm));
-    });
+  /** Band n of the sheet, as a world point the arriving card flies into. */
+  private paperSlot(n: number, of: number): Vec3 {
+    const p = bandPoint(this.paperAt(), n, of);
+    const { x, y } = unproject(p.sx, p.sy, 1.6);
+    return v3(x, y, 1.6);
   }
 
-  /** Slot n (1-based) of the reassembly rack, as a world point the arriving card flies into. */
-  private rackSlot(n: number, of: number): Vec3 {
-    const lap = this.tl.pos.get(this.tl.client) ?? { x: 0, y: 0 };
-    // Screen-right in world units is (+0.5, −0.5) per 28 px; slots sit 52 px apart.
-    const step = 52 / U;
-    const o = (n - 1 - (of - 1) / 2) * step;
-    return v3(lap.x - 3.0 + 0.5 * o, lap.y + 0.9 - 0.5 * o, 1.6);
+  /** The middle of the device's screen. */
+  private screenPoint(): Vec3 {
+    const d = this.tl.pos.get(this.tl.client) ?? { x: 0, y: 0 };
+    return this.tl.kind.get(this.tl.client) === 'phone' ? v3(d.x, d.y + 0.2, 1.3) : v3(d.x, d.y - 0.6, 0.95);
   }
 
-  /** The parts of a page that came in several packets, and when each one slotted into the rack (Infinity: not yet). */
-  private partArrivals(): { of: number; filled: Map<number, number>; shownFrom: number } | null {
+  /** The parts of what came in several packets, and when each one landed on the sheet (not there: not yet). */
+  private partArrivals(): Parts | null {
     let of = 0;
     let shownFrom = Infinity;
     const filled = new Map<number, number>();
     for (const s of this.tl.segs) {
+      for (const p of s.flow ?? []) {
+        if (!p.trip.part) continue;
+        of = p.trip.part.of;
+        shownFrom = Math.min(shownFrom, s.t0);
+        if (p.landed !== null && !filled.has(p.trip.part.n)) filled.set(p.trip.part.n, p.landed);
+      }
       const part = s.trip.part;
       if (!part) continue;
       of = part.of;
       shownFrom = Math.min(shownFrom, s.t0);
       if (s.step.kind === 'read' && s.step.device === this.tl.client && !filled.has(part.n)) filled.set(part.n, lerp(s.t0, s.t1, 0.92));
     }
-    return of > 1 ? { of, filled, shownFrom } : null;
-  }
-
-  /** The rack beside the laptop: one slot per part; each fills when its part arrives, gaps show what's missing. */
-  private renderRack(v: number): void {
-    this.rack.replaceChildren();
-    const parts = this.partArrivals();
-    if (!parts || v < parts.shownFrom) return;
-    const op = clamp01((v - parts.shownFrom) / 0.4);
-    const all = [...parts.filled.values()];
-    const complete = all.length === parts.of ? Math.max(...all) : Infinity;
-    // Once the page is whole the rack slides into the laptop and goes.
-    const gone = clamp01((v - complete - 0.3) / 0.5);
-    const g = el('g', { opacity: (op * (1 - gone)).toFixed(3) }, this.rack);
-    for (let n = 1; n <= parts.of; n++) {
-      const w = this.rackSlot(n, parts.of);
-      const c = iso(w.x, w.y, w.z);
-      const at = parts.filled.get(n) ?? Infinity;
-      const pop = v >= at ? easeOutBack(clamp01((v - at) / 0.3)) : 0;
-      el('rect', { x: c.sx - 21, y: c.sy - 14, width: 42, height: 28, rx: 6, class: 'rack-slot' }, g);
-      if (pop > 0) {
-        const fg = el('g', { transform: `translate(${c.sx.toFixed(1)} ${c.sy.toFixed(1)}) scale(${pop.toFixed(3)})` }, g);
-        el('rect', { x: -19, y: -12, width: 38, height: 24, rx: 5, fill: COLOR.app, class: 'rack-card' }, fg);
-        const t = el('text', { 'text-anchor': 'middle', dy: '0.35em', class: 'rack-num' }, fg);
-        t.textContent = String(n);
-      } else {
-        const t = el('text', { x: c.sx.toFixed(1), y: c.sy.toFixed(1), 'text-anchor': 'middle', dy: '0.35em', class: 'rack-num empty' }, g);
-        t.textContent = String(n);
-      }
-    }
+    return of > 1 ? { of, filled, shownFrom, complete: filled.size === of ? Math.max(...filled.values()) : Infinity } : null;
   }
 
   private depthOf(id: string): number {
@@ -529,7 +447,10 @@ export class NetworkScene {
 
   private fit(): void {
     const pts: { sx: number; sy: number }[] = [];
-    for (const p of this.tl.pos.values()) for (const [dx, dy] of [[-2, -2], [2, 2.4], [-2, 2.4], [2, -2]] as const) for (const z of [0, 3.2]) pts.push(iso(p.x + dx, p.y + dy, z));
+    for (const [id, p] of this.tl.pos) {
+      if (!this.linkShown(id)) continue;
+      for (const [dx, dy] of [[-2, -2], [2, 2.4], [-2, 2.4], [2, -2]] as const) for (const z of [0, 3.2]) pts.push(iso(p.x + dx, p.y + dy, z));
+    }
     pts.push(...this.onTable);
     const minX = Math.min(...pts.map((p) => p.sx)) - 20;
     const maxX = Math.max(...pts.map((p) => p.sx)) + 20;
@@ -575,6 +496,7 @@ export class NetworkScene {
   /** Close on the packet (or the device it is at) at visual time v. */
   followCamera(v: number): Camera {
     const hit = segAt(this.tl, v);
+    if (hit?.seg.flow) return this.flowCamera(hit.seg.flow);
     let p: Vec3;
     const laptop = this.tl.pos.get(this.tl.client) ?? { x: 0, y: 0 };
     const mood = this.tl.reactions.find((r) => v >= r.t && v < r.t + 1.1);
@@ -594,6 +516,28 @@ export class NetworkScene {
     // Aim a little below the packet so the device it hovers over stays in view.
     const s = iso(p.x, p.y, p.z * 0.65);
     return { cx: s.sx, cy: s.sy, scale: this.followScale() };
+  }
+
+  /** A stream is too much to follow: the way it takes, and the sheet it ends on. */
+  private flowCamera(flow: FlowPacket[]): Camera {
+    const paper = this.paperAt();
+    // Room above the sheet for the chapter name.
+    const pts = [
+      { sx: paper.sx - 100, sy: paper.sy - 170 },
+      { sx: paper.sx + 100, sy: paper.sy + 110 },
+    ];
+    for (const id of new Set(flow.flatMap((p) => p.hops.flatMap((h) => [h.from, h.to])))) {
+      const d = this.tl.pos.get(id) ?? { x: 0, y: 0 };
+      const c = iso(d.x, d.y);
+      pts.push({ sx: c.sx - 70, sy: c.sy - 90 }, { sx: c.sx + 70, sy: c.sy + 100 });
+    }
+    const x0 = Math.min(...pts.map((p) => p.sx));
+    const x1 = Math.max(...pts.map((p) => p.sx));
+    const y0 = Math.min(...pts.map((p) => p.sy));
+    // Room for the bar over the bottom of the view.
+    const y1 = Math.max(...pts.map((p) => p.sy)) + 90;
+    const scale = Math.min((this.svg.clientWidth || 1) / (x1 - x0), (this.svg.clientHeight || 1) / (y1 - y0));
+    return { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, scale };
   }
 
   /** The point `x`, `y` screen pixels from the top left of the view, in SVG units. */
@@ -627,13 +571,15 @@ export class NetworkScene {
     const name = el('text', { x: W / 2, y: H * 0.38, class: 'screen-small', 'text-anchor': 'middle' }, dc);
     const dnsAddr = el('text', { x: W / 2, y: H * 0.62, class: 'screen-addr', 'text-anchor': 'middle' }, dc);
     const pc = content(page);
+    const photo = el('image', { x: 0, y: 0, width: w, height: h, preserveAspectRatio: 'xMidYMid slice' }, page);
+    photo.style.display = 'none';
     const title = el('text', { x: W / 2, y: 0.5 * U, class: 'page-title', 'text-anchor': 'middle' }, pc);
     for (const [i, lw] of [0.8, 0.62, 0.7].entries()) {
       el('rect', { x: (W - W * lw) / 2, y: 0.78 * U + i * 6, width: W * lw, height: 2.4, rx: 1.2, fill: '#c9c1b5' }, pc);
     }
     const fail = el('text', { x: w / 2, y: h / 2, dy: '0.35em', class: 'screen-fail', 'text-anchor': 'middle', opacity: 0 }, face);
     fail.textContent = '✗';
-    return { face, page, title, dns, dnsName: name, dnsAddr, fail };
+    return { face, page, title, dns, dnsName: name, dnsAddr, fail, photo };
   }
 
   private buildDevice(g: SVGGElement, kind: string, x: number, y: number): Screen | null {
@@ -738,9 +684,10 @@ export class NetworkScene {
         d.l2Tray.setAttribute('stroke', color);
       }
     }
-    this.renderRack(v);
+    const parts = this.partArrivals();
+    this.sheet.draw(this.paperAt(), isoV(this.screenPoint()), parts, v);
     this.renderMoods(v);
-    this.renderSpy(v);
+    this.renderSpy();
     for (const [id, screen] of this.screens) {
       if (id === tl.client && v >= 0) continue;
       this.blank(screen);
@@ -754,10 +701,8 @@ export class NetworkScene {
     const screen = this.screens.get(tl.client);
     if (!screen || v < 0) return;
     screen.face.classList.toggle('remembers', this.remembered.has(tl.client));
-    // A page in several parts shows once the last missing part has slotted into the rack.
-    const parts = this.partArrivals();
-    const whole = parts && parts.filled.size === parts.of ? Math.max(...parts.filled.values()) : Infinity;
-    const pageAt = parts ? clamp01((v - whole - 0.3) / 0.4) : this.screenAfterRead(v, 'page');
+    // A page in several parts shows once the finished sheet has slid into the screen.
+    const pageAt = parts ? clamp01((v - parts.complete - 0.7) / 0.25) : this.screenAfterRead(v, 'page');
     const page = this.story.pageTitle ? pageAt : 0;
     screen.page.setAttribute('opacity', page.toFixed(3));
     // On a second visit the laptop already knows the address from the start.
@@ -817,19 +762,10 @@ export class NetworkScene {
     return 0;
   }
 
-  /** The travelling packet's progress along its cable, if it is out there right now. */
-  onCable(v: number): { trip: Trip; link: string; k: number } | null {
-    const hit = segAt(this.tl, v);
-    if (!hit || hit.seg.step.kind !== 'travel') return null;
-    // Only while it is out on the cable, not while it is still dropping out of a tray.
-    if (hit.k < 0.12 || hit.k > 0.9) return null;
-    return { trip: hit.seg.trip, link: hit.seg.step.link, k: hit.k };
-  }
-
   /** Whether there is a whole packet to pop open (not one tumbling off a cable). */
   peekable(v: number): boolean {
     const kind = segAt(this.tl, v)?.seg.step.kind;
-    return !!kind && kind !== 'lost' && kind !== 'wait' && kind !== 'lookup';
+    return !!kind && kind !== 'lost' && kind !== 'wait' && kind !== 'lookup' && kind !== 'flow';
   }
 
   /** The packet at visual time v. `peek` (0..1) pulls its pieces apart and shows their sizes; `pill` is the one opened. */
@@ -840,14 +776,19 @@ export class NetworkScene {
     this.fx.replaceChildren();
     this.keys.replaceChildren();
     // The spy's note makes way for the size chips.
-    this.spyNote.style.display = peek > 0.05 ? 'none' : '';
+    this.spyGlass.style.display = peek > 0.05 ? 'none' : '';
     this.keyhole = null;
     const hit = segAt(this.tl, v);
     if (!hit) return;
     const { seg, k } = hit;
     const step = seg.step;
     if (step.kind === 'wait') {
-      this.drawWait(seg, k);
+      this.drawWait(step, k, seg.t1 - seg.t0);
+      this.drawKeys(v, seg, NO_KEY);
+      return;
+    }
+    if (seg.flow) {
+      this.drawFlow(seg.flow, seg.waits ?? [], v);
       this.drawKeys(v, seg, NO_KEY);
       return;
     }
@@ -870,7 +811,7 @@ export class NetworkScene {
     if (step.kind === 'lost' && seg.knock) {
       const tau = k * (seg.t1 - seg.t0) - seg.knock.k * seg.knock.travel;
       if (tau >= 0) {
-        if (!seg.knock.cut || seg.knock.byYou) this.burst(pose.pos, tau, !seg.knock.byYou);
+        if (seg.knock.byYou) this.burst(pose.pos, tau);
         this.tumble(pose, tau);
         if (tau > 0.2) {
           const c = iso(pose.pos.x, pose.pos.y, pose.pos.z + 1.6);
@@ -888,15 +829,8 @@ export class NetworkScene {
       const d = this.tl.pos.get(step.device) ?? { x: 0, y: 0 };
       const kind = this.tl.kind.get(step.device) ?? '';
       const part = seg.trip.part;
-      // A part of a bigger page goes into its slot in the rack; anything else into the screen or the device.
-      const target =
-        step.device === this.tl.client
-          ? part
-            ? this.rackSlot(part.n, part.of)
-            : kind === 'phone'
-              ? v3(d.x, d.y + 0.2, 1.3)
-              : v3(d.x, d.y - 0.6, 0.95)
-          : v3(d.x, d.y, DEVICE_TOP[kind] ?? 1);
+      // A part of a bigger page goes onto its band of the sheet; anything else into the screen or the device.
+      const target = step.device !== this.tl.client ? v3(d.x, d.y, DEVICE_TOP[kind] ?? 1) : part ? this.paperSlot(part.n, part.of) : this.screenPoint();
       pose.pos = v3(lerp(pose.pos.x, target.x, sink), lerp(pose.pos.y, target.y, sink), lerp(pose.pos.z, target.z, sink));
       for (const p of parts) {
         if (p.key !== 'card') continue;
@@ -937,8 +871,40 @@ export class NetworkScene {
     pose.chips = 0;
   }
 
+  /** A stream: its packets as small blocks on the cables, far ones first. A part flies onto the sheet, a lost one falls. */
+  private drawFlow(flow: FlowPacket[], waits: FlowWait[], v: number): void {
+    for (const w of waits) if (v >= w.t0 && v < w.t1) this.drawWait(w.step, (v - w.t0) / (w.t1 - w.t0), w.t1 - w.t0);
+    const blocks: { at: Vec3; size: number; color: string; op: number }[] = [];
+    for (const p of flow) {
+      if (v < p.t0 || v >= p.t1) continue;
+      const data = p.trip.dataBytes > 0;
+      const color = !data ? COLOR.tcp : p.trip.locked ? LOCKED : COLOR.app;
+      const size = data ? 0.9 : 0.5;
+      const hop = p.hops.find((h) => v < h.t1);
+      const end = p.hops[p.hops.length - 1]!;
+      if (hop) {
+        const at = travelPose(this.tl.pos, this.tl.trayZ, hop.from, hop.to, ((v - hop.t0) / (hop.t1 - hop.t0)) * hop.fall, 0, this.tl.sky.get(hop.link) ?? 0, this.tl.air.has(hop.link)).pos;
+        blocks.push({ at, size, color, op: 1 });
+      } else if (end.lost) {
+        const tau = v - end.t1;
+        const at = travelPose(this.tl.pos, this.tl.trayZ, end.from, end.to, end.fall, 0, this.tl.sky.get(end.link) ?? 0, this.tl.air.has(end.link)).pos;
+        blocks.push({ at: v3(at.x, at.y, at.z - 5 * tau * tau), size, color, op: 1 - clamp01(tau / FLOW_FALL) });
+      } else if (p.landed !== null && p.trip.part) {
+        const q = easeInOut(clamp01((v - end.t1) / FLOW_FLY));
+        const from = travelPose(this.tl.pos, this.tl.trayZ, end.from, end.to, 1, 0, 0, false).pos;
+        const to = this.paperSlot(p.trip.part.n, p.trip.part.of);
+        blocks.push({ at: v3(lerp(from.x, to.x, q), lerp(from.y, to.y, q), lerp(from.z, to.z, q)), size: size * (1 - 0.5 * q), color, op: 1 });
+      }
+    }
+    blocks.sort((a, b) => a.at.x + a.at.y - b.at.x - b.at.y);
+    for (const b of blocks) {
+      const g = el('g', { opacity: b.op.toFixed(3) }, this.packet);
+      box(g, { x: b.at.x - b.size / 2, y: b.at.y - b.size / 2, z: b.at.z, w: b.size, d: b.size, h: b.size * 0.6, color: b.color });
+    }
+  }
+
   /** Anime impact: a jagged yellow star and speed lines bursting from the hit. */
-  private burst(at: Vec3, tau: number, zap = false): void {
+  private burst(at: Vec3, tau: number): void {
     const T = 0.5;
     if (tau > T) return;
     const q = tau / T;
@@ -958,21 +924,13 @@ export class NetworkScene {
       const r2 = r1 + 18 + 26 * easeOut(q) + (j % 3) * 6;
       el('line', { x1: Math.cos(a) * r1, y1: Math.sin(a) * r1, x2: Math.cos(a) * r2, y2: Math.sin(a) * r2, class: 'speed-line' }, g);
     }
-    // The storm did it: a lightning bolt strikes down onto the cable first.
-    if (zap && q < 0.6) {
-      const bolt = '0,-150 -14,-96 6,-92 -12,-40 8,-38 -4,0 22,-52 2,-56 18,-104 -2,-108 10,-150';
-      el('polygon', { points: bolt, class: 'bolt', opacity: (1 - q / 0.6).toFixed(3) }, g);
-    }
   }
 
   /** The resender's timer above it: a ring that fills, then a surprised "!" (or a "✗" if it gives up). */
-  private drawWait(seg: Seg, k: number): void {
-    const step = seg.step;
-    if (step.kind !== 'wait') return;
+  private drawWait(step: WaitStep, k: number, dur: number): void {
     const d = this.tl.pos.get(step.device) ?? { x: 0, y: 0 };
     const top = DEVICE_TOP[this.tl.kind.get(step.device) ?? ''] ?? 1;
     const c = iso(d.x, d.y, top + 2.4);
-    const dur = seg.t1 - seg.t0;
     const fill = clamp01((k * dur) / (dur - 0.5));
     const g = el('g', { class: 'timer', transform: `translate(${c.sx.toFixed(1)} ${c.sy.toFixed(1)})` }, this.fx);
     const pop = easeOutBack(clamp01((k * dur) / 0.3));
@@ -1351,6 +1309,6 @@ export class NetworkScene {
 }
 
 function formatWait(s: number): string {
-  if (s >= 1) return `${Number(s.toFixed(1))} s`;
-  return `${Math.round(s * 1000)} ms`;
+  const ms = Math.round(s * 1000);
+  return ms >= 1000 ? `${Number(s.toFixed(1))} s` : `${ms} ms`;
 }

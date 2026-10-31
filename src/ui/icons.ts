@@ -3,13 +3,6 @@ import { rbox, tile } from './prims';
 
 /** The things you handle, drawn from simple shapes around the origin, for the menus and the scene alike. */
 
-/** A chunky gold lightning bolt with a thick side, standing over a stormy line. */
-export function drawBolt(g: SVGGElement): void {
-  const points = '8,-30 -16,4 -2,4 -10,30 18,-8 3,-8 13,-30';
-  el('polygon', { points, class: 'iso-bolt-side', transform: 'translate(6 3)' }, g);
-  el('polygon', { points, class: 'iso-bolt' }, g);
-}
-
 /** A pair of scissors. */
 export function drawScissors(g: SVGGElement): void {
   for (const s of [-1, 1]) {

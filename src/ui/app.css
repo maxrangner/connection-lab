@@ -388,56 +388,39 @@ body {
   }
 }
 
-/* Stormy cables */
-.crackle {
-  fill: none;
-  stroke: #e2b100;
-  stroke-width: 3;
-  stroke-linejoin: bevel;
+/* The sheet a page in several parts comes together on */
+.paper-sheet {
+  fill: #fffdf8;
+  stroke: #b8ad9d;
+  stroke-width: 1.5;
 }
 
-.spark {
-  fill: #ffe14d;
-  stroke: var(--ink);
-  stroke-width: 1;
-}
-
-.bolt {
-  fill: #ffe14d;
-  stroke: var(--ink);
-  stroke-width: 2.5;
-  stroke-linejoin: round;
-}
-
-/* Rack where a page in several parts is put back together */
-.rack-slot {
-  fill: #fffaf2;
+.paper-gap {
+  fill: #f1eadf;
   stroke: #b8ad9d;
   stroke-width: 1.5;
   stroke-dasharray: 4 3;
+  stroke-linejoin: round;
 }
 
-.rack-card {
-  stroke: #3b7a50;
-  stroke-width: 1.5;
+.paper-strip {
+  fill: #f1eadf;
 }
 
-.rack-num {
-  font-size: 13px;
+.paper-num {
+  font-size: 16px;
   font-weight: 800;
-  fill: #fff;
-}
-
-.rack-num.empty {
   fill: #b8ad9d;
 }
 
-.crackle-edge {
-  fill: none;
-  stroke: var(--ink);
-  stroke-width: 5.5;
-  stroke-opacity: 0.35;
-  stroke-linejoin: bevel;
+.paper-title {
+  font-size: 11px;
+  font-weight: 700;
+  fill: var(--ink);
+}
+
+.paper-line {
+  fill: #d8d0c4;
 }
 
 /* Emoji statuses */
@@ -603,7 +586,7 @@ body {
   cursor: pointer;
 }
 
-/* The spyglass, and the note with what it reads */
+/* The spyglass, and the popup with what it reads */
 .spy-handle {
   stroke: #7d5a10;
   stroke-width: 7;
@@ -627,39 +610,98 @@ body {
   pointer-events: none;
 }
 
-.spy-paper {
-  fill: #fffdf8;
-  stroke: #7d5a10;
-  stroke-width: 1.5;
-  filter: drop-shadow(0 3px 4px rgba(61, 53, 44, 0.25));
+.spy-card {
+  position: fixed;
+  left: 0;
+  right: 0;
+  z-index: 4;
+  box-sizing: border-box;
+  width: min(420px, calc(100vw - 24px));
+  min-height: 118px;
+  margin: 0 auto;
+  padding: 8px 12px 10px;
+  border-radius: 16px;
+  background: #fffdf8;
+  border: 1.5px solid #7d5a10;
+  box-shadow: 0 6px 18px rgba(61, 53, 44, 0.18);
+  animation: menu-in 0.18s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.spy-card[hidden] {
+  display: none;
+}
+
+.spy-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.spy-top button {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  font: inherit;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid #d3c8b8;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.spy-top button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.spy-top button:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.spy-top .spy-close {
+  margin-left: auto;
+}
+
+.spy-count {
+  min-width: 64px;
+  font-size: 13px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  color: var(--ink-soft);
 }
 
 .spy-addr {
-  font-size: 10.5px;
+  font-size: 12px;
   font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
-  fill: var(--ink-soft);
+  color: var(--ink-soft);
 }
 
 .spy-text {
-  font-size: 12.5px;
+  font-size: 14px;
   font-weight: 700;
   font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
-  fill: var(--ink);
+  color: var(--ink);
+  overflow-wrap: anywhere;
 }
 
 .spy-scrambled .spy-text,
 .spy-name .spy-more {
   font-weight: 400;
-  fill: #9a9288;
+  color: #9a9288;
 }
 
 .spy-name .spy-text:not(.spy-more) {
-  fill: var(--back);
+  color: var(--back);
 }
 
 .spy-empty .spy-text {
   font-weight: 400;
-  fill: var(--ink-soft);
+  color: var(--ink-soft);
 }
 
 /* Scissors, and a cut cable */
@@ -705,10 +747,6 @@ body {
   display: none;
 }
 
-.net-stage.tool-storm {
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Cpath d='M19 2 7 18h8l-4 12 14-18h-8l5-10z' fill='%23e6b93a' stroke='%233d352c' stroke-width='1.5'/%3E%3C/svg%3E") 16 16, crosshair;
-}
-
 .net-stage.tool-spy {
   cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Ccircle cx='13' cy='13' r='9' fill='none' stroke='%237d5a10' stroke-width='3'/%3E%3Cpath d='M20 20l8 8' stroke='%237d5a10' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E") 13 13, crosshair;
 }
@@ -725,8 +763,7 @@ body {
   stroke-linecap: round;
 }
 
-.hover,
-.storm {
+.hover {
   pointer-events: none;
 }
 
@@ -872,21 +909,7 @@ body {
   }
 }
 
-/* The storm bolt, and the things on the Setup menu */
-.iso-bolt {
-  fill: #ffd84a;
-  stroke: #7d5a10;
-  stroke-width: 2;
-  stroke-linejoin: round;
-}
-
-.iso-bolt-side {
-  fill: #b88a1a;
-  stroke: #7d5a10;
-  stroke-width: 2;
-  stroke-linejoin: round;
-}
-
+/* The things on the Setup menu */
 .page-sheet {
   fill: #fffdf8;
   stroke: #3d7ea6;

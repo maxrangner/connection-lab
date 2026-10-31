@@ -84,6 +84,9 @@ export class TcpConnection {
   private finQueued = false;
   private finSent = false;
   private dupAcks = 0;
+  // congestion control (RFC 5681); the window opens with the first data
+  private cwnd: number | undefined;
+  private ssthresh = Infinity;
 
   // receive side
   private irs = 0;
@@ -301,6 +304,7 @@ export class TcpConnection {
     this.dupAcks = 0;
     let finAcked = false;
     let sample: number | undefined;
+    this.growCwnd(seqDiff(ack, this.sndUna));
     while (this.outstanding.length) {
       const s = this.outstanding[0]!;
       const end = seqAdd(s.seq, s.data.length + (s.syn ? 1 : 0) + (s.fin ? 1 : 0));
@@ -321,6 +325,21 @@ export class TcpConnection {
         this.handlers.onClosed?.(this);
       }
     }
+  }
+
+  /** Slow start doubles the window each round trip; past ssthresh it grows by about one segment per round trip. */
+  private growCwnd(acked: number): void {
+    if (this.cwnd === undefined) return;
+    const mss = this.sendMss();
+    this.cwnd += this.cwnd < this.ssthresh ? Math.min(acked, mss) : Math.max(1, Math.floor((mss * mss) / this.cwnd));
+  }
+
+  /** A lost segment means the network is full: halve, and after a timeout start again from one segment. */
+  private shrinkCwnd(seg: OutSegment, cause: 'rto' | 'fast'): void {
+    if (this.cwnd === undefined || seg.syn) return;
+    const mss = this.sendMss();
+    if (seg.retransmits === 0) this.ssthresh = Math.max(seqDiff(this.sndNxt, this.sndUna) / 2, 2 * mss);
+    this.cwnd = cause === 'rto' ? mss : this.ssthresh;
   }
 
   private updateRtt(r: number): void {
@@ -344,12 +363,13 @@ export class TcpConnection {
   private output(): void {
     if (this.state !== 'ESTABLISHED' && this.state !== 'CLOSE_WAIT') return;
     const mss = this.sendMss();
-    const cwnd = INITIAL_CWND_SEGMENTS * mss;
+    if (this.pending.length > 0) this.cwnd ??= INITIAL_CWND_SEGMENTS * mss;
     while (this.pending.length > 0) {
       const inFlight = seqDiff(this.sndNxt, this.sndUna);
-      const room = Math.min(this.sndWnd, cwnd) - inFlight;
-      if (room <= 0) break;
-      const len = Math.min(mss, this.pending.length, room);
+      const room = Math.min(this.sndWnd, this.cwnd!) - inFlight;
+      const len = Math.min(mss, this.pending.length);
+      // Whole segments only, so a window that opens by a few bytes doesn't send a few bytes.
+      if (room < len) break;
       const data = this.pending.slice(0, len);
       const streamStart = this.pendingStreamOffset;
       this.pending = this.pending.slice(len);
@@ -387,6 +407,7 @@ export class TcpConnection {
 
   private retransmit(seg: OutSegment, cause: 'rto' | 'fast', backoff: boolean): void {
     const original = seg.packetId;
+    this.shrinkCwnd(seg, cause);
     seg.retransmits++;
     seg.sentAt = this.host.sim.now;
     seg.packetId = this.transmit(seg, `${seg.label} (retransmission)`, original);

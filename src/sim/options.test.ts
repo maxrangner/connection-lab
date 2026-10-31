@@ -139,34 +139,6 @@ describe('HTTPS (a real captured TLS 1.3 session)', () => {
   }
 });
 
-describe('a storm on one line', () => {
-  it('only ever loses frames on that line, and only inside its window', () => {
-    let lost = 0;
-    for (let seed = 1; seed <= 30; seed++) {
-      const r = run({}, { randomLoss: 0.4, manual: [], lossWindows: [{ from: 0, links: ['bb2'] }] }, seed);
-      for (const d of of(r, 'drop')) {
-        if (d.reason !== 'fault') continue;
-        lost++;
-        expect(d.linkId).toBe('bb2');
-      }
-    }
-    expect(lost).toBeGreaterThan(0);
-  });
-
-  it('can move: each window has its own line', () => {
-    const late = 0.01;
-    for (let seed = 1; seed <= 30; seed++) {
-      const r = run({}, { randomLoss: 0.4, manual: [], lossWindows: [{ from: 0, to: late, links: ['lan'] }, { from: late, links: ['wan'] }] }, seed);
-      const txAt = new Map(of(r, 'tx').map((e) => [e.frameId, e.start]));
-      for (const d of of(r, 'drop')) {
-        if (d.reason !== 'fault') continue;
-        const at = txAt.get(d.frameId!)!;
-        expect(d.linkId).toBe(at < late ? 'lan' : 'wan');
-      }
-    }
-  });
-});
-
 describe('a cut cable', () => {
   const cutRun = (cuts: { link: string; from: number; to?: number }[], opts: FetchWebPageOptions = {}) =>
     runScenario(fetchWebPage(opts), { seed: 1, faults: { randomLoss: 0, manual: [], cuts }, maxTime: 1000 });
@@ -216,10 +188,22 @@ describe('VPN (a WireGuard tunnel)', () => {
   });
 
   it('on the home side and at the ISP every frame is just UDP to the VPN server', () => {
-    for (const link of ['lan', 'wan']) {
+    for (const link of ['lan', 'wan', 'bb3']) {
       expect(frames(link).length).toBeGreaterThan(8);
       for (const f of frames(link)) {
         expect(f.layers.map((l) => l.protocol).slice(1).filter((p) => p !== 'arp')).toEqual(f.first === 'ethernet' && f.layers[1]?.protocol === 'arp' ? [] : ['ipv4', 'udp', 'wireguard']);
+      }
+    }
+  });
+
+  it('the ISP never handles an opened packet: what the VPN server sends on takes its own cables', () => {
+    for (const o of [{}, { https: true }, { from: 'phone' as const }, { site: 'httpbin.org' as const }]) {
+      const x = run({ vpn: true, ...o });
+      const crossed = new Set(of(x, 'tx').map((e) => e.linkId));
+      for (const link of ['bb4', 'bb5']) expect(crossed.has(link)).toBe(true);
+      for (const link of ['bb1', 'bb2']) expect(crossed.has(link)).toBe(false);
+      for (const e of of(x, 'tx').filter((f) => f.fromDevice === 'isp' || f.toDevice === 'isp')) {
+        expect(x.pdus.get(e.frameId)!.layers.some((l) => l.protocol === 'wireguard')).toBe(true);
       }
     }
   });
@@ -234,9 +218,9 @@ describe('VPN (a WireGuard tunnel)', () => {
   });
 
   it('past the VPN server packets are ordinary again, from its address, so the web server never sees the home address', () => {
-    const toServer = frames('bb2').filter((f) => f.layers.some((l) => l.protocol === 'http'));
+    const toServer = frames('bb4').filter((f) => f.layers.some((l) => l.protocol === 'http'));
     expect(toServer.length).toBeGreaterThan(0);
-    for (const f of frames('bb2')) {
+    for (const f of frames('bb4')) {
       const ip = f.layers.find((l) => l.protocol === 'ipv4')!;
       const addrs = ip.fields.filter((x) => /ipv4\.(src|dst)/.test(x.key)).map((x) => x.display);
       expect(addrs).toContain(ADDR.vpn.ip);
@@ -255,7 +239,7 @@ describe('VPN (a WireGuard tunnel)', () => {
 });
 
 describe('several lines at once', () => {
-  it('cuts and storms each keep to their own lines and times', () => {
+  it('cuts each keep to their own lines and times', () => {
     const r = runScenario(fetchWebPage({ revisit: true }), { seed: 1, faults: { randomLoss: 0, manual: [], cuts: [{ link: 'bb1', from: 0 }, { link: 'bb2', from: 0, to: 2 }] }, maxTime: 1000 });
     expect(of(r, 'drop').length).toBeGreaterThan(0);
     expect(of(r, 'drop').every((d) => d.linkId === 'bb2')).toBe(true);

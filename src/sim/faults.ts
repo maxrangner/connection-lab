@@ -5,14 +5,6 @@ export interface ManualFault {
   linkId: string;
 }
 
-/** Sim-time span [from, to) during which random loss is active; `to` omitted means "until the end". */
-export interface LossWindow {
-  from: number;
-  to?: number;
-  /** If set, only these links are affected during the window (bad weather on one line). */
-  links?: string[];
-}
-
 /** A cable cut through for a span of sim time; `to` omitted means it stays cut. */
 export interface Cut {
   link: string;
@@ -30,14 +22,12 @@ export interface FaultPlan {
   manual: ManualFault[];
   /** If set, random loss only happens on these links (e.g. the internet side, not the home cable). */
   lossyLinks?: string[];
-  /** If set, random loss only applies to frames sent inside one of these windows (weather that comes and goes). */
-  lossWindows?: LossWindow[];
   /**
    * Outcomes already decided, keyed "packetId@linkId" (true: lost). Used to keep what a viewer has already seen
-   * unchanged when the weather changes mid-run.
+   * unchanged when a cable is cut or mended mid-run.
    */
   decided?: Record<string, boolean>;
-  /** Cut cables: every frame sent while a cable is cut is lost, whatever the weather. */
+  /** Cut cables: every frame sent while a cable is cut is lost. */
   cuts?: Cut[];
 }
 
@@ -54,6 +44,5 @@ export function shouldDrop(plan: FaultPlan, seed: number, linkId: string, packet
   if (isCut(plan, linkId, now)) return true;
   if (plan.randomLoss <= 0) return false;
   if (plan.lossyLinks && !plan.lossyLinks.includes(linkId)) return false;
-  if (plan.lossWindows && !plan.lossWindows.some((w) => now >= w.from && (w.to === undefined || now < w.to) && (!w.links || w.links.includes(linkId)))) return false;
   return hash32(`${linkId}|${packetId}`, seed ^ 0x5eed) / 4294967296 < plan.randomLoss;
 }

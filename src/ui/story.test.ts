@@ -114,7 +114,7 @@ describe('setup options', () => {
     expect(s.trips[0]!.l4Label).toBe('SYN');
   });
 
-  it('stormy: losses only on the internet side, each followed by a retry or a give-up', () => {
+  it('random loss on the internet side: each loss is followed by a retry or a give-up', () => {
     for (let seed = 1; seed <= 8; seed++) {
       const s = buildStory(runScenario(fetchWebPage(), { seed, faults: { randomLoss: 0.15, lossyLinks: ['wan', 'bb1', 'bb2'], manual: [] } }));
       for (const t of s.trips.filter((x) => x.lost)) {
@@ -190,34 +190,31 @@ describe('emoji statuses', () => {
   });
 });
 
-describe('switching the storm on and off mid-run', () => {
-  const STORM = ['wan', 'bb1', 'bb2'];
-  const run = (seed: number, windows: { from: number; to?: number }[], decided: Record<string, boolean>) =>
-    buildTimeline(buildStory(runScenario(fetchWebPage(), { seed, faults: { randomLoss: 0.3, lossyLinks: STORM, lossWindows: windows, decided, manual: [] } })));
+describe('cutting and mending a cable mid-run', () => {
+  const run = (seed: number, cuts: { link: string; from: number; to?: number }[], decided: Record<string, boolean>) =>
+    buildTimeline(buildStory(runScenario(fetchWebPage(), { seed, faults: { randomLoss: 0, decided, cuts, manual: [] }, maxTime: 1000 })));
   const same = (a: ReturnType<typeof run>, b: ReturnType<typeof run>, v: number) => {
     const pick = (tl: ReturnType<typeof run>) => tl.segs.filter((s) => s.t0 <= v).map((s) => [s.step.kind, s.trip.packetId, s.t0, s.t1]);
     expect(pick(b)).toEqual(pick(a));
   };
 
-  it('never changes what was already seen, turning it on or off', () => {
+  it('never changes what was already seen, cutting or mending', () => {
     let changed = 0;
-    for (let seed = 1; seed <= 10; seed++) {
-      const calm = run(seed, [], {});
-      const stormy = run(seed, [{ from: 0 }], {});
+    for (const link of ['wan', 'bb2']) {
+      const clear = run(1, [], {});
+      const cut = run(1, [{ link, from: 0 }], {});
       for (const frac of [0.15, 0.4, 0.7]) {
-        // Calm → stormy at v.
-        const v = calm.total * frac;
-        const a = seenSoFar(calm, v);
-        const on = run(seed, [{ from: a.now }], a.decided);
-        same(calm, on, v);
+        const v = clear.total * frac;
+        const a = seenSoFar(clear, v, link);
+        const on = run(1, [{ link, from: a.now }], a.decided);
+        same(clear, on, v);
         if (on.segs.some((s) => s.step.kind === 'lost')) changed++;
-        // Stormy → calm at v.
-        const w = stormy.total * frac;
-        const b = seenSoFar(stormy, w);
-        same(stormy, run(seed, [{ from: 0, to: b.now }], b.decided), w);
+        const w = cut.total * frac;
+        const b = seenSoFar(cut, w, link);
+        same(cut, run(1, [{ link, from: 0, to: b.now }], b.decided), w);
       }
     }
-    // And the storm really does something after it starts.
+    // And the cut really does something after it starts.
     expect(changed).toBeGreaterThan(0);
   });
 });
@@ -242,7 +239,7 @@ describe('phone over Wi-Fi in the story', () => {
   it('starts at the phone, never visits the laptop', () => {
     expect(s.client).toBe('phone');
     expect(s.trips[0]!.origin).toBe('phone');
-    expect(s.trips.some((t) => t.steps.some((x) => ('device' in x ? x.device : x.from + x.to).includes('laptop')))).toBe(false);
+    expect(s.trips.some((t) => t.steps.some((x) => ('device' in x ? x.device : 'from' in x ? x.from + x.to : '').includes('laptop')))).toBe(false);
   });
 
   it('the home router takes off the Wi-Fi frame and puts on an Ethernet one', () => {
@@ -489,7 +486,7 @@ describe('a cut cable in the story', () => {
   it('shows each resend falling into the cut, longer rings for longer waits, and giving up at the end', () => {
     const lost = s.trips.filter((t) => t.lost);
     expect(lost).toHaveLength(7);
-    expect(lost.every((t) => t.steps.some((x) => x.kind === 'lost' && x.cut))).toBe(true);
+    expect(lost.every((t) => t.steps.some((x) => x.kind === 'lost'))).toBe(true);
     const waits = tl.segs.flatMap((x) => (x.step.kind === 'wait' ? [{ step: x.step, d: x.t1 - x.t0 }] : []));
     expect(waits.map((w) => w.step.mood)).toEqual(['surprise', 'angry', 'angry', 'angry', 'angry', 'angry', 'cry']);
     expect(waits.map((w) => Math.round(w.step.seconds)).slice(0, 6)).toEqual([1, 2, 4, 8, 16, 32]);
@@ -515,8 +512,7 @@ describe('a VPN in the story', () => {
       'appear', 'wrap:l4', 'wrap:ip', 'wrap:vpn', 'wrap:eth', 'laptop>home',
       'unwrap:eth', 'nat', 'wrap:eth', 'home>isp',
       'unwrap:eth', 'wrap:eth', 'isp>vpn',
-      'unwrap:eth', 'unwrap:vpn', 'nat', 'wrap:eth', 'vpn>isp',
-      'unwrap:eth', 'wrap:eth', 'isp>server',
+      'unwrap:eth', 'unwrap:vpn', 'nat', 'wrap:eth', 'vpn>server',
       'unwrap:eth', 'unwrap:ip', 'unwrap:l4', 'read',
     ]);
     expect(get.tunnel).toBe(60); // outer IP 20, UDP 8, WireGuard 16, tag 16
@@ -524,11 +520,21 @@ describe('a VPN in the story', () => {
 
   it('the reply is sealed at the VPN server and opened at the laptop', () => {
     const k = kinds(res);
-    expect(k.indexOf('wrap:vpn')).toBeGreaterThan(k.indexOf('server>isp'));
+    expect(k.indexOf('wrap:vpn')).toBeGreaterThan(k.indexOf('server>vpn'));
     expect(k.indexOf('unwrap:vpn')).toBeGreaterThan(k.indexOf('home>laptop'));
     expect(k[0]).toBe('lookup');
     expect(k[1]).toBe('appear');
     expect(res.steps.filter((x) => x.kind === 'nat').map((x) => x.kind === 'nat' && x.device)).toEqual(['vpn', 'home']);
+  });
+
+  it('never spins a packet round on a cable: at most a quarter turn, and none between the VPN server and the resolver', () => {
+    const off = (a: number, b: number): number => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
+    const tl = buildTimeline(s);
+    for (const seg of tl.segs) {
+      if (seg.step.kind !== 'travel') continue;
+      const most = Math.max(...Array.from({ length: 41 }, (_, i) => off(packetPose(tl, seg, i / 40).angle, trayAngle(seg.trip))));
+      expect(most).toBeLessThan(seg.step.link === 'bb5' ? 1e-9 : Math.PI / 2 + 1e-9);
+    }
   });
 
   it('the address tag follows: inside, then the tunnel, then the VPN server sending it on', () => {
@@ -536,7 +542,7 @@ describe('a VPN in the story', () => {
     const on = (link: string) => addressBefore(tl.segs.find((x) => x.trip === get && x.step.kind === 'travel' && x.step.link === link)!);
     expect(on('lan')).toEqual({ from: '192.168.1.23', to: '198.51.100.10' });
     expect(on('wan')).toEqual({ from: '203.0.113.7', to: '198.51.100.10' });
-    expect(on('bb2')).toEqual({ from: '198.51.100.10', to: '104.20.23.154' });
+    expect(on('bb4')).toEqual({ from: '198.51.100.10', to: '104.20.23.154' });
   });
 
   it('a snoop on the home line or at the ISP sees only scrambled bytes to the VPN; past it, the plain request', () => {
@@ -546,7 +552,8 @@ describe('a VPN in the story', () => {
     };
     expect(seen('wan')).toMatchObject({ kind: 'scrambled', to: '198.51.100.10' });
     expect(seen('wan')!.lines.join()).not.toMatch(/GET|example/);
-    expect(seen('bb2')).toMatchObject({ kind: 'open', from: '198.51.100.10', lines: ['GET / HTTP/1.1', 'Host: example.com'] });
+    expect(seen('bb3')).toMatchObject({ kind: 'scrambled', to: '198.51.100.10' });
+    expect(seen('bb4')).toMatchObject({ kind: 'open', from: '198.51.100.10', lines: ['GET / HTTP/1.1', 'Host: example.com'] });
     const dns = s.trips[0]!.steps.find((y) => y.kind === 'travel' && y.link === 'wan');
     expect(dns?.kind === 'travel' && dns.seen?.kind).toBe('scrambled');
   });

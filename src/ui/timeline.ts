@@ -1,5 +1,5 @@
 import { clamp01, easeIn, easeInOut, easeOutBack, easeOutBounce, lerpV, v3, type Vec3 } from './project';
-import type { Details, Frame, Step, Story, Trip, Wrap } from './story';
+import type { Details, Frame, Seen, Step, Story, Trip, Wrap } from './story';
 
 /**
  * Story → visual timeline. Every trip's steps get a start and end in visual seconds, one packet at a time.
@@ -34,6 +34,37 @@ export interface Reaction {
 }
 export type TStep = Step | WaitStep;
 
+/** One cable crossed by a packet of a stream. */
+export interface FlowHop {
+  from: string;
+  to: string;
+  link: string;
+  /** Sim time the frame was sent. */
+  at: number;
+  t0: number;
+  t1: number;
+  lost: boolean;
+  /** How far along the cable it gets (1 unless it is lost). */
+  fall: number;
+  seen?: Seen;
+}
+
+/** A sender of a stream waiting for its timer, or giving up. */
+export interface FlowWait {
+  step: WaitStep;
+  t0: number;
+  t1: number;
+}
+
+/** A packet of a stream: when it is on its way, and when it lands on the sheet if it is a part that gets there. */
+export interface FlowPacket {
+  trip: Trip;
+  hops: FlowHop[];
+  t0: number;
+  t1: number;
+  landed: number | null;
+}
+
 export interface Seg {
   step: TStep;
   trip: Trip;
@@ -43,12 +74,15 @@ export interface Seg {
   p0: Vec3;
   p1: Vec3;
   /** For `lost`: how far along the cable it was knocked off (travel progress 0..1) and the travel's duration. */
-  knock?: { k: number; travel: number; byYou: boolean; cut: boolean };
+  knock?: { k: number; travel: number; byYou: boolean };
+  /** For `flow`: the packets of the stream. */
+  flow?: FlowPacket[];
+  waits?: FlowWait[];
 }
 
 export interface Cue {
   t: number;
-  sound: 'snap' | 'sleeve' | 'thud' | 'swap' | 'bonk' | 'zap' | 'surprise' | 'pop' | 'chime' | 'lock' | 'unlock' | 'key' | 'snip' | 'flip' | 'found';
+  sound: 'snap' | 'sleeve' | 'thud' | 'swap' | 'bonk' | 'surprise' | 'pop' | 'chime' | 'lock' | 'unlock' | 'key' | 'snip' | 'flip' | 'found';
 }
 
 export interface Timeline {
@@ -79,8 +113,8 @@ const POS: Record<string, { x: number; y: number }> = {
   router: { x: 16, y: 0 },
   'web-server': { x: 24, y: 0 },
   'dns-resolver': { x: 16, y: -8 },
-  // Branches off the ISP router the other way, towards the viewer.
-  'vpn-server': { x: 16, y: 8 },
+  // The far corner: its own cables reach the DNS resolver and the web server without passing the ISP router again.
+  'vpn-server': { x: 24, y: -8 },
 };
 
 export const DEVICE_TOP: Record<string, number> = { laptop: 1.7, phone: 2.0, 'home-router': 0.55, router: 0.8, 'web-server': 2.6, 'dns-resolver': 1.1, 'vpn-server': 1.3 };
@@ -91,7 +125,7 @@ const LEVEL_GAP = 1.15;
 /** How far from a device's centre the cable port sits. */
 const PORT = 2.4;
 /** Seconds of visual time per step, the first time it happens. */
-const DUR: Record<TStep['kind'], number> = { appear: 0.9, lock: 1.5, unlock: 1.3, wrap: 0.85, unwrap: 0.85, nat: 2.6, travel: 1.9, read: 1.2, lookup: 4.2, lost: 0, wait: 2.8 };
+const DUR: Record<TStep['kind'], number> = { appear: 0.9, lock: 1.5, unlock: 1.3, wrap: 0.85, unwrap: 0.85, nat: 2.6, travel: 1.9, read: 1.2, lookup: 4.2, lost: 0, wait: 2.8, flow: 0 };
 /** A link this slow (one-way seconds) is drawn as a radio hop up to a satellite. */
 export const SLOW_DELAY = 0.1;
 export const SKY_HEIGHT = 9;
@@ -103,6 +137,13 @@ const WRAP_SHUT = 0.35 + 0.65 * 0.45;
 const SWAP_SOUNDS = 6;
 /** Seconds a knocked packet tumbles before it is gone. */
 export const TUMBLE = 1.8;
+/** A stream's packets: seconds between two from one sender, per cable, flying onto the sheet, and falling off a cable. */
+const FLOW_GAP = 0.26;
+const FLOW_HOP = 1;
+export const FLOW_FLY = 0.5;
+export const FLOW_FALL = 0.9;
+/** Seconds a sender of a stream visibly waits when only its timer can tell it a packet is gone. */
+const FLOW_TIMER = 1.6;
 
 export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> = new Map()): Timeline {
   const kind = new Map(story.devices.map((d) => [d.id, d.kind]));
@@ -173,12 +214,16 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
           seg.p1 = at(step.to, LEVEL.eth);
           d *= linkPace(step.link);
           break;
+        case 'flow':
+          ({ packets: seg.flow, waits: seg.waits } = planFlow(step.packets, t, story, knocks, linkPace, cues, reactions));
+          d = Math.max(t, ...seg.flow.map((p) => p.t1), ...seg.waits.map((w) => w.t1)) - t + 0.5;
+          break;
         case 'lost': {
           const travel = DUR.travel * pace({ ...step, kind: 'travel' }, trip) * linkPace(step.link);
-          // Cut under it by the viewer: where it was. Lost by itself (a stormy or dead cable): halfway along.
+          // Cut under it by the viewer: where it was. Into a cable that was already cut: halfway along.
           const caught = knocks.get(`${trip.packetId}@${step.link}`);
           const k = caught ?? 0.5;
-          seg.knock = { k, travel, byYou: caught !== undefined, cut: !!step.cut };
+          seg.knock = { k, travel, byYou: caught !== undefined };
           d = k * travel + TUMBLE;
           seg.p1 = travelPath(pos, trayZ, step.from, step.to, k, sky.get(step.link) ?? 0, air.has(step.link));
           break;
@@ -228,6 +273,91 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
 }
 
 /**
+ * When a stream's packets go. Everything keeps its real order: a packet leaves after whatever it was sent in reply to has
+ * arrived, so a window of packets goes out, the ACKs come back, and they let out the next ones. Packets of one sender keep
+ * a gap so each can be seen, though on the real cable they are microseconds apart. A sender that can only wait for its
+ * timer shows a ring, and when it gives up, its tears; the packets themselves get no reaction each, there are too many.
+ */
+function planFlow(
+  packets: Trip[],
+  from: number,
+  story: Story,
+  knocks: ReadonlyMap<string, number>,
+  linkPace: (link: string) => number,
+  cues: Cue[],
+  reactions: Reaction[],
+): { packets: FlowPacket[]; waits: FlowWait[] } {
+  const delay = new Map(story.links.map((l) => [l.id, l.delay]));
+  const heard: { sim: number; v: number }[] = [];
+  const lastSent = new Map<string, number>();
+  const filled = new Set<number>();
+  /** The last time each part (or ACK) was sent. */
+  const sent = new Map<string, Trip>();
+  const waits: FlowWait[] = [];
+  const wait = (step: WaitStep, t0: number): number => {
+    const t1 = t0 + FLOW_TIMER;
+    waits.push({ step, t0, t1 });
+    cues.push({ t: t1 - 0.5, sound: 'surprise' });
+    return t1;
+  };
+  /** When the last packet so far came off the cables. */
+  let settled = from;
+  let puzzled = false;
+  const planned = packets.map((trip): FlowPacket => {
+    let t = Math.max(from, (lastSent.get(trip.origin) ?? -Infinity) + FLOW_GAP);
+    for (const h of heard) if (h.sim <= trip.start) t = Math.max(t, h.v);
+    const key = `${trip.origin}|${trip.part?.n ?? trip.l4Label}`;
+    const before = sent.get(key);
+    sent.set(key, trip);
+    if (trip.timedOut) {
+      const seconds = before ? trip.start - before.start : 0;
+      // A timer only runs out in silence: nothing is on its way any more.
+      t = wait({ kind: 'wait', device: trip.origin, seconds, giveUp: false, mood: before?.retry && before.lost ? 'angry' : 'surprise' }, Math.max(t, settled));
+    }
+    lastSent.set(trip.origin, t);
+    const t0 = t;
+    const hops: FlowHop[] = [];
+    for (const s of trip.steps) {
+      if (s.kind !== 'travel' && s.kind !== 'lost') continue;
+      const lost = s.kind === 'lost';
+      // Cut under it by the viewer: where it was. Lost by itself: halfway along.
+      const caught = knocks.get(`${trip.packetId}@${s.link}`);
+      const fall = lost ? (caught ?? 0.5) : 1;
+      const d = FLOW_HOP * linkPace(s.link) * fall;
+      hops.push({ from: s.from, to: s.to, link: s.link, at: s.at, t0: t, t1: t + d, lost, fall, seen: s.seen });
+      t += d;
+      if (lost) cues.push({ t, sound: 'thud' });
+    }
+    settled = Math.max(settled, t);
+    const last = hops[hops.length - 1];
+    if (trip.lost || !last) return { trip, hops, t0, t1: t + FLOW_FALL, landed: null };
+    heard.push({ sim: last.at + (delay.get(last.link) ?? 0), v: t });
+    if (!trip.part) return { trip, hops, t0, t1: t, landed: null };
+
+    const landed = t + FLOW_FLY;
+    const n = trip.part.n;
+    cues.push({ t: landed, sound: 'pop' });
+    const fresh = !filled.has(n);
+    filled.add(n);
+    let gap = false;
+    for (let m = 1; m < n; m++) gap ||= !filled.has(m);
+    // A hole in what has come so far, or a part that had already come.
+    const odd = gap || !fresh;
+    if (odd && !puzzled) reactions.push({ t: landed, device: story.client, face: 'confused' });
+    puzzled = odd;
+    if (fresh && filled.size === trip.part.of) {
+      reactions.push({ t: landed, device: story.client, face: 'love' });
+      cues.push({ t: landed, sound: 'chime' });
+    }
+    return { trip, hops, t0, t1: landed, landed };
+  });
+  const last = planned[planned.length - 1];
+  const part = last?.trip.part;
+  if (last?.trip.lost && part && filled.size < part.of) wait({ kind: 'wait', device: last.trip.origin, seconds: 0, giveUp: true, mood: 'cry' }, last.t1);
+  return { packets: planned, waits };
+}
+
+/**
  * How the receiver feels about what just arrived. Thumbs up for a reply it was waiting for (and the ACK that
  * finishes the hello); love when the page is complete; confused by a duplicate, or by a part that turns up while an
  * earlier one is still missing. Requests (a question, SYN, GET) get no reaction.
@@ -266,7 +396,7 @@ function addCues(cues: Cue[], seg: Seg, story: Story): void {
     for (const f of b.search) cues.push({ t: at(f), sound: s.what === 'dns' ? 'flip' : 'snap' });
     cues.push({ t: at(b.found), sound: 'found' });
   }
-  if (s.kind === 'lost' && seg.knock) cues.push({ t: seg.t0 + seg.knock.k * seg.knock.travel, sound: seg.knock.byYou ? 'bonk' : seg.knock.cut ? 'thud' : 'zap' });
+  if (s.kind === 'lost' && seg.knock) cues.push({ t: seg.t0 + seg.knock.k * seg.knock.travel, sound: seg.knock.byYou ? 'bonk' : 'thud' });
   if (s.kind === 'lock') cues.push({ t: at(0.62), sound: 'lock' });
   if (s.kind === 'unlock') cues.push({ t: at(0.4), sound: 'unlock' });
   if (s.kind === 'read') {
@@ -283,7 +413,7 @@ export function segAt(tl: Timeline, v: number): { seg: Seg; k: number } | null {
 
 /**
  * Inside a device the packet always lies along its stations (the trays all run along x): facing +x on the way out
- * from the laptop, −x on the way back. It only turns where a cable branches off another way, swinging round while it
+ * from the laptop, −x on the way back. It only turns where a cable branches off sideways, swinging round while it
  * drops from its tray down to the port, and back again while it rises into the next device.
  */
 export function trayAngle(trip: Trip): number {
@@ -315,7 +445,9 @@ export function travelPose(
   const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
   const ux = (b.x - a.x) / len;
   const uy = (b.y - a.y) / len;
-  const cable = Math.atan2(uy, ux);
+  // A packet lies along its cable either way round: on one that runs back against its facing it slides, tail first.
+  const heading = Math.atan2(uy, ux);
+  const cable = Math.cos(heading - inTray) < -0.9 ? heading + Math.PI : heading;
   const portA = v3(a.x + ux * PORT, a.y + uy * PORT, CABLE_Z);
   const portB = v3(b.x - ux * PORT, b.y - uy * PORT, CABLE_Z);
   // Over Wi-Fi there is no cable to drop to: the packet flies in a low arc from tray to tray.
@@ -409,7 +541,7 @@ export function trayOpacity(tl: Timeline, device: string, v: number): number {
   const s = seg.step;
   const fade = 0.3;
   const dt = seg.t1 - seg.t0;
-  if (s.kind === 'wait') return 0;
+  if (s.kind === 'wait' || s.kind === 'flow') return 0;
   // The trays make way for the book, and come back for the reply.
   if (s.kind === 'lookup') return s.device === device ? clamp01((k - 0.85) / 0.15) : 0;
   if (s.kind === 'travel' || s.kind === 'lost') {
@@ -432,22 +564,66 @@ export function chapterAt(tl: Timeline, v: number): Trip['chapter'] | null {
   return (segAt(tl, v)?.seg ?? tl.segs[tl.segs.length - 1]!).trip.chapter;
 }
 
+/** A frame crossing a cable, by itself or as one of a stream. */
+export interface Crossing {
+  trip: Trip;
+  link: string;
+  /** Sim time the frame was sent. */
+  at: number;
+  t0: number;
+  t1: number;
+  lost: boolean;
+  seen?: Seen;
+}
+
+/** Every frame of the run that crosses a cable. */
+export function crossings(tl: Timeline): Crossing[] {
+  return tl.segs.flatMap((s): Crossing[] => {
+    const st = s.step;
+    if (s.flow) return s.flow.flatMap((p) => p.hops.map((h) => ({ trip: p.trip, link: h.link, at: h.at, t0: h.t0, t1: h.t1, lost: h.lost, seen: h.seen })));
+    if (st.kind !== 'travel' && st.kind !== 'lost') return [];
+    return [{ trip: s.trip, link: st.link, at: st.at, t0: s.t0, t1: s.t1, lost: st.kind === 'lost', seen: st.seen }];
+  });
+}
+
+/** What a spyglass on a line has read by visual time v, oldest first. It reads a frame a quarter of the way along. */
+export function spyLog(tl: Timeline, line: string, v: number): Seen[] {
+  const readAt = (c: Crossing): number => c.t0 + (c.t1 - c.t0) * 0.25;
+  return crossings(tl)
+    .filter((c) => c.link === line && c.seen && readAt(c) <= v)
+    .sort((a, b) => readAt(a) - readAt(b))
+    .map((c) => c.seen!);
+}
+
 /**
- * Everything already seen at visual time v: every frame that has set off on a cable (and whether it was lost),
- * and the latest sim time among them. Changing the weather mid-run keeps these as they were and only affects
- * frames sent from that sim time on, so the picture so far never changes.
+ * Everything already seen at visual time v: every frame that has set off on a cable (and whether it was lost), and the
+ * sim time a change on `line` applies from: the latest among them, or earlier if a frame still to come on that line was
+ * sent before that, as in a stream, which spreads microseconds out into seconds. Cutting or mending a cable mid-run keeps the
+ * frames seen as they were and only affects the rest, so the picture so far never changes.
  */
-export function seenSoFar(tl: Timeline, v: number): { decided: Record<string, boolean>; now: number } {
+export function seenSoFar(tl: Timeline, v: number, line?: string): { decided: Record<string, boolean>; now: number } {
   const decided: Record<string, boolean> = {};
   let now = 0;
-  for (const s of tl.segs) {
-    if (s.t0 > v) continue;
-    const st = s.step;
-    if (st.kind !== 'travel' && st.kind !== 'lost') continue;
-    decided[`${s.trip.packetId}@${st.link}`] = st.kind === 'lost';
-    now = Math.max(now, st.at);
+  let next = Infinity;
+  for (const c of crossings(tl)) {
+    if (c.t0 > v) {
+      if (c.link === line) next = Math.min(next, c.at);
+      continue;
+    }
+    decided[`${c.trip.packetId}@${c.link}`] = c.lost;
+    now = Math.max(now, c.at);
   }
-  return { decided, now };
+  return { decided, now: Math.min(now, next) };
+}
+
+/** The packets on a line at v and how far along they are, for a cut to catch; one nearly across gets there. */
+export function ridingOn(tl: Timeline, v: number, line: string): { packetId: string; k: number }[] {
+  return crossings(tl).flatMap((c) => {
+    if (c.link !== line || c.lost || v < c.t0 || v >= c.t1) return [];
+    const k = (v - c.t0) / (c.t1 - c.t0);
+    // Still dropping out of its tray: it falls as it reaches the cable.
+    return k > 0.9 ? [] : [{ packetId: c.trip.packetId, k: Math.max(k, 0.12) }];
+  });
 }
 
 /** The frame around the packet during a segment: the one being put on or taken off, else the last one put on. */
@@ -519,7 +695,7 @@ export function lockPose(seg: Seg, k: number): LockPose {
  * seconds of that start it goes to the one before, so pressing back again always gets further back.
  */
 export function stepTarget(tl: Timeline, from: number, dir: 1 | -1, grace = 0.2): number {
-  const marks = [...new Set(tl.segs.map((s) => s.t0)), tl.total].sort((a, b) => a - b);
+  const marks = [...new Set(tl.segs.flatMap((s) => [s.t0, ...(s.flow ?? []).map((p) => p.t0)])), tl.total].sort((a, b) => a - b);
   if (dir > 0) return marks.find((m) => m > from + 0.01) ?? tl.total;
   const before = marks.filter((m) => m <= from + 0.01);
   const here = before[before.length - 1] ?? 0;

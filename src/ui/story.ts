@@ -70,13 +70,15 @@ export type Step = (
   | { kind: 'nat'; device: string; which: 'from' | 'to'; before: string; after: string }
   | { kind: 'travel'; from: string; to: string; link: string; /** Sim time the frame was sent. */ at: number; /** What anyone on this line could read. */ seen?: Seen }
   /** Knocked off the cable on the way from `from` to `to`. */
-  | { kind: 'lost'; from: string; to: string; link: string; at: number; seen?: Seen; /** It fell into a cut in the cable. */ cut?: boolean }
+  | { kind: 'lost'; from: string; to: string; link: string; at: number; seen?: Seen }
   | { kind: 'read'; device: string }
   /** A server does its job before it answers: the resolver finds the name in its book, the web server the file on its shelf. */
   | { kind: 'lookup'; device: string; what: 'dns' | 'web'; /** What was asked. */ ask: string; /** What it found. */ found: string }
   /** HTTPS: the sender puts a padlock on the card with its session key, the receiver opens it with the same key. */
   | { kind: 'lock'; device: string }
   | { kind: 'unlock'; device: string }
+  /** A reply of many packets: they and their ACKs stream along the cables at once, drawn small. */
+  | { kind: 'flow'; packets: Trip[] }
 ) & { /** The packet's header fields once this step is done, if it changes them. */ details?: Details };
 
 export interface Trip {
@@ -107,6 +109,8 @@ export interface Trip {
   lost: boolean;
   /** A resend of an earlier, lost packet. */
   retry: boolean;
+  /** A resend because the sender's timer ran out, rather than because ACKs told it. */
+  timedOut?: boolean;
   /** When the page needs several packets: which one this is (1-based) and how many there are. */
   part?: { n: number; of: number };
   /** HTTPS: the card travels locked; only the two ends can open it. */
@@ -130,6 +134,8 @@ export interface Story {
   trips: Trip[];
   /** The page's <title> if the page arrived, else null. */
   pageTitle: string | null;
+  /** What was asked for, if it is a picture: its real bytes as a data URL. */
+  image: string | null;
   /** The address the DNS answer gave, if it arrived. */
   dnsAnswer: string | null;
   /** How long (seconds) the DNS answer may be remembered, from the record's real TTL. */
@@ -240,6 +246,7 @@ function messageOf(app: LayerPdu | undefined): Message | undefined {
 /** Which packets the story follows. */
 function chosen(r: SimResult): PacketInfo[] {
   const out: PacketInfo[] = [];
+  const stream = streams(r);
   const helloAckFrom = new Set<string>();
   for (const p of r.packets.values()) {
     if (p.kind === 'dns') {
@@ -255,12 +262,18 @@ function chosen(r: SimResult): PacketInfo[] {
     }
     // The third handshake packet: the first empty ACK from whoever sent the first SYN.
     const opener = [...r.packets.values()].find((q) => q.tcp && q.tcp.flags === TCP_SYN && q.tcp.connId === p.tcp!.connId);
-    if (flags === TCP_ACK && opener?.origin === p.origin && !helloAckFrom.has(p.tcp.connId)) {
+    if (flags === TCP_ACK && opener?.origin === p.origin && (!helloAckFrom.has(p.tcp.connId) || (stream && !answersFin(r, p)))) {
       helloAckFrom.add(p.tcp.connId);
       out.push(p);
     }
   }
   return out;
+}
+
+/** An ACK beyond all the data the other side sent: it answers that side's FIN, which is teardown. */
+function answersFin(r: SimResult, ack: PacketInfo): boolean {
+  const other = [...r.packets.values()].filter((q) => q.tcp?.len && q.origin !== ack.origin);
+  return (ack.tcp?.relAck ?? 0) > Math.max(...other.map((q) => (q.tcp?.relSeq ?? 0) + (q.tcp?.len ?? 0)));
 }
 
 function trip(r: SimResult, p: PacketInfo, retried: Set<string>, client: string): Trip | null {
@@ -336,7 +349,7 @@ function trip(r: SimResult, p: PacketInfo, retried: Set<string>, client: string)
       case 'drop': {
         const last = steps[steps.length - 1];
         if ((e.reason === 'fault' || e.reason === 'cut') && last?.kind === 'travel') {
-          steps[steps.length - 1] = { ...last, kind: 'lost', cut: e.reason === 'cut' };
+          steps[steps.length - 1] = { ...last, kind: 'lost' };
           lost = true;
         }
         done = true;
@@ -383,7 +396,36 @@ function trip(r: SimResult, p: PacketInfo, retried: Set<string>, client: string)
     steps,
     lost,
     retry,
+    timedOut: !!p.retransmitOf && r.events.some((e) => e.type === 'tcp:retransmit' && e.packetId === p.id && e.cause === 'rto'),
   };
+}
+
+/** A reply this many full packets long is shown as a stream rather than packet by packet. */
+const STREAM_MIN = 12;
+const FULL_PACKET = 1448;
+
+/** The bytes in a flight of a TLS session, from the length of its base64. */
+const flightBytes = (f: { base64: string }): number => Math.ceil((f.base64.length * 3) / 4) - (f.base64.endsWith('==') ? 2 : f.base64.endsWith('=') ? 1 : 0);
+
+/** The bytes the web server sends in all, by size alone: what is lost on the way must not change how the reply is shown. */
+function replyBytes(r: SimResult): number {
+  const server = r.scenario.devices.flatMap((d) => d.apps).find((a) => a.kind === 'http-server');
+  if (server?.kind !== 'http-server') return 0;
+  if (!server.tls) return server.response.length;
+  return server.tls.flights.filter((f) => f.from === 'server').reduce((n, f) => n + flightBytes(f), 0);
+}
+
+const streams = (r: SimResult): boolean => replyBytes(r) >= STREAM_MIN * FULL_PACKET;
+
+/** The real picture the server sends (it is known before it arrives, so a sheet can show what has come so far). */
+function imageOf(r: SimResult): string | null {
+  const sent = r.events.find((e) => e.type === 'app' && e.action === 'http-response-sent');
+  const bytes = sent && 'pduId' in sent && sent.pduId ? r.pdus.get(sent.pduId)?.bytes : undefined;
+  if (!bytes) return null;
+  const text = new TextDecoder('latin1').decode(bytes);
+  const end = text.indexOf('\r\n\r\n');
+  if (end < 0 || !/^content-type: image\/jpeg/im.test(text.slice(0, end))) return null;
+  return `data:image/jpeg;base64,${btoa(Array.from(bytes.subarray(end + 4), (b) => String.fromCharCode(b)).join(''))}`;
 }
 
 function pageTitle(r: SimResult): string | null {
@@ -391,6 +433,7 @@ function pageTitle(r: SimResult): string | null {
   const pdu = got && 'pduId' in got && got.pduId ? r.pdus.get(got.pduId) : undefined;
   if (!pdu) return null;
   const text = new TextDecoder('latin1').decode(pdu.bytes);
+  if (/^content-type: image\//im.test(text)) return 'photo';
   return /<title>([^<]*)<\/title>/i.exec(text)?.[1]?.trim() || 'example.com';
 }
 
@@ -413,6 +456,7 @@ export function buildStory(r: SimResult): Story {
   numberParts(trips, r);
   const title = pageTitle(r);
   addLookups(trips, title);
+  const shown = streams(r) ? gatherStream(trips) : trips;
   const url = start?.type === 'app' ? String(start.info?.url ?? '') : '';
   const wifiIfaces = new Set(r.scenario.devices.flatMap((d) => d.ifaces.filter((i) => i.wifi).map((i) => i.id)));
   const ifaceDevice = new Map(r.scenario.devices.flatMap((d) => d.ifaces.map((i) => [i.id, d.id] as const)));
@@ -429,8 +473,9 @@ export function buildStory(r: SimResult): Story {
     client,
     vpn: r.scenario.devices.some((d) => d.tunnel),
     names: Object.fromEntries(r.scenario.devices.flatMap((d) => [...d.ifaces.map((i) => [i.ip, d.label]), ...(d.tunnel ? [[d.tunnel.ip, d.label]] : [])])),
-    trips,
+    trips: shown,
     pageTitle: title,
+    image: imageOf(r),
     dnsAnswer: dnsAnswer(r),
     dnsTtl: (() => {
       const e = r.events.find((x) => x.type === 'app' && x.action === 'dns-answer');
@@ -439,6 +484,21 @@ export function buildStory(r: SimResult): Story {
     })(),
     remembered: dnsAnswer(r, 'dns-cache-hit'),
   };
+}
+
+/**
+ * The reply and its ACKs become one step from its first packet on. What else was said then (a TLS goodbye) goes on after it,
+ * and ACKs from before it, which only matter inside the stream, go. A lookup stays in front of the stream.
+ */
+function gatherStream(trips: Trip[]): Trip[] {
+  const hello = trips.find((t) => t.l4Label === 'ACK');
+  const isAck = (t: Trip): boolean => t.l4Label === 'ACK' && t !== hello;
+  const first = trips.findIndex((t) => t.part);
+  if (first < 0) return trips.filter((t) => !isAck(t));
+  const packets = trips.slice(first).filter((t) => t.part || isAck(t));
+  const lookups = packets.flatMap((t) => t.steps.filter((s) => s.kind === 'lookup'));
+  const stream: Trip = { ...trips[first]!, part: undefined, retry: false, lost: false, locked: false, steps: [...lookups, { kind: 'flow', packets }] };
+  return [...trips.slice(0, first).filter((t) => !isAck(t)), stream, ...trips.slice(first).filter((t) => !t.part && !isAck(t))];
 }
 
 /**
@@ -467,6 +527,13 @@ function numberParts(trips: Trip[], r: SimResult): void {
   const parts = trips.filter((t) => t.chapter === 'page' && !t.outward);
   const seqOf = (t: Trip): number => r.packets.get(t.packetId)?.tcp?.relSeq ?? 0;
   const seqs = [...new Set(parts.map(seqOf))].sort((a, b) => a - b);
+  if (streams(r) && seqs.length) {
+    // In a stream the parts are bands of the whole reply, also the ones that have not been sent yet.
+    const size = Math.max(...parts.map((t) => t.dataBytes));
+    const of = Math.ceil((replyBytes(r) - (seqs[0]! - 1)) / size);
+    for (const t of parts) t.part = { n: Math.floor((seqOf(t) - seqs[0]!) / size) + 1, of };
+    return;
+  }
   if (seqs.length < 2) return;
   const status = parts.find((t) => t.card && t.card !== 'data' && t.card !== 'page' && t.card !== 'ticket')?.card ?? '';
   for (const t of parts) {
@@ -514,7 +581,7 @@ function labelTls(trips: Trip[], r: SimResult, session: TlsSession): void {
     let n = 0;
     for (const f of session.flights) {
       if (f.from !== side) continue;
-      const len = Math.ceil((f.base64.length * 3) / 4) - (f.base64.endsWith('==') ? 2 : f.base64.endsWith('=') ? 1 : 0);
+      const len = flightBytes(f);
       if (offset < o + len) return n;
       o += len;
       n++;

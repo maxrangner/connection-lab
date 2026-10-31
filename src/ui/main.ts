@@ -1,13 +1,14 @@
 import './app.css';
-import { fetchWebPage, runScenario, type Cut, type LossWindow, type ManualFault } from '../sim';
+import { fetchWebPage, runScenario, type Cut, type ManualFault } from '../sim';
 import { el } from './svg';
 import { clamp01, easeInOut, easeOutBack, iso, lerp } from './project';
-import { drawBolt, drawPadlock, drawPage, drawSatellite, drawScissors, drawShield, drawSpyglass } from './icons';
+import { drawPadlock, drawPage, drawSatellite, drawScissors, drawShield, drawSpyglass } from './icons';
 import { Menu } from './menus';
 import { NetworkScene, type Camera } from './NetworkScene';
 import { Sound } from './sound';
+import { SpyCard } from './spyCard';
 import { buildStory, type Chapter, type PartKey, type Story } from './story';
-import { buildTimeline, chapterAt, seenSoFar, stepTarget, type Timeline } from './timeline';
+import { buildTimeline, chapterAt, ridingOn, seenSoFar, spyLog, stepTarget, type Timeline } from './timeline';
 
 /**
  * "Get example.com". Drag the site card onto the laptop or the phone. The bar below holds the playback buttons, and
@@ -15,8 +16,6 @@ import { buildTimeline, chapterAt, seenSoFar, stepTarget, type Timeline } from '
  * Tap a packet to pop it open. When a run ends the card comes back.
  */
 
-/** A share of the frames on a stormy line is lost. */
-const STORM_LOSS = 0.15;
 /** Seconds the finished picture stays before the card comes back. */
 const LINGER = 1.4;
 /** Seconds after the start of a step in which back goes to the step before it. */
@@ -27,16 +26,13 @@ type Setting = 'https' | 'big' | 'slow' | 'vpn';
 type Features = Record<Setting, boolean>;
 const SETTINGS: Setting[] = ['https', 'big', 'slow', 'vpn'];
 const features: Features = { https: false, big: false, slow: false, vpn: false };
-/** The lines with a storm over them. They can change any time, before or during a run. */
-const stormLines = new Set<string>();
 /** The line the spyglass is on, if any. */
 let spyLine: string | null = null;
-/** The cables that are cut. They can change any time too. */
+/** The cables that are cut. They can change any time, before or during a run. */
 const cutLines = new Set<string>();
 try {
-  const saved = JSON.parse(localStorage.getItem('net.features') ?? '{}') as Partial<Features> & { stormLines?: string[]; spyLine?: string | null; cutLines?: string[] };
+  const saved = JSON.parse(localStorage.getItem('net.features') ?? '{}') as Partial<Features> & { spyLine?: string | null; cutLines?: string[] };
   for (const k of SETTINGS) features[k] = !!saved[k];
-  for (const l of saved.stormLines ?? []) stormLines.add(l);
   spyLine = saved.spyLine ?? null;
   for (const l of saved.cutLines ?? []) cutLines.add(l);
 } catch {
@@ -44,7 +40,7 @@ try {
 }
 function remember(): void {
   try {
-    localStorage.setItem('net.features', JSON.stringify({ ...features, stormLines: [...stormLines], spyLine, cutLines: [...cutLines] }));
+    localStorage.setItem('net.features', JSON.stringify({ ...features, spyLine, cutLines: [...cutLines] }));
   } catch {
     // Not remembered; fine.
   }
@@ -52,10 +48,9 @@ function remember(): void {
 /** Packets that fell when their cable was cut, and how far along it they were (only for drawing the fall). */
 const faults: ManualFault[] = [];
 const knocks = new Map<string, number>();
-/** Each run gets its own weather; cutting a cable or changing a storm re-runs with the same weather. */
-let stormSeed = 1;
-/** When (sim time) the storm was on during this run, and what the viewer has already seen happen. */
-let stormWindows: LossWindow[] = [];
+/** Each run gets its own seed; cutting a cable re-runs with the same one. */
+let runSeed = 1;
+/** What the viewer has already seen happen in this run. */
 let decided: Record<string, boolean> = {};
 /** When (sim time) cables were cut during this run. */
 let cuts: Cut[] = [];
@@ -70,16 +65,21 @@ let client: Client = 'laptop';
 const known = new Map<string, { site: string; ip: string; until: number }>();
 /** This run is a second visit: the address is remembered, so there is nothing to look up. */
 let revisit = false;
-const siteName = (): 'info.cern.ch' | 'example.com' => (features.big ? 'info.cern.ch' : 'example.com');
+/** What a card on the table asks for: the page, or the photo. */
+type Wanted = 'page' | 'photo';
+/** The card picked up last. */
+let carried: Wanted = 'page';
+const pageSite = (): 'info.cern.ch' | 'example.com' => (features.big ? 'info.cern.ch' : 'example.com');
+const siteName = (): 'info.cern.ch' | 'example.com' | 'httpbin.org' => (carried === 'photo' ? 'httpbin.org' : pageSite());
 function remembers(): boolean {
   const k = known.get(client);
   return !!k && k.site === siteName() && performance.now() < k.until;
 }
 function simulate(): void {
   const scenario = fetchWebPage({ site: siteName(), revisit, slow: features.slow, vpn: features.vpn, https: features.https, from: client, warmArp });
-  const plan = { randomLoss: STORM_LOSS, lossWindows: stormWindows, decided, cuts, manual: faults };
+  const plan = { randomLoss: 0, decided, cuts, manual: faults };
   // Long enough for TCP to give up on a dead line (15 resends, backing off to a minute apart).
-  story = buildStory(runScenario(scenario, { seed: stormSeed, faults: plan, maxTime: 1000 }));
+  story = buildStory(runScenario(scenario, { seed: runSeed, faults: plan, maxTime: 1000 }));
   tl = buildTimeline(story, knocks);
 }
 simulate();
@@ -101,6 +101,7 @@ let mode: Mode = 'idle';
 
 // The site card rests on the table between the laptop and the phone.
 const home = iso(0, 7.4, 0.5);
+const HOMES: Record<Wanted, { sx: number; sy: number }> = { page: home, photo: { sx: home.sx, sy: home.sy + 88 } };
 const card = el('g', { class: 'site-card' }, svg);
 const cardBody = el('g', {}, card);
 el('rect', { x: -88, y: -22, width: 176, height: 44, rx: 10, class: 'site-card-bg' }, cardBody);
@@ -109,12 +110,22 @@ el('ellipse', { cx: -66, cy: 0, rx: 4, ry: 9, class: 'site-card-globe' }, cardBo
 const cardText = el('text', { x: 12, y: 0, dy: '0.35em', 'text-anchor': 'middle' }, cardBody);
 cardText.textContent = 'example.com';
 const hint = el('text', { class: 'hint', 'text-anchor': 'middle', x: 0, y: 40 }, card);
-hint.textContent = 'drag me onto the laptop or the phone';
+hint.textContent = 'drag a card onto a device';
 let cardPop = 9;
 /** Small badges on the card for what is set up. */
 const cardBadges = el('g', {}, card);
 
-scene.setOnTable([home, { sx: home.sx - 110, sy: home.sy + 50 }, { sx: home.sx + 110, sy: home.sy - 40 }]);
+// The photo card: the same kind of card, with a little picture on it.
+const photoCard = el('g', { class: 'site-card' }, svg);
+const photoBody = el('g', {}, photoCard);
+el('rect', { x: -88, y: -22, width: 176, height: 44, rx: 10, class: 'site-card-bg' }, photoBody);
+el('rect', { x: -77, y: -10, width: 24, height: 20, rx: 2, class: 'site-card-globe' }, photoBody);
+el('path', { d: 'M-75 7l7-8 5 5 3-3 5 6', class: 'site-card-globe' }, photoBody);
+el('text', { x: 12, y: 0, dy: '0.35em', 'text-anchor': 'middle' }, photoBody).textContent = 'photo.jpg';
+const photoBadges = el('g', {}, photoCard);
+const CARDS: Record<Wanted, SVGGElement> = { page: card, photo: photoCard };
+
+scene.setOnTable([home, { sx: home.sx - 110, sy: home.sy + 50 }, { sx: home.sx + 110, sy: home.sy - 40 }, { sx: HOMES.photo.sx - 110, sy: HOMES.photo.sy + 50 }]);
 
 /** A setting changed before a run: show the network it will use, with a clean screen. */
 function preview(): void {
@@ -127,18 +138,19 @@ function preview(): void {
 }
 
 function showFeatures(): void {
-  const site = siteName();
+  const site = pageSite();
   if (cardText.textContent !== site) {
     cardText.textContent = site;
     cardPop = 0;
   }
-  scene.setStorm([...stormLines]);
-  cardBadges.replaceChildren();
-  SETUP.filter((s) => features[s.id]).forEach((s, i) => {
-    const g = el('g', { transform: `translate(${72 - i * 30} -24)` }, cardBadges);
-    el('circle', { r: 13, class: 'card-badge' }, g);
-    s.draw(el('g', { transform: `scale(${(14 / s.span).toFixed(3)})` }, g));
-  });
+  for (const [badges, skip] of [[cardBadges, null], [photoBadges, 'big']] as const) {
+    badges.replaceChildren();
+    SETUP.filter((s) => features[s.id] && s.id !== skip).forEach((s, i) => {
+      const g = el('g', { transform: `translate(${72 - i * 30} -24)` }, badges);
+      el('circle', { r: 13, class: 'card-badge' }, g);
+      s.draw(el('g', { transform: `scale(${(14 / s.span).toFixed(3)})` }, g));
+    });
+  }
 }
 
 /** Distance from a point to a link's path on screen. */
@@ -172,37 +184,18 @@ function lineNear(p: { sx: number; sy: number }, cablesOnly: boolean, reach: num
 }
 const canSetUp = (): boolean => mode === 'idle' || mode === 'spring';
 
-/** A storm on a line, or the end of it. Mid-run the simulation re-runs from this moment on: what was seen stays. */
-function toggleStorm(line: string): void {
-  const on = !stormLines.has(line);
-  if (on) stormLines.add(line);
-  else stormLines.delete(line);
-  remember();
-  if (mode === 'play') {
-    const seen = seenSoFar(tl, v);
-    decided = { ...decided, ...seen.decided };
-    stormWindows = stormWindows.map((w) => (w.to === undefined && w.links?.includes(line) ? { ...w, to: seen.now } : w));
-    if (on) stormWindows = [...stormWindows, { from: seen.now, links: [line] }];
-    simulate();
-    scene.setStory(story, tl);
-  }
-  showFeatures();
-  sound.play(on ? 'zap' : 'snap');
-}
-
-/** Cut a cable, or mend it. Like the storm it works mid-run, and a packet on that cable right now falls in. */
+/** Cut a cable, or mend it. It works mid-run too: the simulation re-runs from this moment on, what was seen stays, and whatever is on that cable right now falls in. */
 function toggleCut(line: string): void {
   const on = !cutLines.has(line);
   if (on) cutLines.add(line);
   else cutLines.delete(line);
   remember();
   if (mode === 'play') {
-    const riding = on ? scene.onCable(v) : null;
-    if (riding?.link === line) {
-      faults.push({ packetId: riding.trip.packetId, linkId: riding.link });
-      knocks.set(`${riding.trip.packetId}@${riding.link}`, riding.k);
+    for (const r of on ? ridingOn(tl, v, line) : []) {
+      faults.push({ packetId: r.packetId, linkId: line });
+      knocks.set(`${r.packetId}@${line}`, r.k);
     }
-    const seen = seenSoFar(tl, v);
+    const seen = seenSoFar(tl, v, line);
     decided = { ...decided, ...seen.decided };
     cuts = cuts.map((c) => (c.to === undefined && c.link === line ? { ...c, to: seen.now } : c));
     if (on) cuts = [...cuts, { link: line, from: seen.now }];
@@ -215,14 +208,13 @@ function toggleCut(line: string): void {
 
 /** Take a line back to normal. */
 function clearLine(line: string): void {
-  if (stormLines.has(line)) toggleStorm(line);
   if (cutLines.has(line)) toggleCut(line);
 }
 
 let cam: Camera = scene.overviewCamera();
 
 /** Tools come from the Tools menu: pick one, click as many lines as you like, click a line again to undo it. */
-type Tool = 'storm' | 'spy' | 'cut';
+type Tool = 'spy' | 'cut';
 let tool: Tool | null = null;
 
 /** Put the spyglass on a line, or take it off. It only reads, so nothing about the run changes. */
@@ -230,13 +222,14 @@ function setSpyLine(line: string | null): void {
   if (line === spyLine) return;
   spyLine = line;
   scene.setSpy(line);
+  spyCard.reset();
   remember();
   sound.play('snap');
 }
-const USE: Record<Tool, (line: string) => void> = { storm: toggleStorm, spy: (l) => setSpyLine(spyLine === l ? null : l), cut: toggleCut };
+const USE: Record<Tool, (line: string) => void> = { spy: (l) => setSpyLine(spyLine === l ? null : l), cut: toggleCut };
 function pickUp(t: Tool | null): void {
   tool = t;
-  for (const id of ['storm', 'spy', 'cut'] as const) {
+  for (const id of ['spy', 'cut'] as const) {
     toolsMenu.setOn(id, t === id);
     svg.classList.toggle(`tool-${id}`, t === id);
   }
@@ -248,7 +241,7 @@ const toolLine = (e: PointerEvent): string | null => lineNear(toSvg(e), tool ===
 scene.setSpy(spyLine);
 scene.setCut([...cutLines]);
 
-const VPN_LINK = 'bb3';
+const VPN_LINKS = ['bb3', 'bb4', 'bb5'];
 const SETUP: { id: Setting; label: string; draw: (g: SVGGElement) => void; span: number }[] = [
   { id: 'https', label: 'Secure', draw: drawPadlock, span: 34 },
   { id: 'big', label: 'Bigger page', draw: drawPage, span: 34 },
@@ -259,10 +252,10 @@ function setSetting(id: Setting, on: boolean): void {
   features[id] = on;
   // The line to the ISP becomes radio, which cannot be cut.
   if (id === 'slow' && on && cutLines.has('wan')) toggleCut('wan');
-  // The VPN's cable goes with it.
+  // The VPN's cables go with it.
   if (id === 'vpn' && !on) {
-    clearLine(VPN_LINK);
-    if (spyLine === VPN_LINK) setSpyLine(null);
+    for (const l of VPN_LINKS) clearLine(l);
+    if (spyLine && VPN_LINKS.includes(spyLine)) setSpyLine(null);
   }
   showSetup();
   preview();
@@ -276,6 +269,8 @@ function showSetup(): void {
 
 const CHAPTERS: Record<Chapter, string> = { dns: 'Find the address', hello: 'Say hello', secret: 'Agree on a secret', page: 'Get the page' };
 /** Chapter number in this run (a second visit skips the address, HTTPS adds the secret). */
+const chapterName = (ch: Chapter): string => (ch === 'page' && story.image ? 'Get the photo' : CHAPTERS[ch]);
+
 function chapterNumber(ch: Chapter): number {
   const order: Chapter[] = [];
   for (const s of tl.segs) if (!order.includes(s.trip.chapter)) order.push(s.trip.chapter);
@@ -305,7 +300,7 @@ chapter.addEventListener('click', () => {
     if (seen.has(ch)) continue;
     seen.add(ch);
     const item = document.createElement('button');
-    item.innerHTML = `<span class="chapter-num">${chapterNumber(ch)}</span><span>${CHAPTERS[ch]}</span>`;
+    item.innerHTML = `<span class="chapter-num">${chapterNumber(ch)}</span><span>${chapterName(ch)}</span>`;
     item.classList.toggle('current', ch === shownChapter);
     item.addEventListener('click', () => {
       v = s.t0;
@@ -346,7 +341,6 @@ const toolsMenu = new Menu<Tool>(
   'Tools',
   'Tools',
   [
-    { id: 'storm', label: 'Storm', draw: drawBolt, span: 36 },
     { id: 'spy', label: 'Spy', draw: drawSpyglass, span: 36 },
     { id: 'cut', label: 'Cut', draw: drawScissors, span: 38 },
   ],
@@ -362,6 +356,7 @@ const menus: { isOpen: boolean; setOpen(open: boolean): void; place(): void; but
 for (const menu of menus) menu.button.addEventListener('click', () => { for (const other of menus) if (other !== menu) other.setOpen(false); });
 const placeMenus = (): void => {
   for (const menu of menus) menu.place();
+  spyCard.place(controls);
 };
 const soundBtn = button('♪', 'Sound', () => {
   sound.muted = !sound.muted;
@@ -382,6 +377,7 @@ followBtn.addEventListener('click', () => {
   showAll = mode !== 'play';
 });
 root.appendChild(followBtn);
+const spyCard = new SpyCard(root, () => setSpyLine(null));
 // A popup only has to move when the bar does.
 new ResizeObserver(placeMenus).observe(controls);
 window.addEventListener('resize', placeMenus);
@@ -421,20 +417,29 @@ function toSvg(e: PointerEvent): { sx: number; sy: number } {
   return { sx: p.x, sy: p.y };
 }
 
-card.addEventListener('pointerdown', (e) => {
-  if (mode !== 'idle' && mode !== 'spring') return;
-  const p = toSvg(e);
-  grab = { dx: cardPos.sx - p.sx, dy: cardPos.sy - p.sy };
-  mode = 'drag';
-  card.setPointerCapture(e.pointerId);
-  card.classList.add('held');
-});
-card.addEventListener('pointermove', (e) => {
-  if (mode !== 'drag') return;
-  const p = toSvg(e);
-  cardPos = { sx: p.sx + grab.dx, sy: p.sy + grab.dy };
-  card.classList.toggle('over', !!dropTarget());
-});
+for (const wanted of ['page', 'photo'] as const) {
+  const g = CARDS[wanted];
+  g.addEventListener('pointerdown', (e) => {
+    if (mode !== 'idle' && mode !== 'spring') return;
+    // A card still springing back lands at once, so the other one can be picked up.
+    if (wanted !== carried) {
+      carried = wanted;
+      cardPos = { ...HOMES[wanted] };
+    }
+    const p = toSvg(e);
+    grab = { dx: cardPos.sx - p.sx, dy: cardPos.sy - p.sy };
+    mode = 'drag';
+    g.setPointerCapture(e.pointerId);
+    g.classList.add('held');
+  });
+  g.addEventListener('pointermove', (e) => {
+    if (mode !== 'drag') return;
+    const p = toSvg(e);
+    cardPos = { sx: p.sx + grab.dx, sy: p.sy + grab.dy };
+    g.classList.toggle('over', !!dropTarget());
+  });
+  g.addEventListener('pointerup', dropCard);
+}
 
 /** The laptop or phone the card is over, if any. */
 function dropTarget(): { id: string; sx: number; sy: number } | null {
@@ -449,18 +454,18 @@ function dropTarget(): { id: string; sx: number; sy: number } | null {
   }
   return best;
 }
-card.addEventListener('pointerup', () => {
+function dropCard(): void {
   if (mode !== 'drag') return;
-  card.classList.remove('held', 'over');
+  CARDS[carried].classList.remove('held', 'over');
   const drop = dropTarget();
   if (drop) client = drop.id === 'phone' ? 'phone' : 'laptop';
-  anim = { from: { ...cardPos }, to: drop ?? { ...home }, t: 0, dur: drop ? 0.35 : 0.5 };
+  anim = { from: { ...cardPos }, to: drop ?? { ...HOMES[carried] }, t: 0, dur: drop ? 0.35 : 0.5 };
   mode = drop ? 'drop' : 'spring';
   if (drop) {
     camFree = false;
     sound.play('pop');
   }
-});
+}
 
 // Tap a packet to pop it open.
 scene.packet.addEventListener('pointerdown', () => {
@@ -598,7 +603,8 @@ function step(dir: 1 | -1): void {
 /** Start over: a clean table, everything put back and forgotten. */
 function reset(): void {
   mode = 'idle';
-  card.classList.remove('held', 'over');
+  CARDS[carried].classList.remove('held', 'over');
+  carried = 'page';
   seek = null;
   paused = false;
   peek = peekTarget = 0;
@@ -608,12 +614,11 @@ function reset(): void {
   faults.length = 0;
   knocks.clear();
   decided = {};
-  stormWindows = [];
   known.clear();
   client = 'laptop';
   cardPos = { ...home };
   pickUp(null);
-  for (const l of [...stormLines, ...cutLines]) clearLine(l);
+  for (const l of [...cutLines]) clearLine(l);
   setSpyLine(null);
   cuts = [];
   warmArp = false;
@@ -626,7 +631,7 @@ function reset(): void {
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
     // A menu item reached by keyboard works like any button; everywhere else Space pauses.
-    if (e.target instanceof Element && e.target.matches('.menu-item:focus-visible')) return;
+    if (e.target instanceof Element && e.target.matches('.menu-item:focus-visible, .spy-card button:focus-visible')) return;
     e.preventDefault();
     togglePause();
   } else if (e.code === 'Escape') {
@@ -637,19 +642,19 @@ window.addEventListener('keydown', (e) => {
   else if (e.code === 'ArrowLeft') step(-1);
 });
 
-/** The card has gone into the device: run the simulation with what is on the table and fresh weather. */
+/** The card has gone into the device: run the simulation with what is on the table and a fresh seed. */
 function beginRun(): void {
   faults.length = 0;
   knocks.clear();
-  stormSeed = 1 + Math.floor(Math.random() * 1e6);
+  runSeed = 1 + Math.floor(Math.random() * 1e6);
   decided = {};
-  stormWindows = [...stormLines].map((l) => ({ from: 0, links: [l] }));
   cuts = [...cutLines].map((link) => ({ link, from: 0 }));
   warmArp = cutLines.size > 0;
   revisit = remembers();
   simulate();
   scene.setStory(story, tl);
   showFeatures();
+  spyCard.reset();
   mode = 'play';
   v = 0;
   seek = null;
@@ -665,7 +670,7 @@ function endRun(): void {
   if (ip && !revisit) known.set(client, { site: story.site, ip, until: performance.now() + (story.dnsTtl ?? 0) * 1000 });
   idleV = tl.total;
   const from = scene.dropPoints().find((d) => d.id === client) ?? home;
-  anim = { from, to: { ...home }, t: 0, dur: 0.8 };
+  anim = { from, to: { ...HOMES[carried] }, t: 0, dur: 0.8 };
   mode = 'return';
   camFree = false;
 }
@@ -717,11 +722,15 @@ function frame(now: number): void {
   const pop = cardPop < 0.4 ? 1 + 0.12 * Math.sin((cardPop / 0.4) * Math.PI) : 1;
   const scale = (mode === 'drop' ? 1 - 0.8 * dropK : mode === 'drag' ? 1.06 : 0.2 + 0.8 * riseK) * pop;
   const cardOp = (1 - dropK) * riseK;
-  card.style.display = mode === 'play' ? 'none' : '';
-  card.setAttribute('transform', `translate(${cardPos.sx.toFixed(1)} ${(cardPos.sy + bob).toFixed(1)}) scale(${scale.toFixed(3)})`);
-  card.setAttribute('opacity', cardOp.toFixed(3));
+  const moving = CARDS[carried];
+  const resting = CARDS[carried === 'page' ? 'photo' : 'page'];
+  const rest = HOMES[carried === 'page' ? 'photo' : 'page'];
+  moving.style.display = resting.style.display = mode === 'play' ? 'none' : '';
+  moving.setAttribute('transform', `translate(${cardPos.sx.toFixed(1)} ${(cardPos.sy + bob).toFixed(1)}) scale(${scale.toFixed(3)})`);
+  moving.setAttribute('opacity', cardOp.toFixed(3));
+  resting.setAttribute('transform', `translate(${rest.sx.toFixed(1)} ${(rest.sy - bob).toFixed(1)})`);
+  resting.setAttribute('opacity', '1');
   hint.style.display = mode === 'idle' ? '' : 'none';
-  scene.renderStorm(clock);
 
   // The camera eases between the whole network (between runs) and a close follow of the packet,
   // unless the viewer has taken it over.
@@ -736,6 +745,7 @@ function frame(now: number): void {
   const shown = mode === 'play' ? v : idleV;
   scene.render(shown);
   scene.drawPacket(shown, peek, pill && pillOpen > 0.02 ? { key: pill, k: pillOpen } : null);
+  spyCard.update(spyLine ? spyLog(tl, spyLine, shown) : []);
 
   const ch = mode === 'play' ? chapterAt(tl, v) : null;
   if (ch !== shownChapter) {
@@ -743,7 +753,7 @@ function frame(now: number): void {
     chapter.hidden = !ch;
     if (!ch) chapterMenu.hidden = true;
     if (ch) {
-      chapter.innerHTML = `<span class="chapter-num">${chapterNumber(ch)}</span><span>${CHAPTERS[ch]}</span>`;
+      chapter.innerHTML = `<span class="chapter-num">${chapterNumber(ch)}</span><span>${chapterName(ch)}</span>`;
       chapter.classList.remove('enter');
       void chapter.offsetWidth;
       chapter.classList.add('enter');
@@ -752,7 +762,9 @@ function frame(now: number): void {
 
   pauseBtn.textContent = paused || peekTarget ? '▶' : '⏸';
   soundBtn.classList.toggle('off', sound.muted);
-  followBtn.hidden = !camFree;
+  // A tall screen starts close on the laptop, so the rest of the network has to be a press away.
+  const closeUp = mode !== 'play' && !showAll && scene.overviewCamera().scale > scene.wholeCamera().scale;
+  followBtn.hidden = !camFree && !closeUp;
   followBtn.textContent = mode === 'play' ? '◎ Follow packet' : '◎ Show all';
   backBtn.disabled = pauseBtn.disabled = nextBtn.disabled = mode !== 'play';
   // The setup is for the next run: it would rewrite what has already happened.
@@ -778,7 +790,7 @@ if (import.meta.env.DEV) {
         return revisit;
       },
       get segs() {
-        return tl.segs.map((s) => ({ kind: s.step.kind, t0: s.t0, t1: s.t1, chapter: s.trip.chapter, device: 'device' in s.step ? s.step.device : `${s.step.from}→${s.step.to}` }));
+        return tl.segs.map((s) => ({ kind: s.step.kind, t0: s.t0, t1: s.t1, chapter: s.trip.chapter, device: 'device' in s.step ? s.step.device : 'from' in s.step ? `${s.step.from}→${s.step.to}` : s.step.kind }));
       },
       seek(t: number, open = 0): void {
         mode = 'play';
@@ -797,23 +809,23 @@ if (import.meta.env.DEV) {
         return tool;
       },
       get lines() {
-        return { storm: [...stormLines], cut: [...cutLines] };
+        return { cut: [...cutLines] };
       },
       get reactions() {
         return tl.reactions;
       },
       /** Start a run straight away with these things on the table (for screenshots). */
-      start(f: Partial<Features> & { storm?: string | string[]; spy?: string; cut?: string | string[]; slow?: boolean; vpn?: boolean; again?: boolean; from?: Client }): void {
+      start(f: Partial<Features> & { photo?: boolean; spy?: string; cut?: string | string[]; slow?: boolean; vpn?: boolean; again?: boolean; from?: Client }): void {
         client = f.from ?? 'laptop';
+        carried = f.photo ? 'photo' : 'page';
         for (const k of SETTINGS) if (features[k] !== !!f[k]) setSetting(k, !!f[k]);
-        for (const l of [...stormLines, ...cutLines]) clearLine(l);
-        for (const l of [f.storm ?? []].flat()) toggleStorm(l);
+        for (const l of [...cutLines]) clearLine(l);
         for (const l of [f.cut ?? []].flat()) toggleCut(l);
         setSpyLine(f.spy ?? null);
         if (f.again) known.set(client, { site: siteName(), ip: '', until: Infinity });
         else known.delete(client);
         beginRun();
-        stormSeed = 1;
+        runSeed = 1;
         simulate();
         scene.setStory(story, tl);
       },
