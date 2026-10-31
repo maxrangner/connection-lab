@@ -1,4 +1,4 @@
-export type Protocol = 'ethernet' | 'wifi' | 'arp' | 'ipv4' | 'udp' | 'tcp' | 'tls' | 'dns' | 'http' | 'wireguard';
+export type Protocol = 'ethernet' | 'wifi' | 'arp' | 'ipv4' | 'udp' | 'tcp' | 'tls' | 'dns' | 'dhcp' | 'http' | 'wireguard';
 
 /**
  * Layer numbers in the 5-layer TCP/IP model: 1 physical, 2 link, 3 network, 4 transport, 5 application.
@@ -14,6 +14,7 @@ export const PROTOCOL_LAYER: Record<Protocol, LayerNum> = {
   udp: 4,
   tcp: 4,
   dns: 5,
+  dhcp: 5,
   http: 5,
   tls: 5,
   wireguard: 5,

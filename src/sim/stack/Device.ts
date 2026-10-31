@@ -24,6 +24,9 @@ export abstract class Device {
   readonly id: string;
   readonly sim: Simulator;
   readonly arp = new Map<Ip4, Mac>();
+  /** The device's own view of its interfaces and routes: what the scenario gave it, plus what DHCP sets later. */
+  readonly ifaces: IfaceSpec[];
+  readonly routes: RouteSpec[];
   protected readonly rng: Rng;
   private pendingArp = new Map<Ip4, PendingArp>();
   private timerCounter = 0;
@@ -37,17 +40,19 @@ export abstract class Device {
     this.id = spec.id;
     this.sim = world.sim;
     this.rng = world.rng(`device:${spec.id}`);
+    this.ifaces = spec.ifaces.map((i) => ({ ...i }));
+    this.routes = [...spec.routes];
     for (const [ip, mac] of Object.entries(spec.arp ?? {})) this.arp.set(ip, mac);
   }
 
   iface(id: string): IfaceSpec {
-    const f = this.spec.ifaces.find((i) => i.id === id);
+    const f = this.ifaces.find((i) => i.id === id);
     if (!f) throw new Error(`${this.id}: no iface ${id}`);
     return f;
   }
 
   ownsIp(ip: Ip4): boolean {
-    return this.spec.ifaces.some((i) => i.ip === ip || i.aliases?.includes(ip));
+    return this.ifaces.some((i) => i.ip === ip || i.aliases?.includes(ip));
   }
 
   newTimerId(kind: string): string {
@@ -57,7 +62,7 @@ export abstract class Device {
   /** Longest-prefix match over the routing table. */
   lookupRoute(dst: Ip4): RouteSpec | undefined {
     let best: RouteSpec | undefined;
-    for (const r of this.spec.routes) {
+    for (const r of this.routes) {
       if (inSubnet(dst, r.network, r.prefixLen) && (!best || r.prefixLen > best.prefixLen)) best = r;
     }
     return best;
@@ -133,6 +138,14 @@ export abstract class Device {
     if (emitRoute) this.emitRoute(ip.dst, route, packetId);
     this.resolveAndSend(this.iface(route.iface), route.via ?? ip.dst, ipBytes, packetId);
     return true;
+  }
+
+  /**
+   * Sends an IP packet straight out of one interface to a MAC it already knows: no route lookup and no ARP. This is how
+   * DHCP travels, before the client has an address to route from or the server's offer has an owner to ask for.
+   */
+  sendOnIface(iface: IfaceSpec, dstMac: Mac, ipBytes: Uint8Array, packetId: string): void {
+    this.sendFrame(iface, dstMac, ETHERTYPE_IPV4, ipBytes, packetId);
   }
 
   protected emitRoute(dst: Ip4, route: RouteSpec, packetId: string): void {

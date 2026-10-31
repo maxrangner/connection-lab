@@ -4,7 +4,7 @@ Guidance for AI agents and humans working on this repo. Read this before changin
 
 ## What this is
 
-An interactive web page that shows what really happens when a laptop fetches `http://example.com/`. The viewer drags a site card onto the laptop; a **protocol-accurate simulation** runs (ARP → DNS over UDP → TCP handshake → HTTP GET → response → FIN teardown) across a small network of isometric devices (laptop on an Ethernet cable or phone on Wi-Fi → home router with NAT → ISP router → DNS resolver / web server, optionally through a VPN server), and the page follows the packets a learner needs in chapters: **Find the address** (DNS), **Say hello** (SYN, SYN-ACK, ACK), **Agree on a secret** (TLS 1.3 handshake, HTTPS only), **Get the page** (GET, 200 OK). Chapter numbers follow what a run actually has.
+An interactive web page that shows what really happens when a laptop fetches `http://example.com/`. The viewer drags a site card onto the laptop; a **protocol-accurate simulation** runs (optionally DHCP first → ARP → DNS over UDP → TCP handshake → HTTP GET → response → FIN teardown) across a small network of isometric devices (laptop on an Ethernet cable or phone on Wi-Fi → home router with NAT → ISP router → DNS resolver / web server, optionally through a VPN server), and the page follows the packets a learner needs in chapters: **Get an address** (DHCP, scenario option `dhcp`: the device starts with no address at all and gets 192.168.1.23, the router and the resolver from the home router), **Find the address** (DNS), **Say hello** (SYN, SYN-ACK, ACK), **Agree on a secret** (TLS 1.3 handshake, HTTPS only), **Get the page** (GET, 200 OK). Chapter numbers follow what a run actually has.
 
 Audience: curious learners up to CS-student level. **Simple, fun and educational; playful interactions; never overwhelming.** Learning happens by watching: no narration, no explanatory pop-ups or captions, only short labels on things (device names, "TCP", an address). When in doubt, show less.
 
@@ -29,7 +29,7 @@ The machine may not have Node on `PATH` in every shell. If `node` is missing in 
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint (incl. sim/UI boundary) |
 | `npm run build` | typecheck + static build to `dist/` |
-| `npx vite-node scripts/dump-events.ts [mss] [lose:<packetId>@<linkId>]` | Print a scenario's full event log (debugging) |
+| `npx vite-node scripts/dump-events.ts [mss] [dhcp] [lose:<packetId>@<linkId>]` | Print a scenario's full event log (debugging); `dhcp` turns the DHCP option on |
 | `node scripts/screenshot.mjs [url] [outDir] [w] [h]` | Headless screenshots of the running dev server: key moments of each chapter, then a packet falling off a cut cable, its timer and the retry (`SHOTS=12.5,40` for specific `v`) |
 | `node scripts/bundle.mjs [outFile]` | One self-contained HTML file (inline JS/CSS) to share or publish as an artifact; default `dist-bundle/get-example-com.html` |
 | `node scripts/capture-tls.mjs [host] [path]` | Capture a real TLS 1.3 session (every byte both ways + its key log) into `src/sim/scenarios/tlsCapture_<host>.ts` (in Git Bash prefix `MSYS_NO_PATHCONV=1` so the path is not rewritten) |
@@ -49,14 +49,16 @@ src/sim/                     headless protocol simulation (no DOM)
   events/SimEvent.ts         the event union the UI consumes
   proto/                     one file per protocol: build*, parse*, describe* (fields with offsets + explanations)
   proto/wifi.ts              IEEE 802.11 data frames (To DS / From DS, three addresses, LLC/SNAP, FCS) for the phone's Wi-Fi hop
+  proto/dhcp.ts              DHCP over BOOTP (RFC 2131/2132): the 236-byte fixed part, magic cookie, options 1/3/6/12/50/51/53/54/55/61, padded to 300 bytes
   proto/tls.ts               TLS 1.3 records: split, open with a session's keys (handshake keys until Finished, then app keys), describe
   crypto/crypto.ts           SHA-256, HMAC, HKDF-Expand-Label, AES-128-GCM decrypt, ChaCha20-Poly1305 (synchronous, plain TS; tested against NIST/RFC vectors)
   proto/wireguard.ts         WireGuard transport messages: build, open, describe (ChaCha20-Poly1305 in crypto/crypto.ts, RFC 8439 vectors)
   proto/decode.ts            decodePdu(bytes, firstProtocol) → LayerPdu[] (outermost first)
   stack/World.ts             World + Link (serialization + propagation delay, fault drops)
-  stack/Device.ts            shared Ethernet/ARP/IPv4 routing for all devices
-  stack/Host.ts              end host: UDP/TCP sockets, IP output
-  stack/Router.ts            forwarding, TTL, NAT (natRewrite recomputes checksums)
+  stack/Device.ts            shared Ethernet/ARP/IPv4 routing for all devices; its own copy of ifaces/routes (DHCP fills them in), direct send without route or ARP
+  stack/Host.ts              end host: UDP/TCP sockets, IP output; a DHCP client's port 68 takes replies to an address it does not have yet
+  stack/Router.ts            forwarding, TTL, NAT (natRewrite recomputes checksums); broadcasts and its own packets go to the DHCP server, never on
+  stack/dhcp.ts              DHCP: the client (DISCOVER → OFFER → REQUEST → ACK, 4/8/16 s resends, then configure) and the home router's server with fixed leases by MAC
   stack/tcp.ts               TCP state machine, RFC 6298 RTO, dup ACKs, SACK blocks (sent, not used by the sender), RFC 5681 slow start and go-back after a timeout, RFC 6582 partial ACKs, RFC 7323 RTT samples, FIN teardown
   stack/apps.ts              browser + DNS stub, DNS resolver, HTTP server
   stack/vpn.ts               WireGuard tunnel: TunnelClient on the device, VpnServer that opens packets, NATs them to its own address and seals replies. It has its own cables to the web server and resolver (`bb4`, `bb5`), so the ISP only ever handles sealed packets, as with a real VPN server in another network
@@ -146,3 +148,4 @@ To check visuals, run `npm run dev`, then `node scripts/screenshot.mjs` (desktop
 - Hosts and routers drop silently: no RST for a closed port and no ICMP for an unreachable address or an expired TTL.
 - The NAT always picks a new outside port, a deliberate, visible knob; Linux MASQUERADE keeps the original port unless it collides, though some consumer NATs change it too.
 - A name the resolver does not know gets a real NXDOMAIN answer (rcode 3), and the browser gives up on it like a real one; the stub resolver treats an answer without addresses as a failure.
+- DHCP (option `dhcp`) is the real four-message exchange with real bytes: DISCOVER and REQUEST broadcast from 0.0.0.0:68 to 255.255.255.255:67, OFFER and ACK unicast to the client's MAC with the offered address as IP destination (what ISC dhcpd and dnsmasq do when the broadcast flag is clear); the client asks for options 1, 3, 6, 15, 28, 51, 54 like dhcpcd/dhclient and resends after 4, 8, 16 s with no ±1 s jitter. The server has fixed leases by MAC (192.168.1.23 for the laptop, .42 for the phone), lease 1 day; no pool, no DECLINE/ARP probe of the new address, no renewal (T1/T2) or RELEASE is shown. A real client's DNS resolver and default route then come from the lease, as here.

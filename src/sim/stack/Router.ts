@@ -1,10 +1,14 @@
-import { ipToBytes, type Ip4 } from '../bytes/addr';
+import { BROADCAST_IP, ipToBytes, type Ip4 } from '../bytes/addr';
 import { setU16, u16 } from '../bytes/bytes';
 import { internetChecksum, transportChecksum } from '../bytes/checksum';
 import type { NatEntry } from '../events/SimEvent';
-import type { IfaceSpec } from '../model';
+import type { DeviceSpec, IfaceSpec } from '../model';
+import { DHCP_SERVER_PORT } from '../proto/dhcp';
 import { IPPROTO_TCP, IPPROTO_UDP, parseIpv4, rewriteIpv4 } from '../proto/ipv4';
+import { parseUdp } from '../proto/udp';
 import { Device } from './Device';
+import { DhcpServer } from './dhcp';
+import type { World } from './World';
 
 /**
  * Rewrites addresses/ports in an IPv4 packet carrying TCP or UDP and recomputes both checksums, exactly what a
@@ -40,6 +44,34 @@ export function natRewrite(
 /** An IPv4 router. With `spec.nat` set it is a home router doing source NAT (masquerading) on its WAN side. */
 export class Router extends Device {
   private natTable: NatEntry[] = [];
+  /** A home router hands out addresses too. */
+  private readonly dhcp?: DhcpServer;
+
+  constructor(world: World, spec: DeviceSpec) {
+    super(world, spec);
+    if (spec.dhcp) this.dhcp = new DhcpServer(this, spec.dhcp, this.rng);
+  }
+
+  /**
+   * A packet for the router itself (or for everyone: a broadcast is never forwarded). Only the DHCP server listens,
+   * on the home side; everything else is dropped.
+   */
+  private deliver(inIface: IfaceSpec, bytes: Uint8Array, packetId: string): void {
+    const sim = this.sim;
+    const ip = parseIpv4(bytes, 0);
+    const l4 = bytes.slice(ip.headerLen, ip.totalLength);
+    const u = ip.protocol === IPPROTO_UDP ? parseUdp(l4, 0) : undefined;
+    const served = this.dhcp && this.spec.dhcp!.ifaces.includes(inIface.id) && u?.dstPort === DHCP_SERVER_PORT;
+    if (!served || !u) {
+      sim.emit({ type: 'drop', packetId, reason: 'no-socket', deviceId: this.id });
+      return;
+    }
+    sim.emit({ type: 'decapsulate', deviceId: this.id, packetId, layer: 3, protocol: 'ipv4', pduId: sim.pdu(packetId, l4, 'udp', { srcIp: ip.src, dstIp: ip.dst, appHint: 'dhcp' }) });
+    const data = l4.slice(u.payloadStart, u.payloadEnd);
+    const pduId = sim.pdu(packetId, data, 'dhcp');
+    sim.emit({ type: 'decapsulate', deviceId: this.id, packetId, layer: 4, protocol: 'udp', pduId });
+    this.dhcp!.input(inIface, data);
+  }
 
   protected onIpv4(inIface: IfaceSpec, ipBytes: Uint8Array, packetId: string): void {
     const sim = this.sim;
@@ -70,9 +102,8 @@ export class Router extends Device {
         pduId: sim.pdu(packetId, bytes, 'ipv4'),
       });
       ip = parseIpv4(bytes, 0);
-    } else if (this.ownsIp(ip.dst)) {
-      // Addressed to the router itself (not used in this scenario).
-      sim.emit({ type: 'drop', packetId, reason: 'no-socket', deviceId: this.id });
+    } else if (ip.dst === BROADCAST_IP || this.ownsIp(ip.dst)) {
+      this.deliver(inIface, bytes, packetId);
       return;
     }
 

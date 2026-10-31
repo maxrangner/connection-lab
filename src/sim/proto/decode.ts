@@ -1,5 +1,6 @@
 import type { Ip4 } from '../bytes/addr';
 import { describeArp } from './arp';
+import { describeDhcp, DHCP_CLIENT_PORT, DHCP_SERVER_PORT } from './dhcp';
 import { describeDns } from './dns';
 import { describeEthernet, ETHERTYPE_ARP, ETHERTYPE_IPV4, parseEthernet } from './ethernet';
 import { describeHttp } from './http';
@@ -72,6 +73,8 @@ function walk(b: Uint8Array, proto: Protocol, o: number, end: number, ctx: Decod
         walk(b, 'wireguard', u.payloadStart, u.payloadEnd, ctx, out);
       } else if (u.payloadEnd > u.payloadStart && (u.srcPort === 53 || u.dstPort === 53 || ctx.appHint === 'dns')) {
         walk(b, 'dns', u.payloadStart, u.payloadEnd, ctx, out);
+      } else if (u.payloadEnd > u.payloadStart && ([DHCP_SERVER_PORT, DHCP_CLIENT_PORT].includes(u.dstPort) || ctx.appHint === 'dhcp')) {
+        walk(b, 'dhcp', u.payloadStart, u.payloadEnd, ctx, out);
       }
       return pdu.end;
     }
@@ -88,6 +91,10 @@ function walk(b: Uint8Array, proto: Protocol, o: number, end: number, ctx: Decod
     }
     case 'dns': {
       out.push(describeDns(b, o, end));
+      return end;
+    }
+    case 'dhcp': {
+      out.push(describeDhcp(b, o, end));
       return end;
     }
     case 'wireguard': {

@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { fromBase64, toAscii } from './bytes/bytes';
+import type { PduSnapshot } from './core/Simulator';
 import type { EventOf, SimEventType } from './events/SimEvent';
 import type { FaultPlan } from './faults';
 import { runScenario, type SimResult } from './run';
 import { ADDR, fetchWebPage, type FetchWebPageOptions } from './scenarios/fetchWebPage';
+import { parseDhcp } from './proto/dhcp';
 import { parseDns } from './proto/dns';
 import { parseIpv4 } from './proto/ipv4';
+import type { Field } from './proto/types';
+import { parseUdp } from './proto/udp';
 import { parseWifi } from './proto/wifi';
 import { openWgData } from './proto/wireguard';
 import { tunnelKeys } from './stack/vpn';
@@ -297,6 +301,142 @@ describe('VPN (a WireGuard tunnel)', () => {
     const lost = run({ vpn: true }, { randomLoss: 0, manual: [{ packetId: get.id, linkId: 'wan' }] });
     expect(of(lost, 'tcp:retransmit').length).toBeGreaterThan(0);
     expect(of(lost, 'app').some((e) => e.action === 'done')).toBe(true);
+  });
+});
+
+describe('getting an address by DHCP', () => {
+  const r = run({ dhcp: true });
+  const frames = (x: SimResult, link: string) => of(x, 'tx').filter((e) => e.linkId === link).map((e) => ({ e, pdu: x.pdus.get(e.frameId)!, label: x.packets.get(e.packetId)!.label }));
+  /** The DHCP message inside a frame, with the addresses around it. */
+  const dhcpIn = (pdu: PduSnapshot) => {
+    const l = pdu.layers.find((x) => x.protocol === 'dhcp')!;
+    const ipL = pdu.layers.find((x) => x.protocol === 'ipv4')!;
+    const udpL = pdu.layers.find((x) => x.protocol === 'udp')!;
+    return { m: parseDhcp(pdu.bytes, l.start), ip: parseIpv4(pdu.bytes, ipL.start), udp: parseUdp(pdu.bytes, udpL.start), mac: pdu.layers[0]!.summary };
+  };
+  const allFields = (fs: Field[], out: Field[] = []): Field[] => {
+    for (const f of fs) {
+      out.push(f);
+      if (f.children) allFields(f.children, out);
+    }
+    return out;
+  };
+
+  it('the first four packets on the LAN are DISCOVER, OFFER, REQUEST, ACK with one transaction id', () => {
+    const lan = frames(r, 'lan');
+    expect(lan.slice(0, 4).map((f) => f.label)).toEqual(['DHCP DISCOVER', 'DHCP OFFER 192.168.1.23', 'DHCP REQUEST 192.168.1.23', 'DHCP ACK 192.168.1.23']);
+    const [d, o, q, a] = lan.slice(0, 4).map((f) => dhcpIn(f.pdu));
+    expect([d, o, q, a].map((x) => x!.m.options.type)).toEqual([1, 2, 3, 5]);
+    expect(new Set([d, o, q, a].map((x) => x!.m.xid)).size).toBe(1);
+    expect([d, o, q, a].map((x) => x!.m.op)).toEqual([1, 2, 1, 2]);
+    expect(lan[4]!.label).toMatch(/^ARP request/);
+  });
+
+  it('the client sends from nowhere to everyone: 0.0.0.0 → 255.255.255.255, ports 68 → 67, the broadcast MAC', () => {
+    for (const f of frames(r, 'lan').filter((x) => /DISCOVER|REQUEST/.test(x.label))) {
+      const { m, ip, udp, mac } = dhcpIn(f.pdu);
+      expect(ip.src).toBe('0.0.0.0');
+      expect(ip.dst).toBe('255.255.255.255');
+      expect([udp.srcPort, udp.dstPort]).toEqual([68, 67]);
+      expect(mac).toContain(`${ADDR.laptop.mac} → ff:ff:ff:ff:ff:ff`);
+      expect(m.chaddr).toBe(ADDR.laptop.mac);
+      expect(m.ciaddr).toBe('0.0.0.0');
+      expect(m.options.hostName).toBe('laptop');
+      expect(m.options.paramRequest).toEqual([1, 3, 6, 15, 28, 51, 54]);
+      expect(m.options.clientId).toBe(ADDR.laptop.mac);
+    }
+    const q = dhcpIn(frames(r, 'lan').find((x) => x.label.startsWith('DHCP REQUEST'))!.pdu).m;
+    expect(q.options.requestedIp).toBe(ADDR.laptop.ip);
+    expect(q.options.serverId).toBe(ADDR.homeLan.ip);
+  });
+
+  it('OFFER and ACK carry the lease: yiaddr, mask, router, DNS, lease time, server id, unicast to the client MAC', () => {
+    for (const f of frames(r, 'lan').filter((x) => /^DHCP (OFFER|ACK)/.test(x.label))) {
+      const { m, ip, udp, mac } = dhcpIn(f.pdu);
+      expect(m.yiaddr).toBe(ADDR.laptop.ip);
+      expect(m.siaddr).toBe(ADDR.homeLan.ip);
+      expect(m.options).toMatchObject({ subnetMask: '255.255.255.0', routers: [ADDR.homeLan.ip], dns: [ADDR.resolver.ip], leaseTime: 86400, serverId: ADDR.homeLan.ip });
+      expect(ip.src).toBe(ADDR.homeLan.ip);
+      expect(ip.dst).toBe(ADDR.laptop.ip);
+      expect([udp.srcPort, udp.dstPort]).toEqual([67, 68]);
+      expect(mac).toContain(`${ADDR.homeLan.mac} → ${ADDR.laptop.mac}`);
+    }
+  });
+
+  it('after the ACK the laptop has its address, asks DNS from it and the page arrives', () => {
+    const actions = of(r, 'app').map((e) => `${e.deviceId}:${e.action}`);
+    expect(actions.slice(0, 7)).toEqual(['laptop:dhcp-discover', 'home:dhcp-offer', 'laptop:dhcp-request', 'home:dhcp-ack', 'laptop:dhcp-configured', 'laptop:start', 'laptop:dns-lookup']);
+    expect(of(r, 'app').find((e) => e.action === 'dhcp-configured')?.info).toMatchObject({ address: ADDR.laptop.ip, prefixLen: 24, router: ADDR.homeLan.ip, dns: [ADDR.resolver.ip], lease: 86400 });
+    const dns = frames(r, 'lan').find((x) => x.label.startsWith('DNS query'))!;
+    const ip = parseIpv4(dns.pdu.bytes, 14);
+    expect(ip.src).toBe(ADDR.laptop.ip);
+    expect(ip.dst).toBe(ADDR.resolver.ip);
+    expect(actions).toContain('laptop:done');
+    expect(of(r, 'drop')).toHaveLength(0);
+    // The scenario itself is untouched: the laptop still starts from nothing next time.
+    expect(r.scenario.devices.find((d) => d.id === 'laptop')!.ifaces[0]!.ip).toBe('0.0.0.0');
+  });
+
+  it('a lost OFFER: the DISCOVER goes again after 4 s with the same xid and secs = 4, and the page still comes', () => {
+    const offer = [...r.packets.values()].find((p) => p.label.startsWith('DHCP OFFER'))!;
+    const x = run({ dhcp: true }, { randomLoss: 0, manual: [{ packetId: offer.id, linkId: 'lan' }] });
+    const discovers = frames(x, 'lan').filter((f) => f.label.startsWith('DHCP DISCOVER'));
+    expect(discovers.map((f) => f.label)).toEqual(['DHCP DISCOVER', 'DHCP DISCOVER (retry)']);
+    expect(discovers[1]!.e.start - discovers[0]!.e.start).toBeCloseTo(4, 6);
+    const [a, b] = discovers.map((f) => dhcpIn(f.pdu).m);
+    expect(b!.xid).toBe(a!.xid);
+    expect([a!.secs, b!.secs]).toEqual([0, 4]);
+    expect(of(x, 'timer:fire').map((e) => e.kind)).toContain('dhcp-retry');
+    expect(of(x, 'drop').map((d) => d.reason)).toEqual(['fault']);
+    expect(of(x, 'app').some((e) => e.action === 'done')).toBe(true);
+  });
+
+  it('with no server answering it backs off 4, 8, 16, 32 s and gives up', () => {
+    const x = runScenario(fetchWebPage({ dhcp: true }), { seed: 1, faults: { randomLoss: 0, manual: [], cuts: [{ link: 'lan', from: 0 }] }, maxTime: 1000 });
+    const sent = of(x, 'tx').filter((e) => e.linkId === 'lan').map((e) => e.start);
+    expect(sent.map((t, i) => (i ? Math.round(t - sent[i - 1]!) : 0))).toEqual([0, 4, 8, 16]);
+    expect(of(x, 'app').map((e) => `${e.deviceId}:${e.action}`)).toEqual(['laptop:dhcp-discover', 'laptop:dhcp-discover', 'laptop:dhcp-discover', 'laptop:dhcp-discover', 'laptop:error']);
+    expect(of(x, 'app').at(-1)!.t).toBeCloseTo(60, 6);
+  });
+
+  it('the phone gets 192.168.1.42 over Wi-Fi, its DISCOVER going up to the access point for everyone', () => {
+    const x = run({ dhcp: true, from: 'phone' });
+    const air = frames(x, 'wlan');
+    expect(air.slice(0, 4).map((f) => f.label)).toEqual(['DHCP DISCOVER', 'DHCP OFFER 192.168.1.42', 'DHCP REQUEST 192.168.1.42', 'DHCP ACK 192.168.1.42']);
+    const d = parseWifi(air[0]!.pdu.bytes);
+    expect(d).toMatchObject({ toAp: true, addr1: ADDR.homeWlan.mac, addr2: ADDR.phone.mac, addr3: 'ff:ff:ff:ff:ff:ff' });
+    const o = parseWifi(air[1]!.pdu.bytes);
+    expect(o).toMatchObject({ toAp: false, addr1: ADDR.phone.mac, addr2: ADDR.homeWlan.mac });
+    expect(of(x, 'app').find((e) => e.action === 'dhcp-configured')?.info?.address).toBe(ADDR.phone.ip);
+    expect(of(x, 'app').some((e) => e.deviceId === 'phone' && e.action === 'done')).toBe(true);
+    expect(of(x, 'tx').some((e) => e.linkId === 'lan')).toBe(false);
+  });
+
+  it('works with the other settings too: HTTPS, VPN, a second visit, the bigger page', () => {
+    for (const o of [{ https: true }, { vpn: true }, { revisit: true }, { site: 'info.cern.ch' as const }, { vpn: true, from: 'phone' as const }]) {
+      const x = run({ dhcp: true, ...o });
+      expect(of(x, 'app').find((e) => e.action === 'dhcp-configured')).toBeTruthy();
+      expect(of(x, 'app').some((e) => e.action === 'done')).toBe(true);
+    }
+  });
+
+  it('every DHCP field is explained and every checksum checks out', () => {
+    let seen = 0;
+    for (const pdu of r.pdus.values()) {
+      if (!pdu.layers.some((l) => l.protocol === 'dhcp')) continue;
+      seen++;
+      for (const f of allFields(pdu.layers.flatMap((l) => l.fields))) {
+        expect(f.display, `${pdu.id} ${f.key}`).not.toContain('✗');
+        expect(f.explain.length, `${f.key} needs an explanation`).toBeGreaterThan(0);
+      }
+    }
+    expect(seen).toBeGreaterThan(8);
+  });
+
+  it('is deterministic for a given seed', () => {
+    const again = run({ dhcp: true });
+    expect(JSON.stringify(again.events)).toBe(JSON.stringify(r.events));
+    expect(JSON.stringify(run({ dhcp: true }, undefined, 2).events)).not.toBe(JSON.stringify(r.events));
   });
 });
 

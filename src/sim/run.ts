@@ -3,6 +3,7 @@ import type { SimEvent } from './events/SimEvent';
 import { NO_FAULTS, type FaultPlan } from './faults';
 import type { Scenario } from './model';
 import { startBrowser, startDnsServer, startHttpServer } from './stack/apps';
+import { startDhcpClient } from './stack/dhcp';
 import { startHttpsServer } from './stack/https';
 import { TunnelClient, VpnServer } from './stack/vpn';
 import type { Device } from './stack/Device';
@@ -43,7 +44,7 @@ export function runScenario(scenario: Scenario, opts: RunOptions): SimResult {
     world.ifaceLink.set(spec.a, link);
     world.ifaceLink.set(spec.b, link);
   }
-  // Servers listen from the start; the browser is started by the user (t = 0).
+  // Servers listen from the start; the browser is started by the user (t = 0), after DHCP if the device needs an address first.
   for (const spec of scenario.devices) {
     const dev = world.devices.get(spec.id);
     if (!(dev instanceof Host)) continue;
@@ -58,9 +59,12 @@ export function runScenario(scenario: Scenario, opts: RunOptions): SimResult {
   const starts = [{ device: scenario.startDevice, at: 0 }, ...(scenario.companion ? [scenario.companion] : [])];
   for (const s of starts) {
     const start = world.devices.get(s.device);
-    const browser = start ? scenario.devices.find((d) => d.id === start.id)?.apps.find((a) => a.kind === 'browser') : undefined;
+    const apps = start ? (scenario.devices.find((d) => d.id === start.id)?.apps ?? []) : [];
+    const browser = apps.find((a) => a.kind === 'browser');
+    const dhcp = apps.find((a) => a.kind === 'dhcp-client');
     if (start instanceof Host && browser?.kind === 'browser') {
-      world.sim.at(s.at, () => startBrowser(start, browser, scenario.tcp.clientMss));
+      const open = (resolver?: string): void => startBrowser(start, browser, scenario.tcp.clientMss, resolver);
+      world.sim.at(s.at, () => (dhcp?.kind === 'dhcp-client' ? startDhcpClient(start, dhcp, (lease) => open(lease.dns[0])) : open()));
     }
   }
   world.sim.run(opts.maxTime ?? 600);

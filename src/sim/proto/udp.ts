@@ -43,6 +43,8 @@ export function parseUdp(b: Uint8Array, o: number): ParsedUdp {
 
 export function portName(p: number): string {
   if (p === 53) return ' (DNS)';
+  if (p === 67) return ' (DHCP server)';
+  if (p === 68) return ' (DHCP client)';
   if (p === 80) return ' (HTTP)';
   if (p === 443) return ' (HTTPS)';
   if (p >= 32768) return ' (ephemeral)';

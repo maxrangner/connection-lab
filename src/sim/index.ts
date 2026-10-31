@@ -10,4 +10,5 @@ export { hexBytes, preview } from './bytes/bytes';
 export { WG_TAG_LEN } from './proto/wireguard';
 export { ETH_PREAMBLE } from './proto/ethernet';
 export { flagNames, TCP_ACK, TCP_FIN, TCP_SYN } from './proto/tcp';
+export { buildDhcp, describeDhcp, dhcpTypeName, parseDhcp, type DhcpMessage, type ParsedDhcp } from './proto/dhcp';
 export { clientHelloSni, openRecords, sessionStream, TLS_ALERT, TLS_APPLICATION_DATA, TLS_HANDSHAKE, type OpenedRecord, type TlsSession } from './proto/tls';
