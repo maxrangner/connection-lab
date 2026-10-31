@@ -74,6 +74,10 @@ export type AppSpec =
     }
   /** The friend's phone: waits for voice on `port` and answers with its own clip to whoever calls. */
   | { kind: 'voice-peer'; clip: Uint8Array; port: number }
+  /** `ping -c count to`: echo requests one second apart, like Linux ping. `to` is a name or an address. */
+  | { kind: 'ping'; to: string; /** The DNS resolver to ask for a name. Left out when DHCP hands one out. */ resolver?: Ip4; count: number }
+  /** `traceroute -m maxHops to`: UDP probes with TTL 1, 2, 3 …, three per hop, like Linux traceroute. */
+  | { kind: 'traceroute'; to: string; resolver?: Ip4; maxHops: number }
   | {
       kind: 'dns-server';
       /** What the resolver already has in its cache. */

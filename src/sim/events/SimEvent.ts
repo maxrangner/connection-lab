@@ -1,7 +1,7 @@
 import type { Ip4, Mac } from '../bytes/addr';
 import type { LayerNum, Protocol } from '../proto/types';
 
-export type TimerKind = 'tcp-rto' | 'tcp-timewait' | 'dns-retry' | 'arp-retry' | 'dhcp-retry';
+export type TimerKind = 'tcp-rto' | 'tcp-timewait' | 'dns-retry' | 'arp-retry' | 'dhcp-retry' | 'ping-wait' | 'trace-wait';
 
 export type TcpState =
   | 'CLOSED'
@@ -28,8 +28,9 @@ export type DropReason =
   | 'no-nat-mapping'
   | 'arp-failed';
 
+/** For ICMP there are no ports: an echo's identifier stands in for the port on both sides, and `remote.port` is 0. */
 export interface NatEntry {
-  proto: 'udp' | 'tcp';
+  proto: 'udp' | 'tcp' | 'icmp';
   inside: { ip: Ip4; port: number };
   outside: { ip: Ip4; port: number };
   remote: { ip: Ip4; port: number };
@@ -57,12 +58,18 @@ export type AppAction =
   | 'rtp-gap' // a sequence number was skipped: the packet is lost and nothing asks for it again; silence is played instead
   | 'rtp-late' // a packet from before what has already been played, or one seen already: thrown away
   | 'call-done' // both clips are through: the call hangs up
+  | 'ping-request' // ping sends an echo request (seq, to)
+  | 'ping-reply' // and hears the reply (seq, from, ttl, rttMs)
+  | 'ping-done' // the summary line: sent, received, lossPct, minMs, avgMs, maxMs
+  | 'trace-probe' // traceroute sends a UDP probe (ttl, probe, port)
+  | 'trace-hop' // a router's Time Exceeded, or the destination's Port Unreachable, answered one (ttl, probe, from, rttMs, reached)
+  | 'trace-done' // the path: hops, the addresses that answered, whether the destination was reached
   | 'done'
   | 'error';
 
 /** Everything that can happen, in the order it happens. Narration text is derived in the UI. */
 export type SimEventPayload =
-  | { type: 'app'; deviceId: string; app: 'browser' | 'dns-client' | 'dns-server' | 'dns-authority' | 'dhcp-client' | 'dhcp-server' | 'http-server' | 'voice-call' | 'voice-peer'; action: AppAction; pduId?: string; info?: Record<string, string | number | string[]> }
+  | { type: 'app'; deviceId: string; app: 'browser' | 'dns-client' | 'dns-server' | 'dns-authority' | 'dhcp-client' | 'dhcp-server' | 'http-server' | 'voice-call' | 'voice-peer' | 'ping' | 'traceroute'; action: AppAction; pduId?: string; info?: Record<string, string | number | string[]> }
   | { type: 'encapsulate'; deviceId: string; packetId: string; layer: LayerNum; protocol: Protocol; pduId: string }
   | { type: 'decapsulate'; deviceId: string; packetId: string; layer: LayerNum; protocol: Protocol; pduId: string }
   | { type: 'arp:miss'; deviceId: string; ip: Ip4; packetId: string }

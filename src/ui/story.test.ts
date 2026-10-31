@@ -913,3 +913,56 @@ describe('an address changing', () => {
     for (const seg of later) expect(tl.cues.some((c) => c.sound === 'snap' && c.t > seg.t0 && c.t < seg.t1)).toBe(true);
   });
 });
+
+describe('ping and traceroute stories', () => {
+  const probe = (kind: 'ping' | 'traceroute', vpn = false) => buildStory(runScenario(fetchWebPage({ probe: kind, vpn }), { seed: 1, faults: { randomLoss: 0, manual: [] } }));
+
+  it('ping: after the lookup, "ping 1/4" goes out and "pong 1/4" comes back, each the whole card with no transport piece', () => {
+    const s = probe('ping');
+    expect(s.site).toBe('example.com');
+    expect(s.trips.map((t) => [t.chapter, t.card])).toEqual([
+      ['dns', 'example.com?'], ['dns', '104.20.23.154'],
+      ['ping', 'ping 1/4'], ['ping', 'pong 1/4'], ['ping', 'ping 2/4'], ['ping', 'pong 2/4'],
+      ['ping', 'ping 3/4'], ['ping', 'pong 3/4'], ['ping', 'ping 4/4'], ['ping', 'pong 4/4'],
+    ]);
+    const ping = s.trips[2]!;
+    expect(ping).toMatchObject({ l4: 'none', l4Label: '', dataBytes: 64, header: { eth: 14, ip: 20, l4: 0 }, from: '192.168.1.23', to: '104.20.23.154', outward: true });
+    expect(kinds(ping)).toEqual(['appear', 'wrap:ip', 'wrap:eth', 'travel', 'unwrap:eth', 'nat', 'wrap:eth', 'travel', 'unwrap:eth', 'wrap:eth', 'travel', 'unwrap:eth', 'unwrap:ip', 'read']);
+    expect(ping.steps.find((x) => x.kind === 'nat')).toMatchObject({ device: 'home', which: 'from', after: '203.0.113.7' });
+    expect(ping.steps[0]!.details?.card?.map((row) => row.name)).toEqual(['Type', 'Identifier', 'Sequence number', 'Data']);
+    expect(ping.steps[0]!.details?.l4).toBeUndefined();
+    // The reply comes back addressed to the home's public address and is translated at the router, like the page.
+    const pong = s.trips[3]!;
+    expect(pong).toMatchObject({ outward: false, client: 'laptop', from: '104.20.23.154', to: '203.0.113.7' });
+    expect(pong.steps.find((x) => x.kind === 'nat')).toMatchObject({ device: 'home', which: 'to', after: '192.168.1.23' });
+    expect(s.probe).toMatchObject({ kind: 'ping', to: 'example.com', hops: [], done: { sent: 4, received: 4, lossPct: 0 } });
+    expect(s.probe!.replies.map((x) => x.seq)).toEqual([1, 2, 3, 4]);
+    expect(s.probe!.replies[0]!.rttMs).toBeGreaterThan(12);
+    expect(s.pageTitle).toBeNull();
+  });
+
+  it('traceroute: probes say their TTL, routers answer "TTL ran out", the server "no such port", and the story knows the hops', () => {
+    const s = probe('traceroute');
+    const trace = s.trips.filter((t) => t.chapter === 'trace');
+    expect(trace.map((t) => t.card)).toEqual([
+      'TTL 1', 'TTL ran out', 'TTL 1', 'TTL ran out', 'TTL 1', 'TTL ran out',
+      'TTL 2', 'TTL ran out', 'TTL 2', 'TTL ran out', 'TTL 2', 'TTL ran out',
+      'TTL 3', 'no such port', 'TTL 3', 'no such port', 'TTL 3', 'no such port',
+    ]);
+    expect(trace[0]).toMatchObject({ l4: 'udp', l4Label: 'UDP', probeTtl: 1, dataBytes: 32, header: { eth: 14, ip: 20, l4: 8 } });
+    // The first probe gets no further than the home router: its trip ends there, unopened.
+    expect(kinds(trace[0]!)).toEqual(['appear', 'wrap:l4', 'wrap:ip', 'wrap:eth', 'travel', 'unwrap:eth']);
+    expect(trace[1]).toMatchObject({ l4: 'none', origin: 'home', from: '192.168.1.1', to: '192.168.1.23' });
+    expect(trace[1]!.probeTtl).toBeUndefined();
+    expect(kinds(trace[1]!)).toEqual(['appear', 'wrap:ip', 'wrap:eth', 'travel', 'unwrap:eth', 'unwrap:ip', 'read']);
+    expect(trace[7]).toMatchObject({ origin: 'isp', from: '203.0.113.1' });
+    expect(trace[7]!.steps.find((x) => x.kind === 'nat')).toMatchObject({ device: 'home', which: 'to', after: '192.168.1.23' });
+    expect(trace[12]!.probeTtl).toBe(2 + 1);
+    expect(s.probe!.hops.map((h) => [h.ttl, h.from, h.reached])).toEqual([
+      [1, '192.168.1.1', false], [1, '192.168.1.1', false], [1, '192.168.1.1', false],
+      [2, '203.0.113.1', false], [2, '203.0.113.1', false], [2, '203.0.113.1', false],
+      [3, '104.20.23.154', true], [3, '104.20.23.154', true], [3, '104.20.23.154', true],
+    ]);
+    expect(probe('traceroute', true).probe!.hops.map((h) => h.from)).toEqual(['198.51.100.10', '198.51.100.10', '198.51.100.10', '104.20.23.154', '104.20.23.154', '104.20.23.154']);
+  });
+});

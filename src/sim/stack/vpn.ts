@@ -1,12 +1,14 @@
 import type { Ip4 } from '../bytes/addr';
 import { rngFor } from '../core/Rng';
+import type { NatEntry } from '../events/SimEvent';
 import type { IfaceSpec } from '../model';
-import { buildIpv4, IPPROTO_TCP, IPPROTO_UDP, parseIpv4, rewriteIpv4 } from '../proto/ipv4';
+import { ICMP_TIME_EXCEEDED, ICMP_TTL_EXCEEDED } from '../proto/icmp';
+import { buildIpv4, IPPROTO_UDP, parseIpv4, rewriteIpv4 } from '../proto/ipv4';
 import { buildUdp, parseUdp, UDP_HEADER_LEN } from '../proto/udp';
 import { buildWgData, openWgData, WG_PORT } from '../proto/wireguard';
 import { u16 } from '../bytes/bytes';
 import { Host } from './Host';
-import { natRewrite } from './Router';
+import { natKeyIn, natKeyOut, natMatch, natRewrite } from './Router';
 
 /**
  * A WireGuard tunnel. The client hands over every IP packet it makes; they travel sealed in UDP to the VPN server, which
@@ -68,25 +70,19 @@ export class TunnelClient {
   }
 }
 
-interface Mapping {
-  proto: 'udp' | 'tcp';
-  inside: { ip: Ip4; port: number };
-  outside: { ip: Ip4; port: number };
-  remote: { ip: Ip4; port: number };
-}
-
 /** The far end of the tunnel: opens packets, sends them on from its own address, and seals what comes back. */
 export class VpnServer extends Host {
   private readonly keys = tunnelKeys(this.world.seed);
   private counter = 0;
   private peer: { ip: Ip4; port: number } | null = null;
-  private nat: Mapping[] = [];
+  /** The device's address inside the tunnel, learnt from what it sends (WireGuard's "allowed IPs" for the peer). */
+  private allowed: Ip4 | null = null;
+  private nat: NatEntry[] = [];
 
   protected override onIpv4(iface: IfaceSpec, bytes: Uint8Array, packetId: string): void {
     const sim = this.sim;
     const ip = parseIpv4(bytes, 0);
-    const proto = ip.protocol === IPPROTO_TCP ? 'tcp' : ip.protocol === IPPROTO_UDP ? 'udp' : null;
-    if (ip.dst === this.ip && proto === 'udp' && parseUdp(bytes, ip.headerLen).dstPort === WG_PORT) {
+    if (ip.dst === this.ip && ip.protocol === IPPROTO_UDP && parseUdp(bytes, ip.headerLen).dstPort === WG_PORT) {
       const udp = parseUdp(bytes, ip.headerLen);
       const opened = openWgData(this.keys.up, bytes.slice(ip.headerLen + UDP_HEADER_LEN, ip.headerLen + udp.length));
       if (!opened) {
@@ -97,43 +93,64 @@ export class VpnServer extends Host {
       this.peer = { ip: ip.src, port: udp.srcPort };
       const inner = innerOf(opened);
       const p = parseIpv4(inner, 0);
+      this.allowed = p.src;
       sim.emit({ type: 'tunnel:unwrap', deviceId: this.id, packetId, pduId: sim.pdu(packetId, inner, 'ipv4'), addr: { src: p.src, dst: p.dst } });
       this.sendOn(inner, packetId);
       return;
     }
-    const dport = proto ? u16(bytes, ip.headerLen + 2) : 0;
-    const e = this.nat.find((n) => n.proto === proto && n.outside.port === dport && n.remote.ip === ip.src);
-    if (ip.dst === this.ip && e && this.peer) {
+    const back = ip.dst === this.ip ? natKeyIn(bytes) : undefined;
+    const e = back && this.nat.find(natMatch(back, 'outside'));
+    if (e && this.peer) {
       const aged = rewriteIpv4(bytes, { ttl: ip.ttl - 1 });
       sim.emit({ type: 'forward', deviceId: this.id, packetId, ttlBefore: ip.ttl, ttlAfter: ip.ttl - 1, pduId: sim.pdu(packetId, aged, 'ipv4') });
-      const back = natRewrite(aged, { dst: e.inside });
-      sim.emit({ type: 'nat:translate', deviceId: this.id, packetId, direction: 'in', before: { ip: ip.dst, port: dport }, after: { ...e.inside }, pduId: sim.pdu(packetId, back, 'ipv4') });
-      const msg = buildWgData(this.keys.down, this.keys.downIndex, this.counter, back);
-      const outer = buildIpv4({ id: this.counter++ & 0xffff, df: true, ttl: 64, protocol: IPPROTO_UDP, src: this.ip, dst: this.peer.ip }, buildUdp(WG_PORT, this.peer.port, msg, this.ip, this.peer.ip));
-      sim.emit({ type: 'tunnel:wrap', deviceId: this.id, packetId, pduId: sim.pdu(packetId, outer, 'ipv4'), addr: { src: this.ip, dst: this.peer.ip } });
-      this.sendIp(outer, packetId);
+      const inner = natRewrite(aged, { dst: e.inside });
+      sim.emit({ type: 'nat:translate', deviceId: this.id, packetId, direction: 'in', before: { ip: ip.dst, port: back.port }, after: { ...e.inside }, pduId: sim.pdu(packetId, inner, 'ipv4') });
+      this.sealToPeer(inner, packetId);
       return;
     }
     super.onIpv4(iface, bytes, packetId);
+  }
+
+  /** What is for the device inside the tunnel goes sealed through it; the tunnel is the route to that address. */
+  protected override transmitIp(ipBytes: Uint8Array, packetId: string): void {
+    if (this.peer && parseIpv4(ipBytes, 0).dst === this.allowed) this.sealToPeer(ipBytes, packetId);
+    else this.sendIp(ipBytes, packetId);
+  }
+
+  private sealToPeer(inner: Uint8Array, packetId: string): void {
+    const sim = this.sim;
+    const peer = this.peer!;
+    const msg = buildWgData(this.keys.down, this.keys.downIndex, this.counter, inner);
+    const outer = outerPacket(this.counter++, this.ip, WG_PORT, peer.ip, peer.port, msg);
+    sim.emit({ type: 'tunnel:wrap', deviceId: this.id, packetId, pduId: sim.pdu(packetId, outer, 'ipv4'), addr: { src: this.ip, dst: peer.ip } });
+    this.sendIp(outer, packetId);
   }
 
   /** Like a NAT router: the world sees the VPN server's address, not the tunnel's. */
   private sendOn(inner: Uint8Array, packetId: string): void {
     const sim = this.sim;
     const ip = parseIpv4(inner, 0);
-    const proto = ip.protocol === IPPROTO_TCP ? 'tcp' : 'udp';
-    const sport = u16(inner, ip.headerLen);
-    const dport = u16(inner, ip.headerLen + 2);
-    let e = this.nat.find((n) => n.proto === proto && n.inside.port === sport && n.remote.ip === ip.dst && n.remote.port === dport);
+    // The tunnel's far end is a hop: a probe whose TTL ends here is answered by the VPN server, from its own address.
+    if (ip.ttl <= 1) {
+      sim.emit({ type: 'drop', packetId, reason: 'ttl-expired', deviceId: this.id });
+      this.icmpError(ICMP_TIME_EXCEEDED, ICMP_TTL_EXCEEDED, this.ip, inner);
+      return;
+    }
+    const aged = rewriteIpv4(inner, { ttl: ip.ttl - 1 });
+    sim.emit({ type: 'forward', deviceId: this.id, packetId, ttlBefore: ip.ttl, ttlAfter: ip.ttl - 1, pduId: sim.pdu(packetId, aged, 'ipv4') });
+    const key = natKeyOut(aged);
+    if (!key) {
+      this.sendIp(aged, packetId, false);
+      return;
+    }
+    let e = this.nat.find(natMatch(key, 'inside'));
     if (!e) {
       let port: number;
       do port = this.random32() % 28000 + 32768;
       while (this.nat.some((n) => n.outside.port === port));
-      e = { proto, inside: { ip: ip.src, port: sport }, outside: { ip: this.ip, port }, remote: { ip: ip.dst, port: dport } };
+      e = { proto: key.proto, inside: { ip: ip.src, port: key.port }, outside: { ip: this.ip, port }, remote: key.remote };
       this.nat.push(e);
     }
-    const aged = rewriteIpv4(inner, { ttl: ip.ttl - 1 });
-    sim.emit({ type: 'forward', deviceId: this.id, packetId, ttlBefore: ip.ttl, ttlAfter: ip.ttl - 1, pduId: sim.pdu(packetId, aged, 'ipv4') });
     const out = natRewrite(aged, { src: e.outside });
     sim.emit({ type: 'nat:translate', deviceId: this.id, packetId, direction: 'out', before: { ...e.inside }, after: { ...e.outside }, pduId: sim.pdu(packetId, out, 'ipv4') });
     this.sendIp(out, packetId, false);

@@ -8,6 +8,7 @@ import {
   TCP_SYN,
   TLS_ALERT,
   TLS_APPLICATION_DATA,
+  type AppAction,
   type Field,
   type LayerPdu,
   type OpenedRecord,
@@ -54,7 +55,7 @@ export interface Frame {
   head: number;
   tail: number;
 }
-export type Chapter = 'address' | 'arp' | 'dns' | 'hello' | 'secret' | 'page' | 'call';
+export type Chapter = 'address' | 'arp' | 'dns' | 'hello' | 'secret' | 'page' | 'call' | 'ping' | 'trace';
 
 /** One piece of a packet, by where it sits. */
 export type PartKey = 'ethH' | 'vpn' | 'ip' | 'l4' | 'card' | 'ethT';
@@ -142,6 +143,21 @@ export interface Trip {
   quiet?: boolean;
   /** A voice call gathered into one flow: every RTP packet of both directions, each with its `part` and `client`. */
   kind?: 'call';
+  /** A traceroute probe: the TTL it set out with, which is how many hops it may go. */
+  probeTtl?: number;
+}
+
+/** What ping or traceroute found out, from the app's own events: the replies with their round trips, or the hops. */
+export interface Probe {
+  kind: 'ping' | 'traceroute';
+  /** What was asked for ("example.com"). */
+  to: string;
+  /** Ping: each echo reply as it came in. */
+  replies: { seq: number; from: string; ttl: number; rttMs: number }[];
+  /** Traceroute: each answered probe; `reached` when the answer came from the destination itself. */
+  hops: { ttl: number; probe: number; from: string; rttMs: number; reached: boolean }[];
+  /** The closing line (ping: sent, received, lossPct, minMs, avgMs, maxMs; traceroute: hops, reached, path), once it is there. */
+  done: Record<string, string | number | string[]> | null;
 }
 
 export interface Story {
@@ -182,6 +198,8 @@ export interface Story {
   dnsTtl: number | null;
   /** On a second visit: the address the laptop still remembered, so it asked nobody. */
   remembered: string | null;
+  /** When the device pings or traces the path to the site instead of fetching the page. */
+  probe?: Probe;
 }
 
 const WRAP_OF_LAYER: Record<number, Wrap | undefined> = { 4: 'l4', 3: 'ip', 2: 'eth' };
@@ -234,6 +252,18 @@ export function dhcpCardLabel(summary: string): string {
   return m ? `${m[1]}${m[2] ?? ''}` : 'DHCP';
 }
 
+/**
+ * "ICMP echo request · id 0x9977 seq 1 · 56 B data" → "ping 1/4", a reply → "pong 1/4" (with ping's count when known),
+ * "ICMP time exceeded: …" → "TTL ran out", "ICMP destination unreachable: port unreachable" → "no such port".
+ */
+export function icmpCardLabel(summary: string, count?: number): string {
+  const echo = /^ICMP echo (request|reply) · id \S+ seq (\d+)/.exec(summary);
+  if (echo) return `${echo[1] === 'request' ? 'ping' : 'pong'} ${echo[2]}${count ? `/${count}` : ''}`;
+  if (summary.startsWith('ICMP time exceeded')) return 'TTL ran out';
+  if (summary.includes('port unreachable')) return 'no such port';
+  return summary.startsWith('ICMP destination unreachable') ? 'unreachable' : 'ICMP';
+}
+
 const TLS_HANDSHAKE = 22;
 const SERVER_HELLO = 2;
 
@@ -268,6 +298,8 @@ function seenOn(pdu: PduSnapshot | undefined, p: PacketInfo): Seen | undefined {
   // Plain RTP: anyone on the line could listen in.
   const rtp = layer(pdu, 'rtp');
   if (rtp) return { ...base, lines: [`voice, ${field(rtp, 'rtp.payload')}`], kind: 'open' };
+  const icmp = layer(pdu, 'icmp');
+  if (icmp) return { ...base, lines: [icmpCardLabel(icmp.summary)], kind: 'open' };
   const tls = layer(pdu, 'tls');
   if (tls) {
     const data = pdu.bytes.subarray(tls.start, tls.payloadEnd);
@@ -304,7 +336,8 @@ function detailsOf(pdu: PduSnapshot | undefined): Details {
   if (ip) d.ip = rowsOf(ip.fields);
   const l4 = layer(pdu, 'tcp') ?? layer(pdu, 'udp');
   if (l4) d.l4 = rowsOf(l4.fields);
-  const app = layer(pdu, 'http') ?? layer(pdu, 'dns') ?? layer(pdu, 'dhcp') ?? layer(pdu, 'rtp') ?? layer(pdu, 'tls') ?? layer(pdu, 'arp');
+  // An ICMP message has no transport: like an ARP message, the whole thing is the card.
+  const app = layer(pdu, 'http') ?? layer(pdu, 'dns') ?? layer(pdu, 'dhcp') ?? layer(pdu, 'rtp') ?? layer(pdu, 'tls') ?? layer(pdu, 'arp') ?? layer(pdu, 'icmp');
   if (app) d.card = rowsOf(app.fields);
   return d;
 }
@@ -323,13 +356,16 @@ function messageOf(app: LayerPdu | undefined): Message | undefined {
   return undefined;
 }
 
-/** Which packets the story follows, and which of them end a hello. ARP only when asked for: it is the first thing on the cable, and the dullest. */
+/**
+ * Which packets the story follows, and which of them end a hello. ARP only when asked for: it is the first thing on the
+ * cable, and the dullest. Pings, probes and the ICMP answers to them are the whole point of a probe run.
+ */
 function chosen(r: SimResult, arp: boolean): { packets: PacketInfo[]; hellos: Set<string> } {
   const packets: PacketInfo[] = [];
   const hellos = new Set<string>();
   const helloAckFrom = new Set<string>();
   for (const p of r.packets.values()) {
-    if (p.kind === 'dns' || p.kind === 'dhcp' || p.kind === 'rtp' || (p.kind === 'arp' && arp)) {
+    if (p.kind === 'dns' || p.kind === 'dhcp' || p.kind === 'rtp' || p.kind === 'icmp' || p.kind === 'probe' || (p.kind === 'arp' && arp)) {
       packets.push(p);
       continue;
     }
@@ -394,8 +430,8 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
     switch (e.type) {
       case 'encapsulate': {
         update(e.pduId);
-        // The ARP message itself is made, not wrapped: its frame comes next.
-        if (e.protocol === 'arp') break;
+        // The ARP or ICMP message itself is made, not wrapped: its frame, or its IP header, comes next.
+        if (e.protocol === 'arp' || e.protocol === 'icmp') break;
         if (e.layer === 3) inner ??= r.pdus.get(e.pduId);
         const w = WRAP_OF_LAYER[e.layer];
         if (w === 'eth') {
@@ -410,7 +446,7 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
       case 'decapsulate': {
         const w = WRAP_OF_LAYER[e.layer];
         if (w) steps.push({ kind: 'unwrap', device: e.deviceId, layer: w, ...(w === 'eth' && onLink ? { frame: onLink } : {}) });
-        if (w === 'l4' || (w === 'eth' && p.kind === 'arp')) done = true;
+        if (w === 'l4' || (w === 'eth' && p.kind === 'arp') || (w === 'ip' && p.kind === 'icmp')) done = true;
         break;
       }
       case 'forward':
@@ -470,21 +506,25 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
 
   const eth = layer(frame, 'ethernet') ?? layer(frame, 'wifi')!;
   const packet = inner ?? frame;
-  // An ARP message has no IP or transport: the whole thing is its card.
+  // An ARP message has no IP or transport: the whole thing is its card. An ICMP message has IP but no transport: same.
   const arp = p.kind === 'arp' ? layer(packet, 'arp') : undefined;
+  const icmp = p.kind === 'icmp' ? layer(packet, 'icmp') : undefined;
   const ip = layer(packet, 'ipv4');
   const l4 = layer(packet, 'tcp') ?? layer(packet, 'udp');
-  if (!arp && (!ip || !l4)) return null;
+  if (!arp && (!ip || (!l4 && !icmp))) return null;
   const app = layer(packet, 'http') ?? layer(packet, 'dns') ?? layer(packet, 'dhcp') ?? layer(packet, 'rtp');
-  const dataBytes = arp ? arp.end - arp.start : l4!.payloadEnd - l4!.headerEnd;
+  const dataBytes = arp ? arp.end - arp.start : icmp ? icmp.end - icmp.start : l4!.payloadEnd - l4!.headerEnd;
   const appCard = (a: LayerPdu): string => (a.protocol === 'http' ? cardLabel(a.summary) : a.protocol === 'dhcp' ? dhcpCardLabel(a.summary) : a.protocol === 'rtp' ? 'voice' : dnsCardLabel(a.summary));
-  const card = arp ? arpCardLabel(arp.summary) : dataBytes > 0 ? (app ? appCard(app) : 'data') : null;
+  // What the device is running: ping numbers its cards out of its count, traceroute's probes say their TTL.
+  const probeApp = r.scenario.devices.flatMap((d) => d.apps).find((a) => a.kind === 'ping' || a.kind === 'traceroute');
+  const probeTtl = p.kind === 'probe' ? parseInt(field(ip, 'ipv4.ttl'), 10) : undefined;
+  const card = arp ? arpCardLabel(arp.summary) : icmp ? icmpCardLabel(icmp.summary, probeApp?.kind === 'ping' ? probeApp.count : undefined) : probeTtl !== undefined ? `TTL ${probeTtl}` : dataBytes > 0 ? (app ? appCard(app) : 'data') : null;
   const isTcp = l4?.protocol === 'tcp';
   const origin = steps[0]!.kind === 'travel' || steps[0]!.kind === 'lost' ? (steps[0] as { from: string }).from : (steps[0] as { device: string }).device;
 
   if (card) steps.unshift({ kind: 'appear', device: origin, details: detailsOf(packet), pdu: packet });
   const last = steps[steps.length - 1];
-  if (card && last?.kind === 'unwrap' && (last.layer === 'l4' || (arp && last.layer === 'eth'))) steps.push({ kind: 'read', device: last.device });
+  if (card && last?.kind === 'unwrap' && (last.layer === 'l4' || (arp && last.layer === 'eth') || (icmp && last.layer === 'ip'))) steps.push({ kind: 'read', device: last.device });
 
   const flags = p.tcp?.flags ?? 0;
   const firstTx = steps.find((s): s is Extract<Step, { kind: 'travel' | 'lost' }> => s.kind === 'travel' || s.kind === 'lost');
@@ -497,9 +537,12 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
   if ((p.kind === 'dns' && packet.layers.some((x) => x.summary.startsWith('DNS query'))) || ownDhcp) asked.set(askKey, p.createdAt);
   const resend = r.events.find((e) => e.type === 'tcp:retransmit' && e.packetId === p.id);
   const timer = resend?.type === 'tcp:retransmit' && resend.cause === 'rto' ? resend.rto : askedAt !== undefined ? p.createdAt - askedAt : undefined;
+  // Echoes are ping's; probes, and the errors they provoke, traceroute's (an error in a ping run is ping's too).
+  const chapter: Chapter = arp ? 'arp' : p.kind === 'dhcp' ? 'address' : p.kind === 'dns' ? 'dns' : p.kind === 'rtp' ? 'call' : p.kind === 'probe' ? 'trace' : icmp ? (icmp.summary.startsWith('ICMP echo') || probeApp?.kind !== 'traceroute' ? 'ping' : 'trace') : dataBytes > 0 ? 'page' : 'hello';
   return {
     packetId: p.id,
-    chapter: arp ? 'arp' : p.kind === 'dhcp' ? 'address' : p.kind === 'dns' ? 'dns' : p.kind === 'rtp' ? 'call' : dataBytes > 0 ? 'page' : 'hello',
+    chapter,
+    ...(probeTtl !== undefined ? { probeTtl } : {}),
     start: p.createdAt,
     sent: firstTx?.at ?? p.createdAt,
     origin,
@@ -508,8 +551,8 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
     client: clients.includes(origin) ? origin : clients[0]!,
     card,
     dataBytes,
-    l4: arp ? 'none' : isTcp ? 'tcp' : 'udp',
-    l4Label: arp ? '' : isTcp ? (dataBytes > 0 ? 'TCP' : flagNames(flags).replace(/, /g, '-')) : 'UDP',
+    l4: arp || icmp ? 'none' : isTcp ? 'tcp' : 'udp',
+    l4Label: arp || icmp ? '' : isTcp ? (dataBytes > 0 ? 'TCP' : flagNames(flags).replace(/, /g, '-')) : 'UDP',
     header: { eth: eth.headerEnd - eth.start, ip: ip ? ip.headerEnd - ip.start : 0, l4: l4 ? l4.headerEnd - l4.start : 0 },
     tunnel,
     trailer: eth.end - eth.payloadEnd,
@@ -583,6 +626,23 @@ function voiceOf(r: SimResult, client: string): Story['voice'] {
     if (rtp && part) heard[part - 1] = pdu.bytes.slice(rtp.headerEnd, rtp.payloadEnd);
   }
   return { sent: call.clip, heard };
+}
+
+/** What ping or traceroute reported, from its own events, for the owner to show as it likes. */
+function probeOf(r: SimResult, client: string): Probe | undefined {
+  const start = r.events.find((e) => e.type === 'app' && (e.app === 'ping' || e.app === 'traceroute') && e.action === 'start' && e.deviceId === client);
+  if (start?.type !== 'app') return undefined;
+  const infos = (action: AppAction): Record<string, string | number | string[]>[] =>
+    r.events.flatMap((e) => (e.type === 'app' && e.deviceId === client && e.action === action ? [e.info ?? {}] : []));
+  const num = (v: unknown): number => Number(v ?? 0);
+  const str = (v: unknown): string => String(v ?? '');
+  return {
+    kind: start.app === 'ping' ? 'ping' : 'traceroute',
+    to: str(start.info?.to),
+    replies: infos('ping-reply').map((i) => ({ seq: num(i.seq), from: str(i.from), ttl: num(i.ttl), rttMs: num(i.rttMs) })),
+    hops: infos('trace-hop').map((i) => ({ ttl: num(i.ttl), probe: num(i.probe), from: str(i.from), rttMs: num(i.rttMs), reached: i.reached === 1 })),
+    done: infos('ping-done')[0] ?? infos('trace-done')[0] ?? null,
+  };
 }
 
 function dnsAnswer(r: SimResult, client: string, action: 'dns-answer' | 'dns-cache-hit' = 'dns-answer'): string | null {
@@ -674,6 +734,7 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
       return Number.isFinite(ttl) ? ttl : null;
     })(),
     remembered: dnsAnswer(r, client, 'dns-cache-hit'),
+    ...((probe) => (probe ? { probe } : {}))(probeOf(r, client)),
   };
 }
 

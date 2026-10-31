@@ -1,10 +1,11 @@
-import { BROADCAST_MAC, inSubnet, ZERO_MAC, type Ip4, type Mac } from '../bytes/addr';
-import type { Rng } from '../core/Rng';
+import { BROADCAST_IP, BROADCAST_MAC, inSubnet, ZERO_MAC, type Ip4, type Mac } from '../bytes/addr';
+import { hash32, type Rng } from '../core/Rng';
 import type { Simulator } from '../core/Simulator';
 import type { DeviceSpec, IfaceSpec, RouteSpec } from '../model';
 import { ARP_REPLY, ARP_REQUEST, buildArp, parseArp } from '../proto/arp';
 import { buildEthernet, ETHERTYPE_ARP, ETHERTYPE_IPV4, parseEthernet } from '../proto/ethernet';
-import { parseIpv4 } from '../proto/ipv4';
+import { buildIcmp, ICMP_ECHO_REPLY, icmpTypeName, isIcmpError, parseIcmp, type ICMP_DEST_UNREACHABLE, type ICMP_TIME_EXCEEDED, type ParsedIcmp } from '../proto/icmp';
+import { buildIpv4, IPPROTO_ICMP, parseIpv4, type ParsedIpv4 } from '../proto/ipv4';
 import { buildWifi, parseWifi } from '../proto/wifi';
 import type { World } from './World';
 
@@ -32,6 +33,8 @@ export abstract class Device {
   private timerCounter = 0;
   /** 802.11 sequence numbers, one counter per Wi-Fi interface. */
   private wifiSeq = new Map<string, number>();
+  /** IPv4 identification for the packets the device makes itself (its ICMP messages). A host counts its own. */
+  private ownIpId: number;
 
   constructor(
     readonly world: World,
@@ -40,9 +43,49 @@ export abstract class Device {
     this.id = spec.id;
     this.sim = world.sim;
     this.rng = world.rng(`device:${spec.id}`);
+    this.ownIpId = hash32(`${spec.id}:ip-id`, world.seed) & 0xffff;
     this.ifaces = spec.ifaces.map((i) => ({ ...i }));
     this.routes = [...spec.routes];
     for (const [ip, mac] of Object.entries(spec.arp ?? {})) this.arp.set(ip, mac);
+  }
+
+  nextIpId(): number {
+    this.ownIpId = (this.ownIpId + 1) & 0xffff;
+    return this.ownIpId;
+  }
+
+  /** Sends an IP packet the device made itself. A host with a tunnel sends it through there. */
+  protected transmitIp(ipBytes: Uint8Array, packetId: string): void {
+    this.sendIp(ipBytes, packetId);
+  }
+
+  /** An ICMP message of the device's own, in an IP packet from `src`: an echo reply, or an error about someone's packet. */
+  protected sendIcmp(src: Ip4, dst: Ip4, msg: Uint8Array, label: string): void {
+    const sim = this.sim;
+    const pk = sim.newPacket(this.id, 'icmp', label);
+    sim.emit({ type: 'encapsulate', deviceId: this.id, packetId: pk.id, layer: 3, protocol: 'icmp', pduId: sim.pdu(pk.id, msg, 'icmp') });
+    // Linux sends its ICMP replies and errors without Don't Fragment, with the default TTL.
+    const ip = buildIpv4({ id: this.nextIpId(), df: false, ttl: this.spec.initialTtl ?? 64, protocol: IPPROTO_ICMP, src, dst }, msg);
+    sim.emit({ type: 'encapsulate', deviceId: this.id, packetId: pk.id, layer: 3, protocol: 'ipv4', pduId: sim.pdu(pk.id, ip, 'ipv4') });
+    this.transmitIp(ip, pk.id);
+  }
+
+  /** Answers an echo request: the same identifier, sequence number and data back, from the address it was sent to. */
+  protected echoReply(ip: ParsedIpv4, icmp: Uint8Array, m: ParsedIcmp): void {
+    const reply = buildIcmp({ type: ICMP_ECHO_REPLY, id: m.id ?? 0, seq: m.seq ?? 0, data: icmp.slice(m.dataStart, m.end) });
+    this.sendIcmp(ip.dst, ip.src, reply, `ICMP echo reply · seq ${m.seq}`);
+  }
+
+  /**
+   * Tells the sender of `offending` that its packet could not go on: Time Exceeded from a router whose TTL count hit
+   * zero, Port Unreachable from a host with nobody on that port. Never about an ICMP error, never about a broadcast
+   * (RFC 1122 §3.2.2): errors about errors would never end.
+   */
+  protected icmpError(type: typeof ICMP_DEST_UNREACHABLE | typeof ICMP_TIME_EXCEEDED, code: number, src: Ip4, offending: Uint8Array): void {
+    const ip = parseIpv4(offending, 0);
+    if (ip.dst === BROADCAST_IP) return;
+    if (ip.protocol === IPPROTO_ICMP && isIcmpError(parseIcmp(offending, ip.headerLen, ip.totalLength).type)) return;
+    this.sendIcmp(src, ip.src, buildIcmp({ type, code, original: offending }), `ICMP ${icmpTypeName(type, code)}`);
   }
 
   iface(id: string): IfaceSpec {

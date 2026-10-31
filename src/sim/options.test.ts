@@ -9,6 +9,7 @@ import { PHOTO_HTTP_RESPONSE_BASE64 } from './scenarios/photoCapture';
 import { parseDhcp } from './proto/dhcp';
 import { DNS_TRACES } from './scenarios/dnsTraceCapture';
 import { dnsReferral, parseDns } from './proto/dns';
+import { ICMP_DEST_UNREACHABLE, ICMP_ECHO, ICMP_ECHO_REPLY, ICMP_TIME_EXCEEDED, parseIcmp, pingTimestamp } from './proto/icmp';
 import { parseIpv4 } from './proto/ipv4';
 import { parseRtp, RTP_HEADER_LEN, RTP_PORT, RTP_SAMPLES_PER_PACKET } from './proto/rtp';
 import type { Field } from './proto/types';
@@ -790,6 +791,209 @@ describe('a voice call (RTP over UDP)', () => {
   it('is deterministic for a given seed', () => {
     expect(JSON.stringify(run({ call: true }).events)).toBe(JSON.stringify(r.events));
     expect(JSON.stringify(run({ call: true }, undefined, 2).events)).not.toBe(JSON.stringify(r.events));
+  });
+});
+
+/** The frames on one cable, each with its event, snapshot and the packet's label. */
+const framesOn = (x: SimResult, link: string) => of(x, 'tx').filter((e) => e.linkId === link).map((e) => ({ e, pdu: x.pdus.get(e.frameId)!, label: x.packets.get(e.packetId)!.label }));
+/** The IP header and the ICMP message in a frame. */
+const icmpIn = (pdu: PduSnapshot) => {
+  const l = pdu.layers.find((x) => x.protocol === 'icmp')!;
+  return { ip: parseIpv4(pdu.bytes, pdu.layers.find((x) => x.protocol === 'ipv4')!.start), m: parseIcmp(pdu.bytes, l.start, l.end), bytes: pdu.bytes.subarray(l.start, l.end) };
+};
+const walkFields = (fs: Field[]): Field[] => fs.flatMap((f) => [f, ...walkFields(f.children ?? [])]);
+const explained = (x: SimResult, has: (pdu: PduSnapshot) => boolean): number => {
+  let seen = 0;
+  for (const pdu of x.pdus.values()) {
+    if (!has(pdu)) continue;
+    seen++;
+    for (const f of walkFields(pdu.layers.flatMap((l) => l.fields))) {
+      expect(f.display, `${pdu.id} ${f.key}`).not.toContain('✗');
+      expect(f.explain.length, `${f.key} needs an explanation`).toBeGreaterThan(0);
+    }
+  }
+  return seen;
+};
+
+describe('ping (ICMP echo, like `ping -c 4`)', () => {
+  const r = run({ probe: 'ping' });
+  const requests = framesOn(r, 'lan').filter((f) => f.label.startsWith('ICMP echo request'));
+  const replies = framesOn(r, 'lan').filter((f) => f.label.startsWith('ICMP echo reply'));
+
+  it('looks the name up, then sends four echo requests a second apart and hears four replies', () => {
+    const actions = of(r, 'app').map((e) => `${e.deviceId}:${e.action}`);
+    expect(actions.slice(0, 4)).toEqual(['laptop:start', 'laptop:dns-lookup', 'resolver:dns-serve', 'laptop:dns-answer']);
+    expect(actions.filter((a) => a === 'laptop:ping-request')).toHaveLength(4);
+    expect(actions.filter((a) => a === 'laptop:ping-reply')).toHaveLength(4);
+    expect(requests).toHaveLength(4);
+    expect(replies).toHaveLength(4);
+    requests.slice(1).forEach((f, i) => expect(f.e.start - requests[i]!.e.start).toBeCloseTo(1, 6));
+    expect(of(r, 'app').map((e) => e.action === 'ping-reply' && e.info?.seq).filter(Boolean)).toEqual([1, 2, 3, 4]);
+    expect(of(r, 'app').find((e) => e.action === 'ping-done')?.info).toMatchObject({ to: 'example.com', target: '104.20.23.154', sent: 4, received: 4, lossPct: 0 });
+    expect([...r.packets.values()].some((p) => p.kind === 'tcp')).toBe(false);
+  });
+
+  it('each is 84 bytes of IP, 64 of ICMP: one identifier, seq 1 … 4, a timestamp and then the bytes 0x10 … 0x37', () => {
+    const ids = new Set<number>();
+    [...requests, ...replies].forEach((f, i) => {
+      const { ip, m, bytes } = icmpIn(f.pdu);
+      expect(ip.totalLength).toBe(84);
+      expect(bytes.length).toBe(64);
+      expect(m.type).toBe(i < 4 ? ICMP_ECHO : ICMP_ECHO_REPLY);
+      expect(m.checksumValid).toBe(true);
+      expect(m.seq).toBe((i % 4) + 1);
+      ids.add(m.id!);
+      expect([...bytes.subarray(24)]).toEqual(Array.from({ length: 40 }, (_, k) => 0x10 + k));
+    });
+    expect(ids.size).toBe(1);
+    // The reply carries the request's data back unchanged, timestamp included.
+    replies.forEach((f, i) => expect(icmpIn(f.pdu).bytes.subarray(8)).toEqual(icmpIn(requests[i]!.pdu).bytes.subarray(8)));
+    expect(pingTimestamp(icmpIn(requests[1]!.pdu).bytes.subarray(8))).toBeCloseTo(requests[1]!.e.start, 5);
+  });
+
+  it('measures the real round trip: twice the 2 ms fiber plus the 4 ms backbone, a little serialisation on top', () => {
+    for (const e of of(r, 'app').filter((x) => x.action === 'ping-reply')) {
+      expect(e.info).toMatchObject({ from: '104.20.23.154', ttl: 62, bytes: 64 });
+      expect(Number(e.info?.rttMs)).toBeGreaterThan(12);
+      expect(Number(e.info?.rttMs)).toBeLessThan(12.1);
+    }
+    const done = of(r, 'app').find((e) => e.action === 'ping-done')!.info!;
+    expect(Number(done.minMs)).toBeGreaterThan(12);
+    expect(done.avgMs).toBe(done.minMs);
+    expect(done.maxMs).toBe(done.minMs);
+    // The last reply comes in, and ping sums up at once rather than waiting its second out.
+    expect(of(r, 'timer:cancel').some((e) => e.kind === 'ping-wait')).toBe(true);
+    expect(r.endTime).toBeLessThan(3.1);
+  });
+
+  it('the home router translates the identifier like a port, and back again for the reply', () => {
+    const entry = of(r, 'nat:add').find((e) => e.entry.proto === 'icmp')!.entry;
+    expect(entry.inside).toEqual({ ip: ADDR.laptop.ip, port: icmpIn(requests[0]!.pdu).m.id });
+    expect(entry.outside.ip).toBe(ADDR.homeWan.ip);
+    expect(entry.outside.port).not.toBe(entry.inside.port);
+    const onWan = framesOn(r, 'wan').filter((f) => f.label.startsWith('ICMP echo'));
+    expect(onWan).toHaveLength(8);
+    for (const f of onWan) {
+      const { ip, m } = icmpIn(f.pdu);
+      expect(m.id).toBe(entry.outside.port);
+      expect(m.checksumValid).toBe(true);
+      expect(m.type === ICMP_ECHO ? ip.src : ip.dst).toBe(ADDR.homeWan.ip);
+    }
+    expect(of(r, 'nat:translate').filter((e) => r.packets.get(e.packetId)!.kind === 'icmp')).toHaveLength(8);
+  });
+
+  it('works from the phone, over the satellite, inside the VPN and after DHCP', () => {
+    const phone = run({ probe: 'ping', from: 'phone' });
+    expect(of(phone, 'app').find((e) => e.action === 'ping-done')).toMatchObject({ deviceId: 'phone', info: { received: 4 } });
+    const slow = run({ probe: 'ping', slow: true });
+    expect(Number(of(slow, 'app').find((e) => e.action === 'ping-done')!.info!.minMs)).toBeGreaterThan(560);
+    const vpn = run({ probe: 'ping', vpn: true });
+    expect(of(vpn, 'app').find((e) => e.action === 'ping-done')?.info).toMatchObject({ received: 4 });
+    // Sealed all the way to the VPN server, which translates the id as the home router would, and the server sees only its address.
+    for (const f of framesOn(vpn, 'wan')) expect(f.pdu.layers.some((l) => l.protocol === 'icmp')).toBe(false);
+    for (const f of framesOn(vpn, 'bb4')) expect([icmpIn(f.pdu).ip.src, icmpIn(f.pdu).ip.dst]).toContain(ADDR.vpn.ip);
+    expect(of(vpn, 'nat:translate').filter((e) => e.deviceId === 'vpn' && vpn.packets.get(e.packetId)!.kind === 'icmp')).toHaveLength(8);
+    const dhcp = run({ probe: 'ping', dhcp: true });
+    expect(of(dhcp, 'app').map((e) => e.action).filter((a) => a === 'dhcp-configured' || a === 'ping-done')).toEqual(['dhcp-configured', 'ping-done']);
+  });
+
+  it('every ICMP field is explained, every checksum checks out, and the run is deterministic', () => {
+    expect(explained(r, (pdu) => pdu.layers.some((l) => l.protocol === 'icmp'))).toBeGreaterThan(30);
+    expect(JSON.stringify(run({ probe: 'ping' }).events)).toBe(JSON.stringify(r.events));
+    expect(JSON.stringify(run({ probe: 'ping' }, undefined, 2).events)).not.toBe(JSON.stringify(r.events));
+  });
+});
+
+describe('traceroute (UDP probes, like Linux traceroute)', () => {
+  const r = run({ probe: 'traceroute' });
+  const probes = framesOn(r, 'lan').filter((f) => f.label.startsWith('traceroute probe'));
+  const hops = of(r, 'app').filter((e) => e.action === 'trace-hop').map((e) => e.info!);
+
+  it('sends 60-byte probes with TTL 1, 2, 3, three per hop, from one port to ports 33434 and up', () => {
+    expect(probes.map((f) => f.label)).toEqual(['TTL 1 · 1/3', 'TTL 1 · 2/3', 'TTL 1 · 3/3', 'TTL 2 · 1/3', 'TTL 2 · 2/3', 'TTL 2 · 3/3', 'TTL 3 · 1/3', 'TTL 3 · 2/3', 'TTL 3 · 3/3'].map((s) => `traceroute probe · ${s}`));
+    const ports = new Set<number>();
+    probes.forEach((f, i) => {
+      const ip = parseIpv4(f.pdu.bytes, 14);
+      const udp = parseUdp(f.pdu.bytes, 34);
+      expect(ip.ttl).toBe(Math.floor(i / 3) + 1);
+      expect(ip.totalLength).toBe(60);
+      expect(ip.df).toBe(true);
+      expect(udp.dstPort).toBe(33434 + i);
+      ports.add(udp.srcPort);
+      expect([...f.pdu.bytes.subarray(42, 74)]).toEqual(Array.from({ length: 32 }, (_, k) => 0x40 + k));
+    });
+    expect(ports.size).toBe(1);
+  });
+
+  it('TTL 1 dies at the home router, TTL 2 at the ISP, TTL 3 reaches the server: each tells the laptop so, from its own address', () => {
+    const drops = of(r, 'drop').map((d) => `${d.deviceId}:${d.reason}`);
+    expect(drops).toEqual([...Array(3).fill('home:ttl-expired'), ...Array(3).fill('isp:ttl-expired'), ...Array(3).fill('server:no-socket')]);
+    expect(hops.map((h) => [h.ttl, h.from, h.reached])).toEqual([
+      [1, ADDR.homeLan.ip, 0], [1, ADDR.homeLan.ip, 0], [1, ADDR.homeLan.ip, 0],
+      [2, ADDR.ispCustomer.ip, 0], [2, ADDR.ispCustomer.ip, 0], [2, ADDR.ispCustomer.ip, 0],
+      [3, '104.20.23.154', 1], [3, '104.20.23.154', 1], [3, '104.20.23.154', 1],
+    ]);
+    expect(of(r, 'app').find((e) => e.action === 'trace-done')?.info).toEqual({ to: 'example.com', target: '104.20.23.154', hops: 3, reached: 1, path: [ADDR.homeLan.ip, ADDR.ispCustomer.ip, '104.20.23.154'] });
+    // The round trips grow with the path: at once, 2 × 2 ms, 2 × (2 + 4) ms.
+    expect(hops.map((h) => Math.round(Number(h.rttMs)))).toEqual([0, 0, 0, 4, 4, 4, 12, 12, 12]);
+    // Each answer quotes the probe it is about: the laptop's own header, with the TTL as it arrived, which is always 1:
+    // that is the whole trick, every probe dies exactly where it was meant to.
+    const answers = framesOn(r, 'lan').filter((f) => f.label.startsWith('ICMP') && f.e.toDevice === 'laptop');
+    expect(answers).toHaveLength(9);
+    answers.forEach((f, i) => {
+      const { ip, m } = icmpIn(f.pdu);
+      expect(m.type).toBe(i < 6 ? ICMP_TIME_EXCEEDED : ICMP_DEST_UNREACHABLE);
+      expect(m.code).toBe(i < 6 ? 0 : 3);
+      expect(ip.totalLength).toBe(56);
+      expect(m.quoted!.ip).toMatchObject({ src: ADDR.laptop.ip, dst: '104.20.23.154', ttl: 1 });
+      expect(m.quoted!.dstPort).toBe(33434 + i);
+    });
+  });
+
+  it('the home router finds whose packet an error is about by the header it quotes, and translates the quote back', () => {
+    const fromIsp = framesOn(r, 'wan').filter((f) => f.label.startsWith('ICMP') && f.e.toDevice === 'home');
+    expect(fromIsp).toHaveLength(6);
+    const outsidePorts = of(r, 'nat:add').map((e) => e.entry.outside.port);
+    for (const f of fromIsp) {
+      const { ip, m } = icmpIn(f.pdu);
+      expect(ip.dst).toBe(ADDR.homeWan.ip);
+      expect(m.quoted!.ip.src).toBe(ADDR.homeWan.ip);
+      expect(outsidePorts).toContain(m.quoted!.srcPort);
+    }
+    const back = of(r, 'nat:translate').filter((e) => e.direction === 'in' && r.packets.get(e.packetId)!.kind === 'icmp');
+    expect(back).toHaveLength(6);
+    for (const e of back) {
+      const { ip, m } = icmpIn(r.pdus.get(e.pduId)!);
+      expect(ip.dst).toBe(ADDR.laptop.ip);
+      expect(m.quoted!.ip.src).toBe(ADDR.laptop.ip);
+      expect(m.quoted!.srcPort).toBe(e.after.port);
+      expect(m.checksumValid).toBe(true);
+      expect(ip.checksumValid).toBe(true);
+    }
+  });
+
+  it('inside the VPN the VPN server is the first hop that answers, from its own address, and the server the second', () => {
+    const vpn = run({ probe: 'traceroute', vpn: true });
+    expect(of(vpn, 'app').find((e) => e.action === 'trace-done')?.info).toMatchObject({ hops: 2, reached: 1, path: [ADDR.vpn.ip, '104.20.23.154'] });
+    expect(of(vpn, 'drop').map((d) => `${d.deviceId}:${d.reason}`)).toEqual([...Array(3).fill('vpn:ttl-expired'), ...Array(3).fill('server:no-socket')]);
+    for (const f of framesOn(vpn, 'bb3')) expect(f.pdu.layers.some((l) => l.protocol === 'wireguard')).toBe(true);
+    for (const o of [{ from: 'phone' as const }, { slow: true }, { dhcp: true }]) {
+      expect(of(run({ probe: 'traceroute', ...o }), 'app').find((e) => e.action === 'trace-done')?.info).toMatchObject({ hops: 3, reached: 1 });
+    }
+  });
+
+  it('a probe nobody answers: traceroute waits a second, sends the next, and goes on to the last hop allowed', () => {
+    const x = runScenario(fetchWebPage({ probe: 'traceroute' }), { seed: 1, faults: { randomLoss: 0, manual: [], cuts: [{ link: 'bb2', from: 0 }] }, maxTime: 1000 });
+    expect(of(x, 'timer:fire').filter((e) => e.kind === 'trace-wait')).toHaveLength(6 * 3);
+    const sent = of(x, 'app').filter((e) => e.action === 'trace-probe');
+    expect(sent).toHaveLength(8 * 3);
+    expect(sent[7]!.t - sent[6]!.t).toBeCloseTo(1, 6);
+    expect(of(x, 'app').find((e) => e.action === 'trace-done')?.info).toMatchObject({ hops: 8, reached: 0, path: [ADDR.homeLan.ip, ADDR.ispCustomer.ip] });
+  });
+
+  it('every ICMP and probe field is explained, every checksum checks out, and the run is deterministic', () => {
+    expect(explained(r, (pdu) => pdu.layers.some((l) => l.protocol === 'icmp') || r.packets.get(pdu.packetId)?.kind === 'probe')).toBeGreaterThan(60);
+    expect(JSON.stringify(run({ probe: 'traceroute' }).events)).toBe(JSON.stringify(r.events));
   });
 });
 
