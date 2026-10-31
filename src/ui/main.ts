@@ -3,7 +3,7 @@ import { fetchWebPage, runScenario, ulawDecodeAll, type Cut, type ManualFault } 
 import { el } from './svg';
 import { clamp01, easeInOut, easeOutBack, iso, lerp, U } from './project';
 import { HexCard } from './hexCard';
-import { drawHandset, drawPadlock, drawPage, drawPair, drawPipe, drawQuestion, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawTag } from './icons';
+import { drawHandset, drawPadlock, drawPage, drawPair, drawPing, drawPipe, drawQuestion, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawTag, drawTrace } from './icons';
 import { Menu } from './menus';
 import { NetworkScene, type Camera } from './NetworkScene';
 import { Sound } from './sound';
@@ -68,14 +68,15 @@ const known = new Map<string, { site: string; ip: string; until: number }>();
 /** This run is a second visit: the address is remembered, so there is nothing to look up. */
 let revisit = false;
 /** What a card on the table asks for: the page, or the photo. */
-type Wanted = 'page' | 'photo' | 'call';
-const WANTED: Wanted[] = ['page', 'photo', 'call'];
+type Wanted = 'page' | 'photo' | 'call' | 'ping' | 'trace';
+const WANTED: Wanted[] = ['page', 'photo', 'call', 'ping', 'trace'];
+const isProbe = (w: Wanted): boolean => w === 'ping' || w === 'trace';
 /** The card picked up last. */
 let carried: Wanted = 'page';
 const pageSite = (): 'info.cern.ch' | 'example.com' => (features.big ? 'info.cern.ch' : 'example.com');
 const siteName = (): 'info.cern.ch' | 'example.com' | 'httpbin.org' => (carried === 'photo' ? 'httpbin.org' : pageSite());
-/** The name the device will look up: a site, or the friend to call. */
-const wantedName = (): string => (carried === 'call' ? 'sam.example' : siteName());
+/** The name the device will look up: a site, the friend to call, or the server a ping or trace goes to. */
+const wantedName = (): string => (carried === 'call' ? 'sam.example' : isProbe(carried) ? 'example.com' : siteName());
 function remembers(): boolean {
   const k = known.get(client);
   return !!k && k.site === wantedName() && performance.now() < k.until;
@@ -84,7 +85,9 @@ function remembers(): boolean {
 let stretch = 0;
 function simulate(): void {
   const scenario = fetchWebPage({
-    site: siteName(),
+    // A ping or a trace goes to example.com's server, whatever page the Setup would fetch.
+    site: isProbe(carried) ? 'example.com' : siteName(),
+    ...(carried === 'ping' ? { probe: 'ping' as const } : carried === 'trace' ? { probe: 'traceroute' as const } : {}),
     revisit,
     slow: features.slow,
     vpn: features.vpn,
@@ -122,7 +125,13 @@ let mode: Mode = 'idle';
 
 // The site card rests on the table between the laptop and the phone.
 const home = iso(0, 7.4, 0.5);
-const HOMES: Record<Wanted, { sx: number; sy: number }> = { page: home, photo: { sx: home.sx, sy: home.sy + 88 }, call: { sx: home.sx, sy: home.sy + 150 } };
+const HOMES: Record<Wanted, { sx: number; sy: number }> = {
+  page: home,
+  photo: { sx: home.sx, sy: home.sy + 88 },
+  call: { sx: home.sx, sy: home.sy + 150 },
+  ping: { sx: home.sx, sy: home.sy + 212 },
+  trace: { sx: home.sx, sy: home.sy + 274 },
+};
 const card = el('g', { class: 'site-card' }, svg);
 const cardBody = el('g', {}, card);
 el('rect', { x: -88, y: -22, width: 176, height: 44, rx: 10, class: 'site-card-bg' }, cardBody);
@@ -152,9 +161,19 @@ el('rect', { x: -88, y: -22, width: 176, height: 44, rx: 10, class: 'site-card-b
 drawHandset(el('g', { transform: 'translate(-66 0) scale(0.42)', class: 'site-card-globe' }, callBody));
 el('text', { x: 12, y: 0, dy: '0.35em', 'text-anchor': 'middle' }, callBody).textContent = 'call Sam';
 const callBadges = el('g', {}, callCard);
-const CARDS: Record<Wanted, SVGGElement> = { page: card, photo: photoCard, call: callCard };
 
-scene.setOnTable([home, { sx: home.sx - 110, sy: home.sy + 50 }, { sx: home.sx + 110, sy: home.sy - 40 }, { sx: HOMES.call.sx - 110, sy: HOMES.call.sy + 50 }]);
+// Two small tools as cards too: a ping, and a trace of the path.
+const toolCard = (text: string, draw: (g: SVGGElement) => void): SVGGElement => {
+  const c = el('g', { class: 'site-card' }, svg);
+  const body = el('g', {}, c);
+  el('rect', { x: -88, y: -22, width: 176, height: 44, rx: 10, class: 'site-card-bg' }, body);
+  draw(el('g', { transform: 'translate(-66 0) scale(0.42)', class: 'site-card-globe' }, body));
+  el('text', { x: 12, y: 0, dy: '0.35em', 'text-anchor': 'middle' }, body).textContent = text;
+  return c;
+};
+const CARDS: Record<Wanted, SVGGElement> = { page: card, photo: photoCard, call: callCard, ping: toolCard('ping', drawPing), trace: toolCard('trace route', drawTrace) };
+
+scene.setOnTable([home, { sx: home.sx - 110, sy: home.sy + 50 }, { sx: home.sx + 110, sy: home.sy - 40 }, { sx: HOMES.trace.sx - 110, sy: HOMES.trace.sy + 50 }]);
 
 /** A setting changed before a run: show the network it will use, with a clean screen. */
 function preview(): void {
@@ -302,7 +321,7 @@ function showSetup(): void {
   setupMenu.button.classList.toggle('on', SETTINGS.some((k) => features[k]));
 }
 
-const CHAPTERS: Record<Chapter, string> = { address: 'Get an address', arp: 'Find the router', dns: 'Find the address', hello: 'Say hello', secret: 'Check and agree', page: 'Get the page', call: 'Make a call', ping: 'Ping', trace: 'Trace the path' };
+const CHAPTERS: Record<Chapter, string> = { address: 'Get an address', arp: 'Find the router', dns: 'Find the address', hello: 'Say hello', secret: 'Check and agree', page: 'Get the page', call: 'Make a call', ping: 'Ping the server', trace: 'Trace the path' };
 /** Chapter number in this run (a second visit skips the address, HTTPS adds the secret). */
 const chapterName = (ch: Chapter): string => (ch === 'page' && story.image ? 'Get the photo' : CHAPTERS[ch]);
 
@@ -952,9 +971,9 @@ if (import.meta.env.DEV) {
         return tl.reactions;
       },
       /** Start a run straight away with these things on the table (for screenshots). */
-      start(f: Partial<Features> & { photo?: boolean; call?: boolean; spy?: string; cut?: string | string[]; slow?: boolean; vpn?: boolean; again?: boolean; from?: Client }): void {
+      start(f: Partial<Features> & { photo?: boolean; call?: boolean; ping?: boolean; trace?: boolean; spy?: string; cut?: string | string[]; slow?: boolean; vpn?: boolean; again?: boolean; from?: Client }): void {
         client = f.from ?? 'laptop';
-        carried = f.call ? 'call' : f.photo ? 'photo' : 'page';
+        carried = f.call ? 'call' : f.ping ? 'ping' : f.trace ? 'trace' : f.photo ? 'photo' : 'page';
         for (const k of SETTINGS) if (features[k] !== !!f[k]) setSetting(k, !!f[k]);
         for (const l of [...cutLines]) clearLine(l);
         for (const l of [f.cut ?? []].flat()) toggleCut(l);

@@ -90,6 +90,18 @@ export function drawPipe(g: SVGGElement): void {
   el('rect', { x: 22, y: -10, width: 6, height: 20, rx: 2, class: 'pipe-end' }, g);
 }
 
+/** A ping: a dot and the rings it sends out. */
+export function drawPing(g: SVGGElement): void {
+  el('circle', { cx: -8, cy: 0, r: 5, class: 'ping-dot' }, g);
+  for (const r of [14, 24]) el('path', { d: `M${-8 + r * 0.5} ${-r * 0.87} A${r} ${r} 0 0 1 ${-8 + r * 0.5} ${r * 0.87}`, class: 'ping-ring' }, g);
+}
+
+/** A trace of the path: hops joined by a line. */
+export function drawTrace(g: SVGGElement): void {
+  el('path', { d: 'M-24 14 L-8 -6 L8 8 L24 -14', class: 'trace-line' }, g);
+  for (const [x, y] of [[-24, 14], [-8, -6], [8, 8], [24, -14]] as const) el('circle', { cx: x, cy: y, r: 4.5, class: 'trace-hop' }, g);
+}
+
 /** A long page: the bigger page. */
 export function drawPage(g: SVGGElement): void {
   el('path', { d: 'M-17 -27 H9 L19 -17 V27 H-17 Z', class: 'page-sheet' }, g);

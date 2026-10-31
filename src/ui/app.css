@@ -1198,6 +1198,21 @@ body {
   stroke-width: 1.5;
 }
 
+/* The ping and trace cards */
+.site-card-globe .ping-dot,
+.site-card-globe .trace-hop {
+  fill: #fffdf8;
+}
+
+.site-card-globe .ping-ring,
+.site-card-globe .trace-line {
+  fill: none;
+  stroke: #fffdf8;
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 /* The call card's handset and the Setup menu's thin pipe */
 .handset {
   fill: #3d7ea6;

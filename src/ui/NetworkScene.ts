@@ -787,7 +787,7 @@ export class NetworkScene {
       screen.dns.setAttribute('opacity', (known * (1 - page)).toFixed(3));
       const last = tl.segs[tl.segs.length - 1];
       // A call has no page to show: it is not a failure when none comes.
-      const failed = own && !this.story.pageTitle && !this.story.call && !!last && v >= last.t1;
+      const failed = own && !this.story.pageTitle && !this.story.call && !this.story.probe && !!last && v >= last.t1;
       screen.fail.setAttribute('opacity', failed ? '1' : '0');
     }
   }
