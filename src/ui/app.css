@@ -803,6 +803,62 @@ body {
   fill: #2e5e6e;
 }
 
+/* Short notes on lines: how far a satellite is, and that this Wi-Fi is open */
+.link-note {
+  font-size: 13px;
+  font-weight: 700;
+  fill: var(--ink-soft);
+  paint-order: stroke;
+  stroke: var(--paper);
+  stroke-width: 4px;
+}
+
+/* How long it really took: the animation stretches time so you can watch */
+.real-clock {
+  position: fixed;
+  top: calc(56px + env(safe-area-inset-top, 0px));
+  left: max(16px, env(safe-area-inset-left, 0px));
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: #fffaf2;
+  border: 1px solid #d3c8b8;
+  font-size: 13px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+}
+
+.real-clock[hidden] {
+  display: none;
+}
+
+/* The server's name on its certificate, stamped */
+.stamp-bg {
+  fill: #fffdf8;
+  stroke: #2f7d4f;
+  stroke-width: 3;
+}
+
+.stamp-text {
+  font-size: 15px;
+  font-weight: 800;
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  fill: #2f7d4f;
+}
+
+/* HTTPS: the half each end keeps, and the public half each hello carries */
+.key-home .key-metal {
+  fill: #c2562f;
+}
+
+.key-share-out .key-metal {
+  fill: #3d7ea6;
+}
+
+.key-share-back .key-metal {
+  fill: #8b6fd0;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .tunnel-flow {
     animation: none;

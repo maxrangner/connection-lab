@@ -104,7 +104,9 @@ export class VpnServer extends Host {
     const dport = proto ? u16(bytes, ip.headerLen + 2) : 0;
     const e = this.nat.find((n) => n.proto === proto && n.outside.port === dport && n.remote.ip === ip.src);
     if (ip.dst === this.ip && e && this.peer) {
-      const back = natRewrite(bytes, { dst: e.inside });
+      const aged = rewriteIpv4(bytes, { ttl: ip.ttl - 1 });
+      sim.emit({ type: 'forward', deviceId: this.id, packetId, ttlBefore: ip.ttl, ttlAfter: ip.ttl - 1, pduId: sim.pdu(packetId, aged, 'ipv4') });
+      const back = natRewrite(aged, { dst: e.inside });
       sim.emit({ type: 'nat:translate', deviceId: this.id, packetId, direction: 'in', before: { ip: ip.dst, port: dport }, after: { ...e.inside }, pduId: sim.pdu(packetId, back, 'ipv4') });
       const msg = buildWgData(this.keys.down, this.keys.downIndex, this.counter, back);
       const outer = buildIpv4({ id: this.counter++ & 0xffff, df: true, ttl: 64, protocol: IPPROTO_UDP, src: this.ip, dst: this.peer.ip }, buildUdp(WG_PORT, this.peer.port, msg, this.ip, this.peer.ip));

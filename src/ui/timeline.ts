@@ -31,6 +31,8 @@ export interface Reaction {
   t: number;
   device: string;
   face: Face;
+  /** The name on a certificate that checked out: a stamp takes the place of the face. */
+  stamp?: string;
 }
 export type TStep = Step | WaitStep;
 
@@ -90,6 +92,10 @@ export interface Timeline {
   reactions: Reaction[];
   /** HTTPS: when each end has worked out the session key (it can lock and open cards from then on). */
   keys: Map<string, number>;
+  /** HTTPS: when each end has made the half of its key that it keeps to itself. */
+  halves: Map<string, number>;
+  /** What the real clock says at points of the visual time: real seconds run nothing like the animation's. */
+  real: { v: number; sim: number }[];
   cues: Cue[];
   total: number;
   pos: Map<string, { x: number; y: number }>;
@@ -144,6 +150,8 @@ export const FLOW_FLY = 0.5;
 export const FLOW_FALL = 0.9;
 /** Seconds a sender of a stream visibly waits when only its timer can tell it a packet is gone. */
 const FLOW_TIMER = 1.6;
+/** Seconds per cable of an ACK on its own: small, and not what you came to watch. */
+const ACK_HOP = 0.4;
 
 export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> = new Map()): Timeline {
   const kind = new Map(story.devices.map((d) => [d.id, d.kind]));
@@ -189,9 +197,20 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
     return (0.5 + 0.5 * 0.8 ** n) * (trip.card ? 1 : 0.85) * tired;
   };
 
+  const byId = new Map(story.trips.map((x) => [x.packetId, x]));
+  const resent = new Set(story.trips.map((x) => x.retransmitOf));
   let t = 0;
   story.trips.forEach((trip, ti) => {
     let p = at(trip.origin, trip.card ? LEVEL.app : LEVEL.l4);
+    const ring = (step: WaitStep): void => {
+      // A longer real wait gets a longer ring: resends back off, 1 s, 2 s, 4 s and so on.
+      const seg: Seg = { step, trip, t0: t, t1: t + DUR.wait + 0.5 * Math.log2(Math.max(1, step.seconds)), p0: p, p1: p };
+      segs.push(seg);
+      cues.push({ t: seg.t1 - 0.5, sound: 'surprise' });
+      t = seg.t1;
+    };
+    // The timer of a resend runs down just before it goes, whatever else was said in between.
+    if (trip.timedOut) ring({ kind: 'wait', device: trip.origin, seconds: trip.waited ?? 0, giveUp: false, mood: byId.get(trip.retransmitOf ?? '')?.retry ? 'angry' : 'surprise' });
     for (const step of trip.steps) {
       const seg: Seg = { step, trip, t0: t, t1: t, p0: p, p1: p };
       let d = DUR[step.kind] * pace(step, trip);
@@ -215,8 +234,8 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
           d *= linkPace(step.link);
           break;
         case 'flow':
-          ({ packets: seg.flow, waits: seg.waits } = planFlow(step.packets, t, story, knocks, linkPace, cues, reactions));
-          d = Math.max(t, ...seg.flow.map((p) => p.t1), ...seg.waits.map((w) => w.t1)) - t + 0.5;
+          ({ packets: seg.flow, waits: seg.waits } = planFlow(step.packets, t, story, knocks, linkPace, cues, reactions, step.packets.length > 1 ? FLOW_HOP : ACK_HOP));
+          d = Math.max(t, ...seg.flow.map((p) => p.t1), ...seg.waits.map((w) => w.t1)) - t + (step.packets.length > 1 ? 0.5 : 0);
           break;
         case 'lost': {
           const travel = DUR.travel * pace({ ...step, kind: 'travel' }, trip) * linkPace(step.link);
@@ -236,30 +255,28 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
       p = seg.p1;
     }
 
-    // A lost packet: the device that will resend it waits for its timer, then is surprised into trying again.
     streak = trip.lost ? streak + 1 : 0;
-    if (trip.lost) {
-      const next = story.trips[ti + 1];
-      const retry = next?.retry ? next : undefined;
-      const device = retry?.origin ?? trip.origin;
-      const mood = !retry ? 'cry' : trip.retry ? 'angry' : 'surprise';
-      const step: WaitStep = { kind: 'wait', device, seconds: retry ? retry.start - trip.start : 0, giveUp: !retry, mood };
-      // A longer real wait gets a longer ring: resends back off, 1 s, 2 s, 4 s and so on.
-      const seg: Seg = { step, trip, t0: t, t1: t + DUR.wait + 0.5 * Math.log2(Math.max(1, step.seconds)), p0: p, p1: p };
-      segs.push(seg);
-      cues.push({ t: seg.t1 - 0.5, sound: 'surprise' });
-      t = seg.t1;
+    // Nobody tries again and the page never came: tears. A lost ACK needs no retry, the next data says the same thing, and a
+    // lost SYN needs none once the other side's own resend has got through. A DNS answer is for the asker to miss.
+    const dns = trip.chapter === 'dns';
+    const askedAgain = dns && story.trips.slice(ti + 1).some((x) => x.chapter === 'dns' && x.retry);
+    if (trip.lost && !story.pageTitle && trip.l4Label !== 'ACK' && !resent.has(trip.packetId) && !askedAgain) {
+      ring({ kind: 'wait', device: dns ? story.client : trip.origin, seconds: 0, giveUp: true, mood: 'cry' });
     }
     // Arrived: the receiver reacts, and the picture lingers a moment so you can see it.
     const last = segs[segs.length - 1];
     if (!trip.lost && last && last.trip === trip && 'device' in last.step) {
       const face = arrivalFace(trip, last.step.device, arrived, filled);
       if (face) {
-        reactions.push({ t: last.t1, device: last.step.device, face });
-        t += 0.6;
+        // The server has proved who it is: the stamp says so, and stays long enough to read.
+        const stamp = trip.identity && last.step.device === story.client ? trip.identity : undefined;
+        reactions.push({ t: last.t1, device: last.step.device, face, ...(stamp ? { stamp } : {}) });
+        t += stamp ? 1.8 : 0.6;
       }
     }
-    t += 0.5;
+    // A small ACK goes straight on.
+    const step = trip.steps[0];
+    t += step?.kind === 'flow' && step.packets.length === 1 ? 0.1 : 0.5;
   });
 
   // Devices that only pass packets on, so they never open them further than IP.
@@ -269,7 +286,35 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   const keys = new Map<string, number>();
   for (const s of segs) if (s.step.kind === 'read' && s.trip.chapter === 'secret' && !s.trip.locked) keys.set(s.step.device, s.t1);
   for (const t of keys.values()) cues.push({ t, sound: 'key' });
-  return { segs, reactions, keys, cues, total: t, pos, kind, trayZ, isRouter, sky, air, client: story.client };
+  // Each end makes its private half when it first has a hello to answer or to send.
+  const halves = new Map<string, number>();
+  for (const s of segs) if (s.trip.keyShare && (s.step.kind === 'appear' || s.step.kind === 'read') && !halves.has(s.step.device)) halves.set(s.step.device, s.t0);
+  return { segs, reactions, keys, halves, real: realClock(segs, story), cues, total: t, pos, kind, trayZ, isRouter, sky, air, client: story.client };
+}
+
+/** The real clock along the visual time, from when each frame really left and arrived. */
+function realClock(segs: Seg[], story: Story): Timeline['real'] {
+  const delay = new Map(story.links.map((l) => [l.id, l.delay]));
+  const points = crossings({ segs })
+    .flatMap((c) => [{ v: c.t0, sim: c.at }, { v: c.t1, sim: c.at + (delay.get(c.link) ?? 0) }])
+    .sort((a, b) => a.v - b.v);
+  let most = 0;
+  return points.map((p) => ({ v: p.v, sim: (most = Math.max(most, p.sim)) }));
+}
+
+/** Real seconds gone at visual time v. */
+export function realAt(tl: Pick<Timeline, 'real'>, v: number): number {
+  let before = { v: 0, sim: 0 };
+  for (const p of tl.real) {
+    if (p.v > v) return before.sim + ((p.sim - before.sim) * (v - before.v)) / (p.v - before.v);
+    before = p;
+  }
+  return before.sim;
+}
+
+export function formatWait(s: number): string {
+  const ms = Math.round(s * 1000);
+  return ms >= 1000 ? `${Number(s.toFixed(1))} s` : `${ms} ms`;
 }
 
 /**
@@ -286,6 +331,7 @@ function planFlow(
   linkPace: (link: string) => number,
   cues: Cue[],
   reactions: Reaction[],
+  hop: number,
 ): { packets: FlowPacket[]; waits: FlowWait[] } {
   const delay = new Map(story.links.map((l) => [l.id, l.delay]));
   const heard: { sim: number; v: number }[] = [];
@@ -310,9 +356,8 @@ function planFlow(
     const before = sent.get(key);
     sent.set(key, trip);
     if (trip.timedOut) {
-      const seconds = before ? trip.start - before.start : 0;
       // A timer only runs out in silence: nothing is on its way any more.
-      t = wait({ kind: 'wait', device: trip.origin, seconds, giveUp: false, mood: before?.retry && before.lost ? 'angry' : 'surprise' }, Math.max(t, settled));
+      t = wait({ kind: 'wait', device: trip.origin, seconds: trip.waited ?? 0, giveUp: false, mood: before?.retry && before.lost ? 'angry' : 'surprise' }, Math.max(t, settled));
     }
     lastSent.set(trip.origin, t);
     const t0 = t;
@@ -323,7 +368,7 @@ function planFlow(
       // Cut under it by the viewer: where it was. Lost by itself: halfway along.
       const caught = knocks.get(`${trip.packetId}@${s.link}`);
       const fall = lost ? (caught ?? 0.5) : 1;
-      const d = FLOW_HOP * linkPace(s.link) * fall;
+      const d = hop * linkPace(s.link) * fall;
       hops.push({ from: s.from, to: s.to, link: s.link, at: s.at, t0: t, t1: t + d, lost, fall, seen: s.seen });
       t += d;
       if (lost) cues.push({ t, sound: 'thud' });
@@ -400,7 +445,7 @@ function addCues(cues: Cue[], seg: Seg, story: Story): void {
   if (s.kind === 'lock') cues.push({ t: at(0.62), sound: 'lock' });
   if (s.kind === 'unlock') cues.push({ t: at(0.4), sound: 'unlock' });
   if (s.kind === 'read') {
-    const last = story.trips[story.trips.length - 1];
+    const last = story.trips.filter((x) => x.card).at(-1);
     cues.push({ t: at(0.6), sound: seg.trip === last && seg.trip.chapter === 'page' ? 'chime' : 'pop' });
   }
 }
@@ -577,7 +622,7 @@ export interface Crossing {
 }
 
 /** Every frame of the run that crosses a cable. */
-export function crossings(tl: Timeline): Crossing[] {
+export function crossings(tl: Pick<Timeline, 'segs'>): Crossing[] {
   return tl.segs.flatMap((s): Crossing[] => {
     const st = s.step;
     if (s.flow) return s.flow.flatMap((p) => p.hops.map((h) => ({ trip: p.trip, link: h.link, at: h.at, t0: h.t0, t1: h.t1, lost: h.lost, seen: h.seen })));

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fetchWebPage, runScenario, type ManualFault } from '../sim';
 import { buildStory, cardLabel, dnsCardLabel, type Trip } from './story';
-import { addressBefore, buildTimeline, detailsAt, lockPose, packetPose, seenSoFar, stepTarget, swapLanding, swapMoment, trayAngle } from './timeline';
+import { addressBefore, buildTimeline, detailsAt, formatWait, lockPose, packetPose, realAt, seenSoFar, spyLog, stepTarget, swapLanding, swapMoment, trayAngle } from './timeline';
 
 const run = (manual: ManualFault[] = []) => buildStory(runScenario(fetchWebPage(), { seed: 1, faults: { randomLoss: 0, manual } }));
 const story = run();
@@ -17,7 +17,9 @@ describe('network story', () => {
       ['hello', 'SYN-ACK'],
       ['hello', 'ACK'],
       ['page', 'GET /'],
+      ['page', 'ACK'],
       ['page', '200 OK'],
+      ['page', 'ACK'],
     ]);
   });
 
@@ -121,8 +123,11 @@ describe('setup options', () => {
         const last = t.steps[t.steps.length - 1]!;
         expect(last.kind === 'lost' && ['wan', 'bb1', 'bb2'].includes(last.link)).toBe(true);
       }
-      const tl = buildTimeline(s);
-      expect(tl.segs.filter((x) => x.step.kind === 'wait')).toHaveLength(s.trips.filter((x) => x.lost).length);
+      const waits = buildTimeline(s).segs.flatMap((x) => (x.step.kind === 'wait' ? [x.step] : []));
+      expect(waits.filter((w) => !w.giveUp)).toHaveLength(s.trips.filter((x) => x.timedOut).length);
+      for (const t of s.trips.filter((x) => x.lost && x.l4Label !== 'ACK')) {
+        expect(s.trips.some((x) => x.retransmitOf === t.packetId || (x.retry && x.chapter === 'dns')) || waits.some((w) => w.giveUp)).toBe(true);
+      }
     }
   });
 });
@@ -445,7 +450,8 @@ describe('the details in a pill, hop by hop', () => {
     const after = detailsAt(nat, 0.9);
     expect(value(before.ip, 'Destination IP')).toBe('198.51.100.10');
     expect(value(after.ip, 'Destination IP')).toBe('10.8.0.2');
-    expect(value(after.ip, 'Time to Live')).toBe(value(before.ip, 'Time to Live'));
+    // The VPN server is a hop on the way back too.
+    expect(Number(value(after.ip, 'Time to Live'))).toBe(Number(value(before.ip, 'Time to Live')) - 1);
     expect(value(after.l4, 'Destination port')).not.toBe(value(before.l4, 'Destination port'));
     const opened = reply.find((x) => x.step.kind === 'unwrap' && x.step.layer === 'vpn' && x.trip.steps.indexOf(x.step as Trip['steps'][number]) > x.trip.steps.indexOf(nat.step as Trip['steps'][number]))!;
     expect(value(detailsAt(opened, 0.5).ip, 'Destination IP')).toBe('10.8.0.2');
@@ -496,8 +502,114 @@ describe('a cut cable in the story', () => {
 
   it('goes by faster as the resends pile up', () => {
     const lost = tl.segs.filter((x) => x.step.kind === 'lost');
-    const trip = (i: number) => tl.segs.filter((x) => x.trip === lost[i]!.trip).reduce((d, x) => d + x.t1 - x.t0, 0);
+    const trip = (i: number) => tl.segs.filter((x) => x.trip === lost[i]!.trip && x.step.kind !== 'wait').reduce((d, x) => d + x.t1 - x.t0, 0);
     expect(trip(6)).toBeLessThan(trip(1));
+  });
+});
+
+describe('a packet lost on the way', () => {
+  const waitsOf = (s: ReturnType<typeof run>) => buildTimeline(s).segs.flatMap((x) => (x.step.kind === 'wait' ? [x.step] : []));
+  const cern = (manual: ManualFault[]) => buildStory(runScenario(fetchWebPage({ site: 'info.cern.ch' }), { seed: 1, faults: { randomLoss: 0, manual } }));
+
+  it('a lost ACK needs no timer and no tears: the page still comes', () => {
+    const ack = get(null, 'ACK');
+    const s = run([{ packetId: ack.packetId, linkId: 'wan' }]);
+    expect(waitsOf(s)).toEqual([]);
+    expect(s.pageTitle).toBe('Example Domain');
+  });
+
+  it('with more of the reply to send, the sender goes on, then its timer runs out and it resends', () => {
+    const first = cern([]).trips.find((t) => t.part?.n === 1)!;
+    const s = cern([{ packetId: first.packetId, linkId: 'bb2' }]);
+    const shown = s.trips.filter((t) => t.part).map((t) => [t.part!.n, t.lost, !!t.retry]);
+    expect(shown).toEqual([[1, true, false], [2, false, false], [1, false, true]]);
+    expect(waitsOf(s)).toMatchObject([{ device: 'server', seconds: 1, giveUp: false, mood: 'surprise' }]);
+    // The ring runs just before the resend, not right after the fall.
+    const tl = buildTimeline(s);
+    const i = tl.segs.findIndex((x) => x.step.kind === 'wait');
+    expect(tl.segs[i]!.trip.retry).toBe(true);
+  });
+
+  it('the rings show the real timers, and no timer that was never there', () => {
+    const sa = get(null, 'SYN-ACK');
+    const s = run([{ packetId: sa.packetId, linkId: 'wan' }]);
+    const shown = waitsOf(s);
+    expect(shown.length).toBeGreaterThan(0);
+    for (const w of shown) expect(w.seconds).toBeGreaterThanOrEqual(1);
+    expect(shown.filter((w) => w.device === 'server').length).toBeLessThanOrEqual(1);
+  });
+
+  it('only cries when nobody tries again', () => {
+    const q = story.trips[0]!;
+    const once = run([{ packetId: q.packetId, linkId: 'lan' }]);
+    expect(waitsOf(once)).toMatchObject([{ device: 'laptop', seconds: 5, giveUp: false }]);
+    const dead = buildStory(runScenario(fetchWebPage(), { seed: 1, faults: { randomLoss: 0, manual: [], cuts: [{ link: 'bb1', from: 0 }] }, maxTime: 1000 }));
+    expect(waitsOf(dead).at(-1)).toMatchObject({ device: 'laptop', giveUp: true, mood: 'cry' });
+  });
+});
+
+describe('what the flow shows now', () => {
+  it('ACKs run as small blocks, in the chapter they belong to', () => {
+    const acks = story.trips.filter((t) => t.steps[0]?.kind === 'flow');
+    expect(acks.map((t) => [t.chapter, t.outward])).toEqual([['page', false], ['page', true]]);
+  });
+
+  it('a NAT says which port it swapped as well', () => {
+    const nat = get('GET /').steps.find((x) => x.kind === 'nat')!;
+    expect(nat).toMatchObject({ device: 'home', which: 'from' });
+    if (nat.kind !== 'nat') throw new Error('no nat');
+    expect(nat.beforePort).toBeGreaterThan(1023);
+    expect(nat.afterPort).toBeGreaterThan(1023);
+    expect(nat.afterPort).not.toBe(nat.beforePort);
+  });
+
+  it('the real clock runs with the sim: it ends with the fetch, and never goes back', () => {
+    const r = runScenario(fetchWebPage(), { seed: 1, faults: { randomLoss: 0, manual: [] } });
+    const tl = buildTimeline(buildStory(r));
+    const done = r.events.find((e) => e.type === 'app' && e.action === 'done')!;
+    expect(realAt(tl, tl.total)).toBeGreaterThanOrEqual(done.t);
+    expect(realAt(tl, tl.total)).toBeLessThan(done.t + 0.02);
+    let before = 0;
+    for (let v = 0; v < tl.total; v += 0.5) {
+      expect(realAt(tl, v)).toBeGreaterThanOrEqual(before);
+      before = realAt(tl, v);
+    }
+    expect(formatWait(0.035)).toBe('35 ms');
+    expect(formatWait(1.703)).toBe('1.7 s');
+  });
+
+  it('the satellite costs as much on the clock as it really does', () => {
+    const at = (slow: boolean) => {
+      const tl = buildTimeline(buildStory(runScenario(fetchWebPage({ slow }), { seed: 1, faults: { randomLoss: 0, manual: [] } })));
+      return realAt(tl, tl.total);
+    };
+    expect(at(true)).toBeGreaterThan(20 * at(false));
+  });
+
+  it('HTTPS: the hellos carry a share of the key, and the certificate proves the name', () => {
+    const s = buildStory(runScenario(fetchWebPage({ https: true }), { seed: 1, faults: { randomLoss: 0, manual: [] } }));
+    const shares = s.trips.filter((t) => t.keyShare);
+    expect(shares.map((t) => t.outward)).toEqual([true, false]);
+    expect(shares.every((t) => !t.locked)).toBe(true);
+    const tl = buildTimeline(s);
+    expect([...tl.halves.keys()].sort()).toEqual(['laptop', 'server']);
+    for (const [device, t] of tl.halves) expect(tl.keys.get(device)!).toBeGreaterThan(t);
+    expect(tl.reactions.filter((r) => r.stamp).map((r) => [r.device, r.stamp])).toEqual([['laptop', 'example.com']]);
+    // Before the key could be worked out, the laptop had no way to read the proof.
+    expect(tl.reactions.find((r) => r.stamp)!.t).toBeGreaterThan(tl.keys.get('laptop')!);
+  });
+
+  it('the spyglass tells a photo from something scrambled', () => {
+    const r = runScenario(fetchWebPage({ site: 'httpbin.org' }), { seed: 1, faults: { randomLoss: 0, manual: [] } });
+    const tl = buildTimeline(buildStory(r));
+    const reads = spyLog(tl, 'wan', tl.total);
+    expect(reads.some((x) => x.lines[0] === 'photo data, not scrambled' && x.kind === 'open')).toBe(true);
+    expect(reads.some((x) => x.lines[0]?.startsWith('HTTP/1.1 200'))).toBe(true);
+  });
+
+  it('under HTTPS it reads the server hello too, but nothing after it', () => {
+    const tl = buildTimeline(buildStory(runScenario(fetchWebPage({ https: true }), { seed: 1, faults: { randomLoss: 0, manual: [] } })));
+    expect(spyLog(tl, 'wan', tl.total).some((x) => x.lines[0] === 'server hello')).toBe(true);
   });
 });
 

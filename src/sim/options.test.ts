@@ -139,6 +139,34 @@ describe('HTTPS (a real captured TLS 1.3 session)', () => {
   }
 });
 
+describe('getting over a lost stretch', () => {
+  const photo = (faults: Partial<FaultPlan>) => runScenario(fetchWebPage({ site: 'httpbin.org' }), { seed: 1, faults: { randomLoss: 0, manual: [], ...faults }, maxTime: 1000 });
+  const doneAt = (r: SimResult) => of(r, 'app').find((e) => e.action === 'done')!.t;
+  const clear = photo({});
+  const firstData = of(clear, 'tx').find((e) => e.linkId === 'bb2' && e.fromDevice === 'server' && (clear.packets.get(e.packetId)!.tcp?.len ?? 0) > 0)!.start;
+
+  it('after a short outage the whole window comes again within round trips, not one packet per timer', () => {
+    for (const gap of [0.5, 2]) {
+      const r = photo({ cuts: [{ link: 'bb2', from: firstData, to: firstData + gap }] });
+      expect(doneAt(r)).toBeLessThan(firstData + gap + 1.5);
+      expect(new Set(of(r, 'tcp:retransmit').map((e) => e.cause))).toContain('recovery');
+    }
+  });
+
+  it('the timer recovers once a resend is answered', () => {
+    const r = photo({ cuts: [{ link: 'bb2', from: firstData, to: firstData + 2 }] });
+    const samples = of(r, 'tcp:rtt');
+    expect(samples[samples.length - 1]!.rto).toBeLessThan(2);
+  });
+
+  it('two holes in one window are filled in round trips too', () => {
+    const data = [...clear.packets.values()].filter((p) => (p.tcp?.len ?? 0) > 1000);
+    const r = photo({ manual: [2, 3].map((i) => ({ packetId: data[i]!.id, linkId: 'bb2' })) });
+    expect(doneAt(r)).toBeLessThan(0.2);
+    expect(of(r, 'tcp:retransmit').map((e) => e.cause)).toEqual(['fast', 'recovery']);
+  });
+});
+
 describe('a cut cable', () => {
   const cutRun = (cuts: { link: string; from: number; to?: number }[], opts: FetchWebPageOptions = {}) =>
     runScenario(fetchWebPage(opts), { seed: 1, faults: { randomLoss: 0, manual: [], cuts }, maxTime: 1000 });

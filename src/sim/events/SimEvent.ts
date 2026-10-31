@@ -69,7 +69,7 @@ export type SimEventPayload =
   | { type: 'timer:cancel'; deviceId: string; timerId: string; kind: TimerKind }
   | { type: 'timer:fire'; deviceId: string; timerId: string; kind: TimerKind }
   | { type: 'tcp:state'; deviceId: string; connId: string; from: TcpState; to: TcpState }
-  | { type: 'tcp:retransmit'; deviceId: string; connId: string; packetId: string; originalPacketId: string; cause: 'rto' | 'fast'; rto: number }
+  | { type: 'tcp:retransmit'; deviceId: string; connId: string; packetId: string; originalPacketId: string; /** Why: its timer ran out, duplicate ACKs told it, it is catching up after either, or the other side asked again. */ cause: 'rto' | 'fast' | 'recovery' | 'dup-syn'; rto: number }
   | { type: 'tcp:dup-ack'; deviceId: string; connId: string; count: number; packetId: string }
   | { type: 'tcp:ooo'; deviceId: string; connId: string; packetId: string; seq: number; len: number }
   | { type: 'tcp:duplicate'; deviceId: string; connId: string; packetId: string }

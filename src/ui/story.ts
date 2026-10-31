@@ -21,8 +21,8 @@ import {
 
 /**
  * The simple story: the packets a learner needs to follow, in order. Everything is read from the real event
- * log and PDU snapshots; nothing is invented, we only leave things out (ARP, plain ACKs, teardown). TTL and ports
- * only show in an opened pill.
+ * log and PDU snapshots; nothing is invented, we only leave things out (ARP, teardown). Plain ACKs run as small blocks.
+ * TTL only shows in an opened pill, and ports there and at a NAT.
  *
  *   1 Find the address  DNS question to the resolver and the answer back (UDP)
  *   2 Say hello         SYN, SYN-ACK, ACK
@@ -67,7 +67,7 @@ export type Step = (
   | { kind: 'appear'; device: string }
   | { kind: 'wrap'; device: string; layer: Wrap; /** For the frame (layer 'eth'): which kind and its sizes. */ frame?: Frame; /** For the VPN case: the addresses showing from here on. */ addr?: { from: string; to: string } }
   | { kind: 'unwrap'; device: string; layer: Wrap; frame?: Frame; addr?: { from: string; to: string } }
-  | { kind: 'nat'; device: string; which: 'from' | 'to'; before: string; after: string }
+  | { kind: 'nat'; device: string; which: 'from' | 'to'; before: string; after: string; /** The port changes with the address: it is how the way back is found. */ beforePort: number; afterPort: number }
   | { kind: 'travel'; from: string; to: string; link: string; /** Sim time the frame was sent. */ at: number; /** What anyone on this line could read. */ seen?: Seen }
   /** Knocked off the cable on the way from `from` to `to`. */
   | { kind: 'lost'; from: string; to: string; link: string; at: number; seen?: Seen }
@@ -109,8 +109,16 @@ export interface Trip {
   lost: boolean;
   /** A resend of an earlier, lost packet. */
   retry: boolean;
+  /** The packet this one sends again. */
+  retransmitOf?: string;
   /** A resend because the sender's timer ran out, rather than because ACKs told it. */
   timedOut?: boolean;
+  /** The timer that ran out, in real seconds. */
+  waited?: number;
+  /** HTTPS: this hello carries the sender's public share of the key. */
+  keyShare?: boolean;
+  /** HTTPS: the end of the server's proof of who it is: the name its certificate really names. */
+  identity?: string;
   /** When the page needs several packets: which one this is (1-based) and how many there are. */
   part?: { n: number; of: number };
   /** HTTPS: the card travels locked; only the two ends can open it. */
@@ -170,6 +178,9 @@ export function dnsCardLabel(summary: string): string {
   return /\d+\.\d+\.\d+\.\d+/.exec(summary)?.[0] ?? 'DNS';
 }
 
+const TLS_HANDSHAKE = 22;
+const SERVER_HELLO = 2;
+
 const printable = (s: string): string => s.replace(/[^\x20-\x7e]/g, '·');
 const clip = (s: string, n = 36): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
@@ -179,6 +190,9 @@ const hexStart = (b: Uint8Array): string => [...b.subarray(0, 12)].map((x) => x.
 /** The most telling readable lines of plain text: its first line, and the Host or the page title if they are there. */
 function readable(b: Uint8Array): string[] {
   const text = new TextDecoder('latin1').decode(b);
+  // Bytes that are not text, like a piece of a photo, are not scrambled: anyone can put them together.
+  const start = text.slice(0, 200);
+  if (start.replace(/[\t\r\n\x20-\x7e]/g, '').length > start.length / 8) return ['photo data, not scrambled'];
   const first = text.split('\r\n').find((l) => l.trim()) ?? '';
   const more = /^Host: .*$/im.exec(text)?.[0] ?? /<title>[^<]*<\/title>/i.exec(text)?.[0];
   return [first, ...(more && more !== first ? [more] : [])].map((l) => clip(printable(l)));
@@ -195,6 +209,8 @@ function seenOn(pdu: PduSnapshot | undefined, p: PacketInfo): Seen | undefined {
   if (tls) {
     const data = pdu.bytes.subarray(tls.start, tls.payloadEnd);
     const name = clientHelloSni(data);
+    // The server's hello is as open as the laptop's: only what comes after it is sealed.
+    if (data[0] === TLS_HANDSHAKE && data[5] === SERVER_HELLO) return { ...base, lines: ['server hello', hexStart(data)], kind: 'name' };
     return name ? { ...base, lines: [name, hexStart(data)], kind: 'name' } : { ...base, lines: [hexStart(data)], kind: 'scrambled' };
   }
   const wg = layer(pdu, 'wireguard');
@@ -246,7 +262,6 @@ function messageOf(app: LayerPdu | undefined): Message | undefined {
 /** Which packets the story follows. */
 function chosen(r: SimResult): PacketInfo[] {
   const out: PacketInfo[] = [];
-  const stream = streams(r);
   const helloAckFrom = new Set<string>();
   for (const p of r.packets.values()) {
     if (p.kind === 'dns') {
@@ -262,10 +277,9 @@ function chosen(r: SimResult): PacketInfo[] {
     }
     // The third handshake packet: the first empty ACK from whoever sent the first SYN.
     const opener = [...r.packets.values()].find((q) => q.tcp && q.tcp.flags === TCP_SYN && q.tcp.connId === p.tcp!.connId);
-    if (flags === TCP_ACK && opener?.origin === p.origin && (!helloAckFrom.has(p.tcp.connId) || (stream && !answersFin(r, p)))) {
-      helloAckFrom.add(p.tcp.connId);
-      out.push(p);
-    }
+    const hello = flags === TCP_ACK && opener?.origin === p.origin && !helloAckFrom.has(p.tcp.connId);
+    if (hello) helloAckFrom.add(p.tcp.connId);
+    if (hello || (flags === TCP_ACK && !answersFin(r, p))) out.push(p);
   }
   return out;
 }
@@ -276,7 +290,7 @@ function answersFin(r: SimResult, ack: PacketInfo): boolean {
   return (ack.tcp?.relAck ?? 0) > Math.max(...other.map((q) => (q.tcp?.relSeq ?? 0) + (q.tcp?.len ?? 0)));
 }
 
-function trip(r: SimResult, p: PacketInfo, retried: Set<string>, client: string): Trip | null {
+function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, client: string): Trip | null {
   const steps: Step[] = [];
   let frame: PduSnapshot | undefined;
   /** The packet as the sender first made it, before any VPN sealed it. */
@@ -341,6 +355,8 @@ function trip(r: SimResult, p: PacketInfo, retried: Set<string>, client: string)
           which: e.direction === 'out' ? 'from' : 'to',
           before: e.before.ip,
           after: e.after.ip,
+          beforePort: e.before.port,
+          afterPort: e.after.port,
         });
         break;
       case 'tx':
@@ -375,8 +391,11 @@ function trip(r: SimResult, p: PacketInfo, retried: Set<string>, client: string)
   if (card && last?.kind === 'unwrap' && last.layer === 'l4') steps.push({ kind: 'read', device: last.device });
 
   const flags = p.tcp?.flags ?? 0;
-  const retry = !!p.retransmitOf || (p.kind === 'dns' && retried.has(`${origin}|dns`));
-  if (p.kind === 'dns' && !packet.layers.some((x) => x.summary.startsWith('DNS response'))) retried.add(`${origin}|dns`);
+  // A DNS question asked again by the same device: its stub resolver's timer ran out.
+  const askedAt = p.kind === 'dns' ? asked.get(origin) : undefined;
+  if (p.kind === 'dns' && !packet.layers.some((x) => x.summary.startsWith('DNS response'))) asked.set(origin, p.createdAt);
+  const resend = r.events.find((e) => e.type === 'tcp:retransmit' && e.packetId === p.id);
+  const timer = resend?.type === 'tcp:retransmit' && resend.cause === 'rto' ? resend.rto : askedAt !== undefined ? p.createdAt - askedAt : undefined;
   return {
     packetId: p.id,
     chapter: p.kind === 'dns' ? 'dns' : dataBytes > 0 ? 'page' : 'hello',
@@ -395,8 +414,10 @@ function trip(r: SimResult, p: PacketInfo, retried: Set<string>, client: string)
     message: messageOf(app),
     steps,
     lost,
-    retry,
-    timedOut: !!p.retransmitOf && r.events.some((e) => e.type === 'tcp:retransmit' && e.packetId === p.id && e.cause === 'rto'),
+    retry: !!p.retransmitOf || askedAt !== undefined,
+    retransmitOf: p.retransmitOf,
+    timedOut: timer !== undefined,
+    waited: timer,
   };
 }
 
@@ -444,11 +465,11 @@ function dnsAnswer(r: SimResult, action: 'dns-answer' | 'dns-cache-hit' = 'dns-a
 }
 
 export function buildStory(r: SimResult): Story {
-  const retried = new Set<string>();
+  const asked = new Map<string, number>();
   const start = r.events.find((e) => e.type === 'app' && e.action === 'start');
   const client = start?.type === 'app' ? start.deviceId : r.scenario.startDevice;
   const trips = chosen(r)
-    .map((p) => trip(r, p, retried, client))
+    .map((p) => trip(r, p, asked, client))
     .filter((t): t is Trip => !!t)
     .sort((a, b) => a.start - b.start);
   const tls = r.scenario.devices.flatMap((d) => d.apps).find((a) => a.kind === 'browser')?.tls;
@@ -456,7 +477,7 @@ export function buildStory(r: SimResult): Story {
   numberParts(trips, r);
   const title = pageTitle(r);
   addLookups(trips, title);
-  const shown = streams(r) ? gatherStream(trips) : trips;
+  const shown = streams(r) ? gatherStream(trips) : smallAcks(trips);
   const url = start?.type === 'app' ? String(start.info?.url ?? '') : '';
   const wifiIfaces = new Set(r.scenario.devices.flatMap((d) => d.ifaces.filter((i) => i.wifi).map((i) => i.id)));
   const ifaceDevice = new Map(r.scenario.devices.flatMap((d) => d.ifaces.map((i) => [i.id, d.id] as const)));
@@ -487,18 +508,33 @@ export function buildStory(r: SimResult): Story {
 }
 
 /**
- * The reply and its ACKs become one step from its first packet on. What else was said then (a TLS goodbye) goes on after it,
- * and ACKs from before it, which only matter inside the stream, go. A lookup stays in front of the stream.
+ * The ACK that ends the hello is a whole packet. The rest run as small blocks, as in a stream: there is nothing to open, but
+ * you see the receiver answer, so a sender that hears nothing has a visible reason to wait.
+ */
+function smallAcks(trips: Trip[], hello = trips.find((t) => t.l4Label === 'ACK'), from: Chapter = 'dns'): Trip[] {
+  let chapter = from;
+  return trips.map((t) => {
+    if (t.l4Label !== 'ACK' || t === hello) {
+      chapter = t.chapter;
+      return t;
+    }
+    return { ...t, chapter, lost: false, retry: false, timedOut: false, steps: [{ kind: 'flow', packets: [t] }] };
+  });
+}
+
+/**
+ * The reply and the ACKs for it become one step from its first packet on. What else was said then (a TLS goodbye and the ACK
+ * for that) goes on after it. A lookup stays in front of the stream.
  */
 function gatherStream(trips: Trip[]): Trip[] {
   const hello = trips.find((t) => t.l4Label === 'ACK');
-  const isAck = (t: Trip): boolean => t.l4Label === 'ACK' && t !== hello;
+  const inStream = (t: Trip): boolean => !!t.part || (t.l4Label === 'ACK' && t !== hello && t.outward);
   const first = trips.findIndex((t) => t.part);
-  if (first < 0) return trips.filter((t) => !isAck(t));
-  const packets = trips.slice(first).filter((t) => t.part || isAck(t));
+  if (first < 0) return smallAcks(trips);
+  const packets = trips.slice(first).filter(inStream);
   const lookups = packets.flatMap((t) => t.steps.filter((s) => s.kind === 'lookup'));
-  const stream: Trip = { ...trips[first]!, part: undefined, retry: false, lost: false, locked: false, steps: [...lookups, { kind: 'flow', packets }] };
-  return [...trips.slice(0, first).filter((t) => !isAck(t)), stream, ...trips.slice(first).filter((t) => !t.part && !isAck(t))];
+  const stream: Trip = { ...trips[first]!, part: undefined, retry: false, timedOut: false, lost: false, locked: false, steps: [...lookups, { kind: 'flow', packets }] };
+  return [...smallAcks(trips.slice(0, first), hello), stream, ...smallAcks(trips.slice(first).filter((t) => !inStream(t)), hello, 'page')];
 }
 
 /**
@@ -541,6 +577,12 @@ function numberParts(trips: Trip[], r: SimResult): void {
     t.part = { n, of: seqs.length };
     t.card = n === 1 && status ? `${status} 1/${seqs.length}` : `${n}/${seqs.length}`;
   }
+}
+
+/** The name a certificate covers, read from its real bytes: this host, or a wildcard over it. */
+function certifiedName(rec: OpenedRecord, host: string): string | undefined {
+  const text = new TextDecoder('latin1').decode(rec.plaintext);
+  return text.includes(host) || text.includes(`*.${host.split('.').slice(1).join('.')}`) ? host : undefined;
 }
 
 /** The first line of what a TLS record carries. */
@@ -603,6 +645,7 @@ function labelTls(trips: Trip[], r: SimResult, session: TlsSession): void {
     t.card = recordLabel(main);
     if (main.inner === TLS_APPLICATION_DATA) t.message = httpMessage(recordLine(main));
     t.locked = main.inner === TLS_APPLICATION_DATA || !main.handshakes.some((h) => /Hello/.test(h));
+    t.keyShare = !t.locked && starting.length > 0;
     if (t.locked) {
       // The padlock goes on right after the card appears and comes off just before it is read.
       const appear = t.steps.findIndex((x) => x.kind === 'appear');
@@ -618,8 +661,11 @@ function labelTls(trips: Trip[], r: SimResult, session: TlsSession): void {
     }
   }
   // Number the packets of a handshake flight; retransmissions keep their number.
+  const cert = opened.server.find((x) => x.handshakes.includes('Certificate'));
+  const proof = cert && groups.get(`server|${flightOf('server', cert.offset)}`);
   for (const g of groups.values()) {
     const seqs = [...new Set(g.map((t) => r.packets.get(t.packetId)?.tcp?.relSeq ?? 0))].sort((a, b) => a - b);
+    if (g === proof) for (const t of g) if ((r.packets.get(t.packetId)?.tcp?.relSeq ?? 0) === seqs[seqs.length - 1]) t.identity = certifiedName(cert!, session.host);
     if (seqs.length < 2) continue;
     for (const t of g) {
       const n = seqs.indexOf(r.packets.get(t.packetId)?.tcp?.relSeq ?? 0) + 1;

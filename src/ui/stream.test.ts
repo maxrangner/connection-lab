@@ -2,13 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { fetchWebPage, runScenario, type Cut, type FaultPlan, type ManualFault } from '../sim';
 import type { FetchWebPageOptions } from '../sim/scenarios/fetchWebPage';
 import { buildStory, type Story, type Trip } from './story';
-import { buildTimeline, crossings, ridingOn, seenSoFar, spyLog, stepTarget, type FlowPacket, type Timeline } from './timeline';
+import { buildTimeline, crossings, ridingOn, seenSoFar, spyLog, stepTarget, type FlowPacket, type Seg, type Timeline } from './timeline';
 
 const CLEAN: FaultPlan = { randomLoss: 0, manual: [] };
 const photo = (opts: FetchWebPageOptions = {}, faults: FaultPlan = CLEAN) =>
   buildStory(runScenario(fetchWebPage({ site: 'httpbin.org', ...opts }), { seed: 1, faults, maxTime: 1000 }));
-const packets = (s: Story): Trip[] => s.trips.flatMap((t) => t.steps.flatMap((x) => (x.kind === 'flow' ? x.packets : [])));
-const flowOf = (tl: Timeline): FlowPacket[] => tl.segs.find((s) => s.flow)?.flow ?? [];
+const packets = (s: Story): Trip[] => s.trips.flatMap((t) => t.steps.flatMap((x) => (x.kind === 'flow' && x.packets.length > 1 ? x.packets : [])));
+/** The stream, not one of the small ACKs on their own. */
+const stream = (tl: Timeline): Seg => tl.segs.find((s) => (s.flow?.length ?? 0) > 1)!;
+const flowOf = (tl: Timeline): FlowPacket[] => stream(tl)?.flow ?? [];
 const parts = (s: Story): number[] => [...new Set(packets(s).flatMap((t) => (t.part ? [t.part.n] : [])))];
 const faces = (tl: Timeline): string[] => tl.reactions.map((r) => r.face);
 
@@ -18,9 +20,9 @@ describe('a photo: many packets at once', () => {
   const flow = flowOf(tl);
 
   it('the reply is one step, after the server has found the file', () => {
-    const t = s.trips.find((x) => x.steps.some((y) => y.kind === 'flow'))!;
-    expect(t.steps.map((x) => x.kind)).toEqual(['lookup', 'flow']);
-    expect(s.trips.filter((x) => x.steps.some((y) => y.kind === 'flow'))).toHaveLength(1);
+    const big = s.trips.filter((x) => x.steps.some((y) => y.kind === 'flow' && y.packets.length > 1));
+    expect(big).toHaveLength(1);
+    expect(big[0]!.steps.map((x) => x.kind)).toEqual(['lookup', 'flow']);
   });
 
   it('every band of the picture gets its packet, with ACKs coming back', () => {
@@ -68,12 +70,12 @@ describe('a photo: many packets at once', () => {
   it('ends in love, and fits the seconds of one sitting', () => {
     expect(faces(tl)).toContain('love');
     expect(faces(tl)).not.toContain('confused');
-    const seg = tl.segs.find((x) => x.flow)!;
+    const seg = stream(tl);
     expect(seg.t1 - seg.t0).toBeLessThan(30);
   });
 
   it('what was seen includes the stream, so a cut mid-way keeps it', () => {
-    const seg = tl.segs.find((x) => x.flow)!;
+    const seg = stream(tl);
     const seen = seenSoFar(tl, seg.t0 + 6);
     const first = flow[0]!;
     expect(seen.decided[`${first.trip.packetId}@${first.hops[0]!.link}`]).toBe(false);
@@ -180,7 +182,7 @@ const started = (tl: Timeline, v: number): string[] =>
     .sort();
 
 describe('cutting a cable under a stream', () => {
-  const start = (r: Run): number => r.tl.segs.find((s) => s.flow)!.t0;
+  const start = (r: Run): number => stream(r.tl).t0;
 
   it('what is on the cable falls in, all of it, from where it was', () => {
     const r = new Run();
@@ -209,7 +211,7 @@ describe('cutting a cable under a stream', () => {
   it('never changes what has been seen, wherever and however it happens', { timeout: 60_000 }, () => {
     for (const opts of [{}, { https: true }, { slow: true }, { from: 'phone' as const }, { vpn: true }]) {
       const clean = new Run(opts);
-      const end = clean.tl.segs.find((s) => s.flow)!.t1;
+      const end = stream(clean.tl).t1;
       for (const line of clean.s.links.map((l) => l.id)) {
         for (let v = start(clean) + 0.4; v < end; v += 3.7) {
           const cut = new Run(opts);
@@ -233,7 +235,7 @@ describe('cutting a cable under a stream', () => {
   it('the sender waits with a ring, angrier each time, and gives up in tears', () => {
     const r = new Run();
     r.cut('bb2', start(r) + 4);
-    const waits = r.tl.segs.find((s) => s.flow)!.waits!;
+    const waits = stream(r.tl).waits!;
     const moods = waits.map((w) => w.step.mood);
     expect(moods[0]).toBe('surprise');
     expect(moods.slice(1, -1).every((m) => m === 'angry')).toBe(true);
@@ -241,7 +243,7 @@ describe('cutting a cable under a stream', () => {
     expect(waits.at(-1)!.step.giveUp).toBe(true);
     expect(waits.every((w) => w.step.device === 'server')).toBe(true);
     expect(waits.slice(0, -1).map((w) => Math.round(w.step.seconds)).slice(0, 3)).toEqual([1, 2, 4]);
-    const seg = r.tl.segs.find((s) => s.flow)!;
+    const seg = stream(r.tl);
     expect(seg.t1).toBeGreaterThanOrEqual(waits.at(-1)!.t1);
   });
 });

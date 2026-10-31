@@ -109,7 +109,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
     id: 'fetch-web-page',
     title: `Fetch ${url}`,
     startDevice: from,
-    tcp: { clientMss: opts.vpn ? 1380 : mss, serverMss: opts.vpn ? 1380 : 1460 },
+    tcp: { clientMss: opts.vpn ? 1380 : mss, serverMss: 1460 },
     devices: [
       {
         id: 'laptop',

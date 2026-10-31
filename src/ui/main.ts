@@ -8,7 +8,7 @@ import { NetworkScene, type Camera } from './NetworkScene';
 import { Sound } from './sound';
 import { SpyCard } from './spyCard';
 import { buildStory, type Chapter, type PartKey, type Story } from './story';
-import { buildTimeline, chapterAt, ridingOn, seenSoFar, spyLog, stepTarget, type Timeline } from './timeline';
+import { buildTimeline, chapterAt, formatWait, realAt, ridingOn, seenSoFar, spyLog, stepTarget, type Timeline } from './timeline';
 
 /**
  * "Get example.com". Drag the site card onto the laptop or the phone. The bar below holds the playback buttons, and
@@ -267,7 +267,7 @@ function showSetup(): void {
   setupMenu.button.classList.toggle('on', SETTINGS.some((k) => features[k]));
 }
 
-const CHAPTERS: Record<Chapter, string> = { dns: 'Find the address', hello: 'Say hello', secret: 'Agree on a secret', page: 'Get the page' };
+const CHAPTERS: Record<Chapter, string> = { dns: 'Find the address', hello: 'Say hello', secret: 'Check and agree', page: 'Get the page' };
 /** Chapter number in this run (a second visit skips the address, HTTPS adds the secret). */
 const chapterName = (ch: Chapter): string => (ch === 'page' && story.image ? 'Get the photo' : CHAPTERS[ch]);
 
@@ -378,6 +378,11 @@ followBtn.addEventListener('click', () => {
 });
 root.appendChild(followBtn);
 const spyCard = new SpyCard(root, () => setSpyLine(null));
+// The animation takes its time so you can watch; this says how long it really took.
+const realClock = document.createElement('div');
+realClock.className = 'real-clock';
+realClock.hidden = true;
+root.appendChild(realClock);
 // A popup only has to move when the bar does.
 new ResizeObserver(placeMenus).observe(controls);
 window.addEventListener('resize', placeMenus);
@@ -746,6 +751,9 @@ function frame(now: number): void {
   scene.render(shown);
   scene.drawPacket(shown, peek, pill && pillOpen > 0.02 ? { key: pill, k: pillOpen } : null);
   spyCard.update(spyLine ? spyLog(tl, spyLine, shown) : []);
+  realClock.hidden = mode !== 'play';
+  const real = `real time ${formatWait(realAt(tl, v))}`;
+  if (mode === 'play' && realClock.textContent !== real) realClock.textContent = real;
 
   const ch = mode === 'play' ? chapterAt(tl, v) : null;
   if (ch !== shownChapter) {

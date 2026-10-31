@@ -6,7 +6,7 @@ import { shade } from './shade';
 import type { Details, PartKey, Row, Story, Trip, Wrap } from './story';
 import { bandPoint, pageContent, Paper, PAPER_H, PAPER_W, photoContent, type Parts } from './paper';
 import { drawBook, drawShelf, SERVER } from './stations';
-import { addressBefore, detailsAt, DEVICE_TOP, FACE_EMOJI, frameAt, LEVEL, lockPose, packetPos, packetPose, segAt, swapLanding, swapMoment, trayOpacity, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
+import { addressBefore, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, LEVEL, lockPose, packetPos, packetPose, segAt, swapLanding, swapMoment, trayOpacity, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
 
 export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', vpn: '#2e5e6e', eth: '#e08b33', wifi: '#2a9d8f' } as const;
 const DEVICE = '#d9d0c2';
@@ -310,6 +310,9 @@ export class NetworkScene {
           const c = iso(p.x, p.y, p.z + 0.3);
           for (const r of [7, 12, 17]) el('path', { d: `M${(c.sx - r).toFixed(1)} ${(c.sy - r * 0.2).toFixed(1)}A${r} ${r} 0 0 1 ${(c.sx + r).toFixed(1)} ${(c.sy - r * 0.2).toFixed(1)}`, class: 'ripple' }, g);
         }
+        // Home Wi-Fi with a password seals its frames; this one is not, so the spyglass can read it.
+        const note = this.linkSpot(l.id, 0.3, 16);
+        el('text', { x: note.sx, y: note.sy, 'text-anchor': 'middle', class: 'link-note' }, g).textContent = 'open Wi-Fi';
       } else if (path.length === 5) {
         // A cable from each device to its dish, then the radio beams up to the satellite.
         const [a, footA, top, footB, b] = path as [Vec3, Vec3, Vec3, Vec3, Vec3];
@@ -320,6 +323,7 @@ export class NetworkScene {
         }
         const sat = iso(top.x, top.y, top.z);
         drawSatellite(el('g', { transform: `translate(${sat.sx.toFixed(1)} ${sat.sy.toFixed(1)})` }, g));
+        el('text', { x: sat.sx, y: sat.sy - 30, 'text-anchor': 'middle', class: 'link-note' }, g).textContent = formatWait(l.delay);
       } else if (this.cut.has(l.id)) {
         // Two loose ends with a gap between them.
         const [a, b] = path as [Vec3, Vec3];
@@ -496,7 +500,7 @@ export class NetworkScene {
   /** Close on the packet (or the device it is at) at visual time v. */
   followCamera(v: number): Camera {
     const hit = segAt(this.tl, v);
-    if (hit?.seg.flow) return this.flowCamera(hit.seg.flow);
+    if (hit?.seg.flow && hit.seg.flow.length > 1) return this.flowCamera(hit.seg.flow);
     let p: Vec3;
     const laptop = this.tl.pos.get(this.tl.client) ?? { x: 0, y: 0 };
     const mood = this.tl.reactions.find((r) => v >= r.t && v < r.t + 1.1);
@@ -507,6 +511,9 @@ export class NetworkScene {
     } else if (hit?.seg.step.kind === 'wait' || hit?.seg.step.kind === 'lookup') {
       const d = this.tl.pos.get(hit.seg.step.device) ?? { x: 0, y: 0 };
       p = v3(d.x, d.y, (DEVICE_TOP[this.tl.kind.get(hit.seg.step.device) ?? ''] ?? 1) + 1.5);
+    } else if (hit?.seg.flow) {
+      // One small ACK: follow it like a packet.
+      p = this.blockAt(hit.seg.flow[0]!, v) ?? packetPos(this.tl, hit.seg, hit.k);
     } else if (hit) {
       p = packetPos(this.tl, hit.seg, hit.k);
       if (hit.seg.step.kind === 'read' && hit.seg.step.device === this.tl.client) p = v3(p.x, p.y, lerp(p.z, 1.2, hit.k));
@@ -722,11 +729,22 @@ export class NetworkScene {
     this.moods.replaceChildren();
     for (const r of this.tl.reactions) {
       const dt = v - r.t;
-      if (dt < 0 || dt > 1.6) continue;
+      if (dt < 0 || dt > (r.stamp ? 2.6 : 1.6)) continue;
       const d = this.tl.pos.get(r.device) ?? { x: 0, y: 0 };
       const top = DEVICE_TOP[this.tl.kind.get(r.device) ?? ''] ?? 1;
-      this.emoji(this.moods, iso(d.x, d.y, top + 2.2 + 0.4 * dt), FACE_EMOJI[r.face], easeOutBack(clamp01(dt / 0.3)), 1 - clamp01((dt - 1.2) / 0.4));
+      const c = iso(d.x, d.y, top + 2.2 + 0.4 * dt);
+      if (r.stamp) this.stamp(c, r.stamp, easeOutBack(clamp01(dt / 0.3)), 1 - clamp01((dt - 2.2) / 0.4));
+      else this.emoji(this.moods, c, FACE_EMOJI[r.face], easeOutBack(clamp01(dt / 0.3)), 1 - clamp01((dt - 1.2) / 0.4));
     }
+  }
+
+  /** The server's name, stamped: its certificate really says so. */
+  private stamp(c: { sx: number; sy: number }, name: string, scale: number, op: number): void {
+    const text = `${name} ✓`;
+    const w = text.length * 9 + 26;
+    const g = el('g', { class: 'mood stamp', opacity: op.toFixed(3), transform: `translate(${c.sx.toFixed(1)} ${c.sy.toFixed(1)}) rotate(-4) scale(${scale.toFixed(3)})` }, this.moods);
+    el('rect', { x: -w / 2, y: -17, width: w, height: 34, rx: 7, class: 'stamp-bg' }, g);
+    el('text', { 'text-anchor': 'middle', dy: '0.36em', class: 'stamp-text' }, g).textContent = text;
   }
 
   /** One emoji in a round white bubble, centred on a screen point. */
@@ -840,6 +858,8 @@ export class NetworkScene {
     }
     this.drawPose(seg, k, trip, parts, pose, wiggle, lock);
     this.drawKeys(v, seg, lock);
+    // A hello carries the sender's public half, there for any snoop to see; the half that completes the key stays home.
+    if (trip.keyShare && pose.tag) this.keyPiece(iso(pose.pos.x, pose.pos.y, pose.pos.z + 1.5), 'blade', trip.outward ? 'key-share-out' : 'key-share-back');
   }
 
   private tumble(pose: Pose, tau: number): void {
@@ -871,6 +891,13 @@ export class NetworkScene {
     pose.chips = 0;
   }
 
+  /** Where a small block is on its cables at v, if it is on one. */
+  private blockAt(p: FlowPacket, v: number): Vec3 | null {
+    const hop = p.hops.find((h) => v < h.t1);
+    if (!hop || v < p.t0) return null;
+    return travelPose(this.tl.pos, this.tl.trayZ, hop.from, hop.to, ((v - hop.t0) / (hop.t1 - hop.t0)) * hop.fall, 0, this.tl.sky.get(hop.link) ?? 0, this.tl.air.has(hop.link)).pos;
+  }
+
   /** A stream: its packets as small blocks on the cables, far ones first. A part flies onto the sheet, a lost one falls. */
   private drawFlow(flow: FlowPacket[], waits: FlowWait[], v: number): void {
     for (const w of waits) if (v >= w.t0 && v < w.t1) this.drawWait(w.step, (v - w.t0) / (w.t1 - w.t0), w.t1 - w.t0);
@@ -880,10 +907,9 @@ export class NetworkScene {
       const data = p.trip.dataBytes > 0;
       const color = !data ? COLOR.tcp : p.trip.locked ? LOCKED : COLOR.app;
       const size = data ? 0.9 : 0.5;
-      const hop = p.hops.find((h) => v < h.t1);
       const end = p.hops[p.hops.length - 1]!;
-      if (hop) {
-        const at = travelPose(this.tl.pos, this.tl.trayZ, hop.from, hop.to, ((v - hop.t0) / (hop.t1 - hop.t0)) * hop.fall, 0, this.tl.sky.get(hop.link) ?? 0, this.tl.air.has(hop.link)).pos;
+      const at = this.blockAt(p, v);
+      if (at) {
         blocks.push({ at, size, color, op: 1 });
       } else if (end.lost) {
         const tau = v - end.t1;
@@ -1111,9 +1137,23 @@ export class NetworkScene {
     return g;
   }
 
+  /** A piece of the key: the bow an end keeps to itself, or the blade it sends. They are the key's own shapes. */
+  private keyPiece(c: { sx: number; sy: number }, piece: 'bow' | 'blade', cls: string): void {
+    const g = el('g', { class: `key ${cls}`, transform: `translate(${c.sx.toFixed(1)} ${c.sy.toFixed(1)})` }, this.keys);
+    if (piece === 'blade') el('path', { d: 'M0 -2.2 H30 V2.2 H16 V8 H12 V2.2 H8 V6 H4 V2.2 H0 Z', class: 'key-metal' }, g);
+    else {
+      el('circle', { cx: 38, cy: 0, r: 10, class: 'key-metal' }, g);
+      el('circle', { cx: 40, cy: 0, r: 3.5, class: 'key-hole' }, g);
+    }
+  }
+
   /** Each end's key from the moment it has worked it out, popping up with a sparkle; the one at work flies to the lock. */
   private drawKeys(v: number, seg: Seg, lock: LockPose): void {
     const working = lock.key && 'device' in seg.step ? seg.step.device : null;
+    for (const [device, t] of this.tl.halves) {
+      const whole = this.tl.keys.get(device);
+      if (v >= t && (whole === undefined || v < whole)) this.keyPiece(this.keyRest(device), 'bow', 'key-home');
+    }
     for (const [device, t] of this.tl.keys) {
       const dt = v - t;
       if (dt < 0) continue;
@@ -1244,7 +1284,9 @@ export class NetworkScene {
     const m = swapMoment(k, swapLanding(step) ?? 0);
     if (step.kind === 'nat') {
       changed = step.which;
-      if (m.flip >= 0.5) a[step.which] = step.after;
+      // The port changes too: it is how the router will know who the reply is for.
+      old[step.which] = `${step.before}:${step.beforePort}`;
+      a[step.which] = m.flip >= 0.5 ? `${step.after}:${step.afterPort}` : old[step.which];
     } else if ((step.kind === 'wrap' || step.kind === 'unwrap') && step.addr) {
       // Going into the VPN box the packet gets a whole new address label; coming out it has its old one again.
       changed = 'both';
@@ -1257,7 +1299,10 @@ export class NetworkScene {
     const g = el('g', { class: `addr ${back ? 'addr-back' : 'addr-out'}`, opacity: op.toFixed(3), transform: `translate(${s.sx.toFixed(1)} ${s.sy.toFixed(1)}) scale(${pop.toFixed(3)})` }, this.tags);
     const flash = el('g', {}, g);
     // With a VPN the numbers alone don't say much: name who they belong to.
-    const caption = (word: string, ip: string): string => (this.story.vpn && this.story.names[ip] ? `${word} ${this.story.names[ip]}` : word);
+    const caption = (word: string, addr: string): string => {
+      const name = this.story.names[addr.split(':')[0]!];
+      return this.story.vpn && name ? `${word} ${name}` : word;
+    };
     const fromCap = caption('from', a.from);
     const toCap = caption('to', a.to);
     const fromW = Math.max(a.from.length * 7.2, fromCap.length * 6.6);
@@ -1308,7 +1353,3 @@ export class NetworkScene {
   }
 }
 
-function formatWait(s: number): string {
-  const ms = Math.round(s * 1000);
-  return ms >= 1000 ? `${Number(s.toFixed(1))} s` : `${ms} ms`;
-}

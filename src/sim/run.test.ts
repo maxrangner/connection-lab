@@ -183,6 +183,12 @@ describe('packet loss', () => {
     expect(toAscii(r.pdus.get(got.pduId!)!.bytes)).toBe(toAscii(fromBase64(HTTP_RESPONSE_BASE64)));
   });
 
+  it('a lost SYN-ACK answered again for a repeated SYN is not a timer', () => {
+    const r = run(1460, [{ packetId: pkt(/^SYN-ACK$/, 'wan'), linkId: 'wan' }]);
+    expect(of(r, 'tcp:retransmit').map((e) => e.cause).sort()).toContain('rto');
+    expect(appActions(r)).toContain('laptop:done');
+  });
+
   it('a lost DNS query is retried after the 5 s resolver timeout', () => {
     const r = run(1460, [{ packetId: pkt(/^DNS query/, 'wan'), linkId: 'wan' }]);
     const lookups = of(r, 'app').filter((e) => e.action === 'dns-lookup');
