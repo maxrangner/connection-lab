@@ -13,11 +13,10 @@ import { buildStory, type Chapter, type PartKey, type Story } from './story';
 import { buildTimeline, chapterAt, formatWait, joinAt, MAX_STRETCH, pduAt, realAt, ridingOn, seenSoFar, segAt, spyLog, stepTarget, wanDelayFor, type Timeline } from './timeline';
 
 /**
- * "Get example.com". Drag the site card onto the laptop or the phone. The bar below holds the playback buttons, and
- * popups for the speed, the tools you click lines with, and the setup of the next run.
+ * Connection Lab. Drag a card onto the laptop or the phone. The bar below holds the playback buttons, and popups for the
+ * speed, the tools you click lines with, the setup of the next run, and the attackers on the table.
  * Tap a packet to pop it open. When a run ends the card comes back. During a run the cards wait down the side of the
- * screen: drag one onto the other device and it joins in. Between runs the red cards wait down the other side: drag one
- * into the field and its attacker stands there, ready for the next run, until its card is tapped.
+ * screen: drag one onto the other device and it joins in.
  */
 
 /** Seconds the finished picture stays before the card comes back. */
@@ -91,7 +90,7 @@ let noise = 0;
 const NOISY = 0.4;
 /** A card dropped in during this run: what it asks for, and when in sim time and in visual time. */
 let joined: { job: Wanted; at: number; v: number } | null = null;
-/** The attackers on the table. They stay from run to run, until their card is tapped. */
+/** The attackers on the table. They stay from run to run, until they are switched off. */
 const attacks = new Set<Attack>();
 function simulate(): void {
   const scenario = fetchWebPage({
@@ -431,7 +430,33 @@ toolsMenu.button.addEventListener('click', () => {
 });
 const setupMenu = new Menu<Setting>(controls, root, 'Setup', 'Setup', SETUP, (id) => setSetting(id, !features[id]));
 showSetup();
-const menus: { isOpen: boolean; setOpen(open: boolean): void; place(): void; button: HTMLButtonElement }[] = [speedMenu, toolsMenu, setupMenu];
+const ATTACK_LINKS: Record<Attack, string[]> = { listen: [], flood: ['bot1-link', 'bot2-link', 'bot3-link'], scan: ['scanner-link'] };
+const attackMenu = new Menu<Attack>(
+  controls,
+  root,
+  'Attack',
+  'Attackers',
+  [
+    { id: 'listen', label: 'Stranger', hint: 'Listens in on the open Wi-Fi', draw: drawEar, span: 32 },
+    { id: 'flood', label: 'Botnet', hint: 'Floods the web server', draw: drawSwarm, span: 30 },
+    { id: 'scan', label: 'Scanner', hint: "Tries the server's doors", draw: drawDoor, span: 32 },
+  ],
+  (id) => setAttack(id, !attacks.has(id)),
+);
+attackMenu.mark('attack-menu');
+function setAttack(id: Attack, on: boolean): void {
+  if (on) attacks.add(id);
+  else attacks.delete(id);
+  attackMenu.setOn(id, on);
+  // Its cables go with it.
+  if (!on) {
+    for (const l of ATTACK_LINKS[id]) clearLine(l);
+    if (spyLine && ATTACK_LINKS[id].includes(spyLine)) setSpyLine(null);
+  }
+  preview();
+  sound.play(on ? 'pop' : 'thud');
+}
+const menus: { isOpen: boolean; setOpen(open: boolean): void; place(): void; button: HTMLButtonElement }[] = [speedMenu, toolsMenu, setupMenu, attackMenu];
 for (const menu of menus) {
   menu.button.addEventListener('click', () => {
     for (const other of menus) if (other !== menu) other.setOpen(false);
@@ -522,109 +547,36 @@ function joinIn(job: Wanted): void {
   sound.play('pop');
 }
 
-/** A card that is dragged from a button: however the drag ends, the card is let go. */
-function dragFrom(b: HTMLButtonElement, press: (e: PointerEvent) => void, move: (e: PointerEvent) => void, letGo: () => void): void {
-  b.addEventListener('pointerdown', (e) => {
-    b.setPointerCapture(e.pointerId);
-    press(e);
-  });
-  b.addEventListener('pointermove', move);
-  b.addEventListener('pointerup', letGo);
-  b.addEventListener('pointercancel', letGo);
-  b.addEventListener('lostpointercapture', letGo);
-}
-
 for (const w of WANTED) {
   const b = document.createElement('button');
   b.className = 'dock-card';
   b.setAttribute('aria-label', `Drag ${DOCK_ICONS[w].name} onto the other device`);
   b.appendChild(dockIcon(w));
-  dragFrom(
-    b,
-    (e) => {
-      holding = { x: e.clientX, y: e.clientY };
-      dockGhost.replaceChildren(dockIcon(w));
-    },
-    (e) => {
-      if (holding) holding = { x: e.clientX, y: e.clientY };
-    },
-    () => {
-      if (!holding) return;
-      const landed = overFree() && mode === 'play' && !joined;
-      holding = null;
-      if (landed) joinIn(w);
-    },
-  );
+  const letGo = (): void => {
+    if (!holding) return;
+    const landed = overFree() && mode === 'play' && !joined;
+    holding = null;
+    if (landed) joinIn(w);
+  };
+  b.addEventListener('pointerdown', (e) => {
+    holding = { x: e.clientX, y: e.clientY };
+    b.setPointerCapture(e.pointerId);
+    dockGhost.replaceChildren(dockIcon(w));
+  });
+  b.addEventListener('pointermove', (e) => {
+    if (holding) holding = { x: e.clientX, y: e.clientY };
+  });
+  b.addEventListener('pointerup', letGo);
+  b.addEventListener('pointercancel', letGo);
+  b.addEventListener('lostpointercapture', letGo);
   dock.appendChild(b);
 }
 
-/** The red cards: each puts an attacker on the table. */
-const ATTACK_LINKS: Record<Attack, string[]> = { listen: [], flood: ['bot1-link', 'bot2-link', 'bot3-link'], scan: ['scanner-link'] };
-const ATTACKS: { id: Attack; name: string; draw: (g: SVGGElement) => void }[] = [
-  { id: 'listen', name: 'Stranger', draw: drawEar },
-  { id: 'flood', name: 'Botnet', draw: drawSwarm },
-  { id: 'scan', name: 'Scanner', draw: drawDoor },
-];
-const attackIcon = (draw: (g: SVGGElement) => void): SVGSVGElement => {
-  const icon = el('svg', { viewBox: '-16 -16 32 32', width: 30, height: 30, 'aria-hidden': 'true' });
-  draw(el('g', { transform: 'scale(0.42)' }, icon));
-  return icon;
-};
 /** What the stranger has read off the air so far, just above the bar wherever the camera goes. */
 const heardCard = document.createElement('div');
 heardCard.className = 'heard-card';
 heardCard.hidden = true;
 root.appendChild(heardCard);
-/** A red card in hand, and how far it has come: a press that goes nowhere is a tap. */
-let redHeld: { x: number; y: number; moved: boolean } | null = null;
-const attackDock = document.createElement('div');
-attackDock.className = 'attack-dock';
-root.appendChild(attackDock);
-function setAttack(id: Attack, on: boolean): void {
-  if (on) attacks.add(id);
-  else attacks.delete(id);
-  // Its cables go with it.
-  if (!on) {
-    for (const l of ATTACK_LINKS[id]) clearLine(l);
-    if (spyLine && ATTACK_LINKS[id].includes(spyLine)) setSpyLine(null);
-  }
-  preview();
-  sound.play(on ? 'pop' : 'thud');
-}
-const attackCards = ATTACKS.map(({ id, name, draw }) => {
-  const b = document.createElement('button');
-  b.className = 'attack-card';
-  b.setAttribute('aria-label', `${name}: drag into the field or press Enter, and tap or press it again to take it away`);
-  b.append(attackIcon(draw), Object.assign(document.createElement('span'), { textContent: name }));
-  let from = { x: 0, y: 0 };
-  dragFrom(
-    b,
-    (e) => {
-      from = { x: e.clientX, y: e.clientY };
-      redHeld = { ...from, moved: false };
-      dockGhost.replaceChildren(attackIcon(draw));
-    },
-    (e) => {
-      if (redHeld) redHeld = { x: e.clientX, y: e.clientY, moved: redHeld.moved || Math.hypot(e.clientX - from.x, e.clientY - from.y) > 12 };
-    },
-    () => {
-      const held = redHeld;
-      redHeld = null;
-      if (!held || !canSetUp()) return;
-      const bar = controls.getBoundingClientRect().top;
-      const dock = attackDock.getBoundingClientRect();
-      const onField = held.y < bar && held.x < dock.left;
-      if (held.moved ? onField && !attacks.has(id) : attacks.has(id)) setAttack(id, !attacks.has(id));
-    },
-  );
-  // Enter or Space, which no finger pressed: the card goes on the table or comes off it.
-  b.addEventListener('click', (e) => {
-    if (e.detail === 0 && canSetUp()) setAttack(id, !attacks.has(id));
-  });
-  attackDock.appendChild(b);
-  return { id, b };
-});
-
 // Outside the bar, so the bar never moves.
 const followBtn = document.createElement('button');
 followBtn.className = 'follow';
@@ -971,6 +923,7 @@ function reset(): void {
   stretch = 0;
   noise = 0;
   attacks.clear();
+  for (const id of Object.keys(ATTACK_LINKS) as Attack[]) attackMenu.setOn(id, false);
   for (const menu of menus) menu.setOpen(false);
   showChapterMenu(false);
   for (const k of SETTINGS) features[k] = false;
@@ -1101,12 +1054,7 @@ function frame(now: number): void {
   }
   hint.style.display = mode === 'idle' ? '' : 'none';
   dock.hidden = mode !== 'play' || !!joined || v >= tl.total;
-  attackDock.hidden = !canSetUp();
-  for (const { id, b } of attackCards) b.classList.toggle('placed', attacks.has(id));
-  dockRing.hidden = !holding;
-  dockGhost.hidden = !holding && !redHeld?.moved;
-  dockGhost.classList.toggle('attack', !!redHeld);
-  if (redHeld) dockGhost.style.transform = `translate(${redHeld.x}px, ${redHeld.y}px)`;
+  dockGhost.hidden = dockRing.hidden = !holding;
   if (holding) {
     const spot = freeSpot();
     dockGhost.style.transform = `translate(${holding.x}px, ${holding.y}px)`;
@@ -1162,8 +1110,10 @@ function frame(now: number): void {
   setText(followBtn, mode === 'play' ? '◎ Follow packet' : '◎ Show all');
   backBtn.disabled = pauseBtn.disabled = nextBtn.disabled = mode !== 'play';
   // The setup is for the next run: it would rewrite what has already happened.
-  setupMenu.button.disabled = !canSetUp();
-  if (!canSetUp()) setupMenu.setOpen(false);
+  for (const menu of [setupMenu, attackMenu]) {
+    menu.button.disabled = !canSetUp();
+    if (!canSetUp()) menu.setOpen(false);
+  }
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

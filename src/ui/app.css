@@ -1071,7 +1071,7 @@ body {
 
 /* The bar and its popups */
 .menu-button {
-  min-width: 92px;
+  min-width: 78px;
 }
 
 .menu-button::after {
@@ -1210,9 +1210,10 @@ body {
     height: 0;
   }
 
-  .menu-button {
+  .net-controls button.menu-button {
     order: 2;
-    min-width: 88px;
+    min-width: 76px;
+    padding: 0 8px;
   }
 }
 
@@ -1529,47 +1530,18 @@ body {
   }
 }
 
-/* Attackers: everything of theirs is red. Between runs their cards wait down the right edge of the screen */
-.attack-dock {
-  position: fixed;
-  top: 50%;
-  right: max(10px, env(safe-area-inset-right, 0px));
-  transform: translateY(-50%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
+/* Attackers: everything of theirs is red. */
+.net-controls button.attack-menu:not(:disabled) {
+  color: #b92c2c;
 }
 
-.attack-dock[hidden] {
-  display: none;
+.menu-panel.attack-menu .menu-item {
+  color: #b92c2c;
 }
 
-.attack-card {
-  display: grid;
-  place-items: center;
-  width: 60px;
-  padding: 6px 0 4px;
-  border: 0;
-  border-radius: 12px;
-  background: #d23b3b;
-  color: #fff;
-  font-size: 11px;
-  font-weight: 650;
-  box-shadow: 0 2px 6px rgba(61, 53, 44, 0.3);
-  cursor: grab;
-  touch-action: none;
-}
-
-.attack-card.placed {
+.menu-panel.attack-menu .menu-item.on {
   background: #f3d6d0;
-  color: #a12a2a;
-  box-shadow: inset 0 0 0 2px #d23b3b;
-}
-
-.dock-ghost.attack {
-  background: #d23b3b;
-  color: #fff;
+  border-color: #d23b3b;
 }
 
 .ear-line,
@@ -1628,16 +1600,4 @@ body {
 
 .heard-card::first-line {
   color: #e9b8ae;
-}
-
-@media (max-height: 420px) {
-  .attack-dock {
-    gap: 4px;
-  }
-
-  .attack-card {
-    width: 44px;
-    padding: 3px 0;
-    font-size: 0;
-  }
 }
