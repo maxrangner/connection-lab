@@ -19,8 +19,12 @@ const css = [...html.matchAll(/<link rel="stylesheet"[^>]*href="([^"]+)"/g)].map
 const js = [...html.matchAll(/<script type="module"[^>]*src="([^"]+)"/g)].map((m) => read(m[1])).join('\n');
 const title = /<title>([^<]*)<\/title>/.exec(html)?.[1] ?? 'Get example.com';
 
+const viewport = /<meta name="viewport"[^>]*>/.exec(html)?.[0] ?? '<meta name="viewport" content="width=device-width, initial-scale=1.0" />';
+
 // No doctype/html/head/body: the artifact host wraps the page in its own skeleton.
+// The viewport stays: without it a phone lays the page out 980 px wide and shrinks it.
 const page = `<title>${title}</title>
+${viewport}
 <style>
 ${css}
 </style>

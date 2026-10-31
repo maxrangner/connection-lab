@@ -1,7 +1,7 @@
 import './app.css';
 import { fetchWebPage, runScenario, ulawDecodeAll, type Cut, type ManualFault } from '../sim';
 import { el } from './svg';
-import { clamp01, easeInOut, easeOutBack, iso, lerp, U } from './project';
+import { clamp01, easeInOut, easeOutBack, iso, ISO_X, ISO_Y, lerp, U } from './project';
 import { HexCard } from './hexCard';
 import { drawHandset, drawPadlock, drawPage, drawPair, drawPing, drawPipe, drawQuestion, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawTag, drawTrace } from './icons';
 import { Menu } from './menus';
@@ -564,8 +564,16 @@ let screenPress: { device: string; x: number; y: number } | null = null;
 let toolPress: { x: number; y: number } | null = null;
 /** A press on the table: it only takes the view over once it really moves. */
 let panPress: { x: number; y: number } | null = null;
-/** A press on the ISP router between runs: dragging it away stretches the fibre to it. */
-let stretchPress: { x: number; from: number } | null = null;
+/** A press on the Wi-Fi arc between runs: it shakes the radio if it does not turn into a drag. */
+let airPress: { x: number; y: number } | null = null;
+/** A press on the ISP router between runs: along its cable it stretches the fibre, any other way it pans. */
+let grabPress: { x: number; y: number } | null = null;
+/** The ISP router being dragged along its cable, from where. */
+let stretchPress: { x: number; y: number; from: number } | null = null;
+/** How closely a drag must follow the cable to stretch it (the cosine of the angle between them). */
+const ALONG_CABLE = 0.9;
+/** A drag along the cable to the ISP (+x, right and down on screen), in screen pixels. */
+const alongCable = (dx: number, dy: number): number => dx * ISO_X + dy * ISO_Y;
 
 function zoomAt(clientX: number, clientY: number, factor: number): void {
   const r = svg.getBoundingClientRect();
@@ -585,6 +593,8 @@ function spread(): { d: number; x: number; y: number } {
 }
 
 svg.addEventListener('pointerdown', (e) => {
+  // The first finger of a new touch: any other still listed lost its pointerup, and would turn every drag into a pinch.
+  if (e.isPrimary) pointers.clear();
   // Working the stage leaves the Tools menu open while a tool is in hand; the other popups give way to it.
   for (const menu of menus) if (menu !== toolsMenu || !tool) menu.setOpen(false);
   showChapterMenu(false);
@@ -607,33 +617,39 @@ svg.addEventListener('pointerdown', (e) => {
     return;
   }
   if (target.closest('.site-card') || (!tool && target.closest('.packet'))) return;
-  // A tap on the Wi-Fi arc between runs shakes it: noisy, or calm again.
-  if (!tool && canSetUp() && target.closest('[data-air]')) {
-    noise = noise > 0 ? 0 : NOISY;
-    preview();
-    sound.play(noise > 0 ? 'bonk' : 'snap');
-    return;
-  }
+  // One finger only: a second one down means a pinch, whatever the first was on.
+  const onTable = !tool && canSetUp() && e.isPrimary;
+  // A tap on the Wi-Fi arc between runs shakes it: noisy, or calm again. A drag from there pans, like anywhere else.
+  airPress = onTable && target.closest('[data-air]') ? { x: e.clientX, y: e.clientY } : null;
   // The ISP router can be dragged further away between runs: the fibre to it gets longer.
-  if (!tool && canSetUp() && target.closest('[data-grab]')) {
-    stretchPress = { x: e.clientX, from: stretch };
-    svg.setPointerCapture(e.pointerId);
-    return;
-  }
+  grabPress = onTable && target.closest('[data-grab]') ? { x: e.clientX, y: e.clientY } : null;
   toolPress = tool ? { x: e.clientX, y: e.clientY } : null;
   const device = target.closest('[data-device]')?.getAttribute('data-device');
   screenPress = device && mode === 'idle' && known.has(device) ? { device, x: e.clientX, y: e.clientY } : null;
-  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  // Listed only once captured: a finger that cannot be followed must not stay listed as down.
   svg.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   panPress = !screenPress && !toolPress ? { x: e.clientX, y: e.clientY } : null;
   svg.classList.add('panning');
 });
 svg.addEventListener('pointermove', (e) => {
   if (tool) scene.setHover(toolLine(e));
+  if (grabPress) {
+    const dx = e.clientX - grabPress.x;
+    const dy = e.clientY - grabPress.y;
+    const moved = Math.hypot(dx, dy);
+    if (moved < 6) return;
+    if (Math.abs(alongCable(dx, dy)) >= moved * ALONG_CABLE) {
+      stretchPress = { ...grabPress, from: stretch };
+      panPress = null;
+      // The view holds still while the router moves, so nothing zooms under the finger.
+      camFree = true;
+    }
+    grabPress = null;
+  }
   if (stretchPress) {
-    // Screen pixels to tiles along +x (which runs right-and-down on screen): the layout moves with the pointer,
-    // the simulation catches up when the router is let go.
-    const tiles = (e.clientX - stretchPress.x) / (cam.scale * U);
+    // Along the cable, in tiles: the layout moves with the pointer, the simulation catches up when the router is let go.
+    const tiles = alongCable(e.clientX - stretchPress.x, e.clientY - stretchPress.y) / (Math.hypot(U, U / 2) * cam.scale);
     const next = Math.round(Math.max(0, Math.min(MAX_STRETCH, stretchPress.from + tiles)));
     if (next !== stretch) {
       stretch = next;
@@ -647,6 +663,7 @@ svg.addEventListener('pointermove', (e) => {
   if (panPress) {
     if (Math.hypot(e.clientX - panPress.x, e.clientY - panPress.y) < 6) return;
     panPress = null;
+    airPress = null;
     camFree = true;
   }
   if (toolPress) {
@@ -678,6 +695,13 @@ const release = (e: PointerEvent): void => {
     preview();
     sound.play('snap');
   }
+  if (airPress && e.type === 'pointerup') {
+    noise = noise > 0 ? 0 : NOISY;
+    preview();
+    sound.play(noise > 0 ? 'bonk' : 'snap');
+  }
+  airPress = null;
+  grabPress = null;
   if (screenPress) {
     forget(screenPress.device);
     screenPress = null;
@@ -691,6 +715,11 @@ const release = (e: PointerEvent): void => {
 };
 svg.addEventListener('pointerup', release);
 svg.addEventListener('pointercancel', release);
+// However a finger stops being followed, it is no longer down.
+svg.addEventListener('lostpointercapture', (e) => {
+  pointers.delete(e.pointerId);
+  if (!pointers.size) svg.classList.remove('panning');
+});
 svg.addEventListener(
   'wheel',
   (e) => {
