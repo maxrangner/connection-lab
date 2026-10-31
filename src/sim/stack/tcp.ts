@@ -182,12 +182,7 @@ export class TcpConnection {
     const ack = (seg.flags & TCP_ACK) !== 0;
 
     if (seg.flags & TCP_RST) {
-      // The other end wants nothing more to do with this connection.
-      this.host.sim.cancel(this.rtoTimer);
-      this.rtoTimer = undefined;
-      this.setState('CLOSED');
-      this.host.tcpRemove(this);
-      this.handlers.onClosed?.(this);
+      this.reset(seg);
       return;
     }
 
@@ -638,6 +633,23 @@ export class TcpConnection {
       this.host.tcpRemove(this);
       this.handlers.onClosed?.(this);
     });
+  }
+
+  /**
+   * The other end wants nothing more to do with this connection. Only a reset that fits counts (RFC 9293, RFC 5961): while
+   * calling, one that acknowledges our SYN; after that, one at exactly the sequence number we expect next. Anything else
+   * is an old straggler, or a forgery.
+   */
+  private reset(seg: ParsedTcp): void {
+    const calling = this.state === 'SYN_SENT';
+    if (calling ? !(seg.flags & TCP_ACK) || seg.ack !== seqAdd(this.iss, 1) : seg.seq !== this.rcvNxt) return;
+    const inUse = calling || this.state === 'SYN_RCVD' || this.state === 'ESTABLISHED' || this.state === 'CLOSE_WAIT';
+    this.host.sim.cancel(this.rtoTimer);
+    this.rtoTimer = undefined;
+    this.setState('CLOSED');
+    this.host.tcpRemove(this);
+    if (inUse) this.handlers.onError?.(this, calling ? 'connection refused' : 'connection reset');
+    this.handlers.onClosed?.(this);
   }
 
   private setState(to: TcpState): void {

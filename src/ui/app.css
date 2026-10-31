@@ -1605,6 +1605,31 @@ body {
   fill: #6e2020;
 }
 
+.heard-card {
+  position: fixed;
+  right: max(10px, env(safe-area-inset-right, 0px));
+  max-width: calc(100vw - 20px);
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #6e2020;
+  color: #f3efe6;
+  font-size: 12px;
+  line-height: 17px;
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  white-space: pre;
+  overflow: hidden;
+  box-shadow: 0 3px 6px rgba(61, 53, 44, 0.3);
+  pointer-events: none;
+}
+
+.heard-card[hidden] {
+  display: none;
+}
+
+.heard-card::first-line {
+  color: #e9b8ae;
+}
+
 @media (max-height: 420px) {
   .attack-dock {
     gap: 4px;
