@@ -631,11 +631,11 @@ export function crossings(tl: Pick<Timeline, 'segs'>): Crossing[] {
   });
 }
 
-/** What a spyglass on a line has read by visual time v, oldest first. It reads a frame a quarter of the way along. */
-export function spyLog(tl: Timeline, line: string, v: number): Seen[] {
+/** What a spyglass put on a line at visual time `from` has read by v, oldest first. It reads a frame a quarter of the way along. */
+export function spyLog(tl: Timeline, line: string, v: number, from = -Infinity): Seen[] {
   const readAt = (c: Crossing): number => c.t0 + (c.t1 - c.t0) * 0.25;
   return crossings(tl)
-    .filter((c) => c.link === line && c.seen && readAt(c) <= v)
+    .filter((c) => c.link === line && c.seen && readAt(c) >= from && readAt(c) <= v)
     .sort((a, b) => readAt(a) - readAt(b))
     .map((c) => c.seen!);
 }

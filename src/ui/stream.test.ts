@@ -273,6 +273,16 @@ describe('the tools see into a stream', () => {
     expect(all.slice(0, part.length)).toEqual(part);
   });
 
+  it('the spyglass only reads what passes after it was put there', () => {
+    const all = spyLog(tl, 'wan', tl.total);
+    const from = tl.total / 2;
+    const later = spyLog(tl, 'wan', tl.total, from);
+    expect(later.length).toBeGreaterThan(0);
+    expect(later.length).toBeLessThan(all.length);
+    expect(all.slice(-later.length)).toEqual(later);
+    expect(spyLog(tl, 'wan', from - 1, from)).toEqual([]);
+  });
+
   it('under HTTPS it reads only scrambled bytes', () => {
     const tl = buildTimeline(photo({ https: true }));
     const data = crossings(tl).filter((c) => flowOf(tl).some((p) => p.trip === c.trip) && c.trip.dataBytes > 0);

@@ -28,6 +28,8 @@ const SETTINGS: Setting[] = ['https', 'big', 'slow', 'vpn'];
 const features: Features = { https: false, big: false, slow: false, vpn: false };
 /** The line the spyglass is on, if any. */
 let spyLine: string | null = null;
+/** The visual time it was put there: it can only read what passes from then on. */
+let spyFrom = -Infinity;
 /** The cables that are cut. They can change any time, before or during a run. */
 const cutLines = new Set<string>();
 try {
@@ -221,6 +223,7 @@ let tool: Tool | null = null;
 function setSpyLine(line: string | null): void {
   if (line === spyLine) return;
   spyLine = line;
+  spyFrom = mode === 'play' ? v : idleV;
   scene.setSpy(line);
   spyCard.reset();
   remember();
@@ -660,6 +663,7 @@ function beginRun(): void {
   scene.setStory(story, tl);
   showFeatures();
   spyCard.reset();
+  spyFrom = -Infinity;
   mode = 'play';
   v = 0;
   seek = null;
@@ -750,7 +754,7 @@ function frame(now: number): void {
   const shown = mode === 'play' ? v : idleV;
   scene.render(shown);
   scene.drawPacket(shown, peek, pill && pillOpen > 0.02 ? { key: pill, k: pillOpen } : null);
-  spyCard.update(spyLine ? spyLog(tl, spyLine, shown) : []);
+  spyCard.update(spyLine ? spyLog(tl, spyLine, shown, spyFrom) : []);
   realClock.hidden = mode !== 'play';
   const real = `real time ${formatWait(realAt(tl, v))}`;
   if (mode === 'play' && realClock.textContent !== real) realClock.textContent = real;
