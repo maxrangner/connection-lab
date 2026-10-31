@@ -25,7 +25,7 @@ const DHCP: Record<string, (rest: string) => string> = {
 };
 
 /** The plain meaning of a packet, if it has one worth saying. */
-function lineOf(t: Trip, story: Story): string | null {
+function lineOf(t: Trip): string | null {
   if (t.retry) return 'Sending that again';
   const card = t.card ?? '';
   if (card === 'bye' || t.l4Label.includes('FIN')) return 'Bye!';
@@ -51,7 +51,7 @@ function lineOf(t: Trip, story: Story): string | null {
       if (t.identity) return 'It really is me';
       return card.startsWith('certificate') ? "Here's my ID" : null;
     case 'page':
-      if (t.message?.kind === 'http-request') return story.image && t.client === story.client ? 'Please send the photo' : 'Please send the page';
+      if (t.message?.kind === 'http-request') return t.message.path.startsWith('/image') ? 'Please send the photo' : 'Please send the page';
       return (t.part ? t.part.n === 1 : t.message?.kind === 'http-response') ? 'Here it is' : null;
     case 'call':
       return t.part?.n === 1 ? (t.outward ? 'Hello?' : 'Hello!') : null;
@@ -62,6 +62,8 @@ function lineOf(t: Trip, story: Story): string | null {
       if (t.probeTtl !== undefined) return `Go ${t.probeTtl} ${t.probeTtl === 1 ? 'hop' : 'hops'}, then stop`;
       if (card === 'TTL ran out') return 'Stopped here. This is me.';
       return card === 'no such port' ? 'You made it to me!' : null;
+    case 'traffic':
+      return null;
   }
 }
 
@@ -82,7 +84,7 @@ export function buildSpeech(story: Story, segs: Seg[]): Bubble[] {
     const s = seg.step;
     for (const p of seg.flow ?? []) {
       // The quick repeats of a trace say nothing new.
-      const line = p.trip.chapter === 'trace' ? null : lineOf(p.trip, story);
+      const line = p.trip.chapter === 'trace' ? null : lineOf(p.trip);
       if (line) say(p.trip.origin, p.t0, line);
     }
     for (const w of [...(seg.waits ?? []).map((x) => ({ step: x.step, t0: x.t0 })), ...(s.kind === 'wait' ? [{ step: s, t0: seg.t0 }] : [])]) {
@@ -90,7 +92,7 @@ export function buildSpeech(story: Story, segs: Seg[]): Bubble[] {
     }
     // A server finds what was asked first, and speaks when it has it.
     if (!seg.flow && s.kind !== 'lookup' && s.kind !== 'wait' && once(seg.trip.packetId)) {
-      const line = lineOf(seg.trip, story);
+      const line = lineOf(seg.trip);
       const leaves = segs.find((x) => x.trip === seg.trip && (x.step.kind === 'travel' || x.step.kind === 'lost'));
       // A certificate takes several packets, and it only needs saying once.
       if (line && (seg.trip.chapter !== 'secret' || once(line))) say(seg.trip.origin, seg.t0, line, leaves?.t0);

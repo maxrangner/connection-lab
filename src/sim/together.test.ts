@@ -7,7 +7,7 @@ import { ADDR, COMPANION_DELAY, fetchWebPage } from './scenarios/fetchWebPage';
 const of = <T extends SimEventType>(r: SimResult, type: T): EventOf<T>[] => r.events.filter((e) => e.type === type) as EventOf<T>[];
 
 describe('two devices fetching at once', () => {
-  const r = runScenario(fetchWebPage({ together: true }), { seed: 1, faults: { randomLoss: 0, manual: [] } });
+  const r = runScenario(fetchWebPage({ join: {} }), { seed: 1, faults: { randomLoss: 0, manual: [] } });
 
   it('the phone starts a moment after the laptop and both get their page', () => {
     const starts = of(r, 'app').filter((e) => e.action === 'start');

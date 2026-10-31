@@ -46,13 +46,6 @@ export function drawQuestion(g: SVGGElement): void {
   el('text', { x: 0, y: -6, dy: '0.35em', 'text-anchor': 'middle', class: 'bubble-text' }, g).textContent = '?';
 }
 
-/** Two cards, one behind the other: two devices fetching at once. */
-export function drawPair(g: SVGGElement): void {
-  el('rect', { x: -10, y: -24, width: 30, height: 20, rx: 5, class: 'pair-card pair-back' }, g);
-  el('rect', { x: -22, y: -8, width: 30, height: 20, rx: 5, class: 'pair-card' }, g);
-  el('circle', { cx: -14, cy: 2, r: 4, class: 'pair-dot' }, g);
-}
-
 /** An address tag with nothing written on it yet: the device that has to ask for an address first. */
 export function drawTag(g: SVGGElement): void {
   el('path', { d: 'M-24 -14 H10 L24 0 L10 14 H-24 Z', class: 'tag' }, g);

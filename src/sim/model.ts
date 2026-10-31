@@ -160,6 +160,6 @@ export interface Scenario {
   tcp: TcpSettings;
   /** Device whose browser app starts at t = 0. */
   startDevice: string;
-  /** A second device that opens its own page a moment later, so both share the home router at once. */
+  /** A second device whose job starts at this time, so both share the home router at once. */
   companion?: { device: string; at: number };
 }
