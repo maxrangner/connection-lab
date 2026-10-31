@@ -162,6 +162,19 @@ export interface Probe {
   done: Record<string, string | number | string[]> | null;
 }
 
+/** What a device doing something this run has to show on its screen. */
+export interface Screenful {
+  /** What it asked for ("example.com"), and the address that turned into, if it did. */
+  site: string;
+  address: string | null;
+  /** It wanted a page, so none arriving is a failure. */
+  browsing: boolean;
+  /** The page's <title> if the page arrived, else null. */
+  pageTitle: string | null;
+  /** What it was sent, if that is a picture: its real bytes as a data URL. */
+  image: string | null;
+}
+
 export interface Story {
   /** The site the browser asked for ("example.com"). */
   site: string;
@@ -171,6 +184,8 @@ export interface Story {
   clients: string[];
   /** The devices whose browser got what it asked for. */
   fetched: string[];
+  /** What each of those devices shows. */
+  screens: Record<string, Screenful>;
   /** All traffic goes through the VPN server. */
   vpn: boolean;
   /** The resolver has nothing cached and walks root → TLD → authoritative: those three servers are on the table. */
@@ -407,7 +422,7 @@ function otherEnd(r: SimResult, linkId: string, device: string): string {
 
 /** An ACK beyond all the data the other side sent: it answers that side's FIN, which is teardown. */
 function answersFin(r: SimResult, ack: PacketInfo): boolean {
-  const other = [...r.packets.values()].filter((q) => q.tcp?.len && q.origin !== ack.origin);
+  const other = [...r.packets.values()].filter((q) => q.tcp?.len && q.origin !== ack.origin && q.job === ack.job);
   return (ack.tcp?.relAck ?? 0) > Math.max(...other.map((q) => (q.tcp?.relSeq ?? 0) + (q.tcp?.len ?? 0)));
 }
 
@@ -566,15 +581,18 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
   const firstTx = steps.find((s): s is Extract<Step, { kind: 'travel' | 'lost' }> => s.kind === 'travel' || s.kind === 'lost');
   const to = arp ? field(arp, 'arp.tpa') : field(ip, 'ipv4.dst');
   // A DNS question asked again by the same device of the same server, or the same DHCP message sent again: its timer ran
-  // out. (A cold resolver asks the same question of one server after another on its way down the hierarchy; those are not retries.)
-  const askKey = p.kind === 'dhcp' ? `${origin}|${card}` : `${origin}>${to}`;
+  // out. (A cold resolver asks the same question of one server after another on its way down the hierarchy; those are not
+  // retries, and nor is a walk it makes for another job.)
+  const askKey = p.kind === 'dhcp' ? `${origin}|${card}` : `${p.job}|${origin}>${to}`;
   const ownDhcp = p.kind === 'dhcp' && clients.includes(origin);
   const askedAt = p.kind === 'dns' || ownDhcp ? asked.get(askKey) : undefined;
   if ((p.kind === 'dns' && packet.layers.some((x) => x.summary.startsWith('DNS query'))) || ownDhcp) asked.set(askKey, p.createdAt);
   const resend = r.events.find((e) => e.type === 'tcp:retransmit' && e.packetId === p.id);
   const timer = resend?.type === 'tcp:retransmit' && resend.cause === 'rto' ? resend.rto : askedAt !== undefined ? p.createdAt - askedAt : undefined;
+  const client = clients[p.job]!;
+  const tracing = r.scenario.devices.find((d) => d.id === client)?.apps.some((a) => a.kind === 'traceroute');
   // Echoes are ping's; probes, and the errors they provoke, traceroute's (an error in a ping run is ping's too).
-  const chapter: Chapter = arp ? 'arp' : p.kind === 'dhcp' ? 'address' : p.kind === 'dns' ? 'dns' : p.kind === 'rtp' ? 'call' : p.kind === 'probe' ? 'trace' : icmp ? (icmp.summary.startsWith('ICMP echo') || !apps.some((a) => a.kind === 'traceroute') ? 'ping' : 'trace') : dataBytes > 0 ? 'page' : 'hello';
+  const chapter: Chapter = arp ? 'arp' : p.kind === 'dhcp' ? 'address' : p.kind === 'dns' ? 'dns' : p.kind === 'rtp' ? 'call' : p.kind === 'probe' ? 'trace' : icmp ? (icmp.summary.startsWith('ICMP echo') || !tracing ? 'ping' : 'trace') : dataBytes > 0 ? 'page' : 'hello';
   return {
     packetId: p.id,
     chapter,
@@ -583,8 +601,7 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
     sent: firstTx?.at ?? p.createdAt,
     origin,
     outward: clients.includes(origin),
-    // Which device's fetch: filled in once every trip is known (a reply is for whoever asked).
-    client: clients.includes(origin) ? origin : clients[0]!,
+    client,
     card,
     dataBytes,
     l4: arp || icmp ? 'none' : isTcp ? 'tcp' : 'udp',
@@ -625,10 +642,14 @@ function replyBytes(r: SimResult): number {
 
 const streams = (r: SimResult): boolean => replyBytes(r) >= STREAM_MIN * FULL_PACKET;
 
-/** The real picture the server sends (it is known before it arrives, so a sheet can show what has come so far). */
-function imageOf(r: SimResult): string | null {
-  const sent = r.events.find((e) => e.type === 'app' && e.action === 'http-response-sent');
-  const bytes = sent && 'pduId' in sent && sent.pduId ? r.pdus.get(sent.pduId)?.bytes : undefined;
+/** The real picture the server sends this job (it is known before it arrives, so a sheet can show what has come so far). */
+function imageOf(r: SimResult, job: number): string | null {
+  const pduOf = (e: SimEvent): PduSnapshot | undefined => ('pduId' in e && e.pduId ? r.pdus.get(e.pduId) : undefined);
+  const sent = r.events.find((e) => {
+    const pdu = pduOf(e);
+    return e.type === 'app' && e.action === 'http-response-sent' && !!pdu && r.packets.get(pdu.packetId)?.job === job;
+  });
+  const bytes = sent && pduOf(sent)?.bytes;
   if (!bytes) return null;
   const text = new TextDecoder('latin1').decode(bytes);
   const end = text.indexOf('\r\n\r\n');
@@ -691,24 +712,18 @@ function dnsAnswer(r: SimResult, client: string, action: 'dns-answer' | 'dns-cac
   return Array.isArray(a) ? (a[0] ?? null) : null;
 }
 
-/**
- * Whose fetch each reply belongs to, told the way the home router tells: by the outside port it gave the request. A reply
- * is known before the router has sent it on, so a lost one still waits at the right device. Without a swap (one device,
- * or inside a VPN tunnel) everything is the client's own.
- */
-function assignClients(trips: Trip[]): void {
-  const byPort = new Map<number, string>();
-  for (const t of trips) {
-    const nat = t.steps.find((s): s is Extract<Step, { kind: 'nat' }> => s.kind === 'nat');
-    if (t.outward && nat?.which === 'from') byPort.set(nat.afterPort, t.origin);
-  }
-  for (const t of trips) {
-    if (t.outward) continue;
-    const pdu = t.steps[0]?.pdu;
-    const l4 = pdu && (layer(pdu, 'tcp') ?? layer(pdu, 'udp'));
-    const port = l4 && parseInt(field(l4, `${l4.protocol}.dstport`), 10);
-    t.client = (port ? byPort.get(port) : undefined) ?? t.client;
-  }
+/** What a device has to show for its job. */
+function screenOf(r: SimResult, device: string, job: number): Screenful {
+  const start = r.events.find((e) => e.type === 'app' && e.action === 'start' && e.deviceId === device);
+  const url = start?.type === 'app' ? String(start.info?.url ?? '') : '';
+  return {
+    // A call starts with the friend's name instead of a URL.
+    site: url ? new URL(url).hostname : start?.type === 'app' ? String(start.info?.to ?? '') : '',
+    address: dnsAnswer(r, device, 'dns-cache-hit') ?? dnsAnswer(r, device),
+    browsing: !!r.scenario.devices.find((d) => d.id === device)?.apps.some((a) => a.kind === 'browser'),
+    pageTitle: pageTitle(r, device),
+    image: imageOf(r, job),
+  };
 }
 
 export interface StoryOptions {
@@ -719,7 +734,6 @@ export interface StoryOptions {
 export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
   const asked = new Map<string, number>();
   const client = r.scenario.startDevice;
-  const start = r.events.find((e) => e.type === 'app' && e.action === 'start' && e.deviceId === client);
   const clients = [client, ...(r.scenario.companion ? [r.scenario.companion.device] : [])];
   const { packets, hellos } = chosen(r, !!opts.arp);
   const trips = packets
@@ -727,7 +741,6 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
     .filter((t): t is Trip => !!t)
     .sort((a, b) => a.sent - b.sent || a.start - b.start);
   for (const t of trips) if (hellos.has(t.packetId)) t.hello = true;
-  assignClients(trips);
   const tls = r.scenario.devices.find((d) => d.id === client)?.apps.find((a) => a.kind === 'browser')?.tls;
   if (tls) labelTls(trips, r, tls, client);
   numberParts(trips, r, client);
@@ -741,7 +754,7 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
   const gathered = gatherProbes(probe ? quickLookup(own) : own);
   const told = voice ? gatherCall(gathered) : streams(r) ? gatherStream(gathered, client) : smallAcks(gathered);
   const shown = [...told, ...trips.filter((t) => t.client !== client)];
-  const url = start?.type === 'app' ? String(start.info?.url ?? '') : '';
+  const screens = Object.fromEntries(clients.map((c, job) => [c, screenOf(r, c, job)]));
   const wifiIfaces = new Set(r.scenario.devices.flatMap((d) => d.ifaces.filter((i) => i.wifi).map((i) => i.id)));
   const ifaceDevice = new Map(r.scenario.devices.flatMap((d) => d.ifaces.map((i) => [i.id, d.id] as const)));
   return {
@@ -754,11 +767,11 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
       medium: wifiIfaces.has(l.a) || wifiIfaces.has(l.b) ? ('wifi' as const) : ('cable' as const),
       ...(l.queue !== undefined ? { queue: l.queue } : {}),
     })),
-    // A call starts with the friend's name instead of a URL.
-    site: url ? new URL(url).hostname : start?.type === 'app' ? String(start.info?.to ?? '') : '',
+    site: screens[client]!.site,
     client,
     clients,
     fetched: clients.filter((c) => r.events.some((e) => e.type === 'app' && e.action === 'http-response-received' && e.deviceId === c)),
+    screens,
     vpn: r.scenario.devices.some((d) => d.tunnel),
     cold: r.scenario.devices.some((d) => d.apps.some((a) => a.kind === 'dns-server' && !!a.upstream)),
     dhcp: r.scenario.devices.some((d) => d.id === client && d.apps.some((a) => a.kind === 'dhcp-client')),
@@ -774,8 +787,7 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
     ])),
     trips: shown,
     pageTitle: title,
-    // A photo dropped in by the other device is that device's, not what this run is about.
-    image: streams(r) ? imageOf(r) : null,
+    image: screens[client]!.image,
     dnsAnswer: dnsAnswer(r, client),
     dnsTtl: (() => {
       const e = r.events.find((x) => x.type === 'app' && x.action === 'dns-answer' && x.deviceId === client);

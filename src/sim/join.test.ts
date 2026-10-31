@@ -26,6 +26,29 @@ describe('a job dropped in during a run', () => {
     }
   }
 
+  it('knows whose job every packet is, also a reply, and a frame sent on by a queue the other job was in', () => {
+    for (const opts of [{}, { thin: true }, { noise: 0.3 }, { dhcp: true }]) {
+      for (const b of JOBS) {
+        const r = runScenario(fetchWebPage({ ...first.photo, ...opts, join: { job: b, at: 0.01 } }), { seed: 1, faults: CLEAN, maxTime: 1000 });
+        const device = ['laptop', 'phone'];
+        for (const e of r.events) {
+          if (e.type !== 'rx' || !device.includes(e.deviceId)) continue;
+          const p = r.packets.get(e.packetId)!;
+          if (p.kind !== 'wifi-ack' && p.kind !== 'arp') expect(device[p.job], `${p.label} at ${e.deviceId}`).toBe(e.deviceId);
+        }
+      }
+    }
+  });
+
+  it('a job that never gets going renumbers nobody else: the first job\'s packets keep their ids', () => {
+    const ids = (r: SimResult): string[] => [...r.packets.values()].filter((p) => p.job === 0).map((p) => p.id);
+    expect(ids(run('photo', 'page', 0.01))).toEqual(ids(alone('photo')));
+    const quiet = run('page', 'call', 0.01);
+    const cut = runScenario(fetchWebPage({ join: { job: 'call', at: 0.01 } }), { seed: 1, faults: { ...CLEAN, cuts: [{ link: 'bb6', from: 0 }] }, maxTime: 1000 });
+    const callers = (r: SimResult): string[] => [...r.packets.values()].filter((p) => p.origin === 'phone' && p.kind === 'rtp').map((p) => p.id);
+    expect(callers(cut)).toEqual(callers(quiet));
+  });
+
   it('serves each device what it asked for from the one server', () => {
     const r = run('page', 'photo', 0.01);
     const got = (device: string): string => {

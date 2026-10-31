@@ -99,6 +99,8 @@ export class Link {
     const txEnd = start + (wireBytes * 8) / bps;
     this.busyUntil.set(port, Math.max(idle, txEnd + (arq ? 0 : (INTERFRAME_GAP_BYTES * 8) / bps)));
     const arrive = txEnd + this.spec.delay;
+    // A frame may be sent on by whatever freed its queue; what it sets off where it lands is still its own job's.
+    const job = sim.packets.get(packetId)?.job ?? sim.job;
     sim.at(start, () => {
       sim.emit({
         type: 'tx',
@@ -122,7 +124,10 @@ export class Link {
         // Damaged on the air: the receiver's FCS check fails and it says nothing.
         sim.at(arrive, () => sim.emit({ type: 'drop', packetId, reason: 'interference', deviceId: to.id, linkId: this.spec.id, frameId }));
       } else {
-        sim.at(arrive, () => to.receiveFrame(toIface, frame, packetId, frameId));
+        sim.at(arrive, () => {
+          sim.job = job;
+          to.receiveFrame(toIface, frame, packetId, frameId);
+        });
       }
     });
     return txEnd;

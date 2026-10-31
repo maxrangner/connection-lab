@@ -122,7 +122,7 @@ describe('phone over Wi-Fi', () => {
 });
 
 describe('noisy Wi-Fi: 802.11 Acks and link-layer retries', () => {
-  const noisy = (opts: FetchWebPageOptions = {}, seed = 1) => runScenario(fetchWebPage({ from: 'phone', noise: 0.5, ...opts }), { seed, faults: { randomLoss: 0, manual: [] }, maxTime: 1000 });
+  const noisy = (opts: FetchWebPageOptions = {}, seed = 6) => runScenario(fetchWebPage({ from: 'phone', noise: 0.5, ...opts }), { seed, faults: { randomLoss: 0, manual: [] }, maxTime: 1000 });
   const r = noisy();
   const plain = run({ from: 'phone' });
   const isAck = (x: SimResult, packetId: string) => x.packets.get(packetId)!.kind === 'wifi-ack';

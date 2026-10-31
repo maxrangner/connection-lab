@@ -477,7 +477,7 @@ const dockIcon = (w: Wanted): SVGSVGElement => {
   return icon;
 };
 /** A card from the dock, in hand. */
-let holding: { wanted: Wanted; x: number; y: number } | null = null;
+let holding: { x: number; y: number } | null = null;
 const dock = document.createElement('div');
 dock.className = 'dock';
 dock.hidden = true;
@@ -528,12 +528,12 @@ for (const w of WANTED) {
     if (landed) joinIn(w);
   };
   b.addEventListener('pointerdown', (e) => {
-    holding = { wanted: w, x: e.clientX, y: e.clientY };
+    holding = { x: e.clientX, y: e.clientY };
     b.setPointerCapture(e.pointerId);
     dockGhost.replaceChildren(dockIcon(w));
   });
   b.addEventListener('pointermove', (e) => {
-    if (holding) holding = { ...holding, x: e.clientX, y: e.clientY };
+    if (holding) holding = { x: e.clientX, y: e.clientY };
   });
   b.addEventListener('pointerup', letGo);
   b.addEventListener('pointercancel', letGo);
@@ -752,7 +752,7 @@ svg.addEventListener('pointermove', (e) => {
     const next = Math.round(Math.max(0, Math.min(MAX_STRETCH, stretchPress.from + tiles)));
     if (next !== stretch) {
       stretch = next;
-      tl = buildTimeline(story, knocks, stretch);
+      tl = buildTimeline(story, knocks, stretch, joined?.v);
       scene.setStory(story, tl);
     }
     return;
@@ -1027,7 +1027,7 @@ function frame(now: number): void {
   // The camera eases between the whole network (between runs) and a close follow of the packet,
   // unless the viewer has taken it over. A card in hand needs the whole network, and so does more than one job at a time.
   if (!camFree || holding) {
-    const wide = !!holding || (!!joined && !segAt(tl, v)?.seg.flow);
+    const wide = !!holding || (mode === 'play' && !!joined && !segAt(tl, v)?.seg.flow);
     const target = mode === 'play' && !wide ? scene.followCamera(v) : showAll || wide ? scene.wholeCamera() : scene.overviewCamera();
     const ease = snapCamera ? 1 : Math.min(1, dt * (seek ? 6 : 3.5));
     cam = { cx: lerp(cam.cx, target.cx, ease), cy: lerp(cam.cy, target.cy, ease), scale: lerp(cam.scale, target.scale, ease) };
