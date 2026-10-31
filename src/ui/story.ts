@@ -89,8 +89,12 @@ export interface Trip {
   /** Sim time it first set off on a cable: the order the trips are told in. A question made before the router's address was known comes after the ARP that found it. */
   sent: number;
   origin: string;
-  /** Sent by the device the page is opened on (rather than coming back to it). */
+  /** Sent by a device a page is opened on (rather than coming back to one). */
   outward: boolean;
+  /** The device whose fetch this packet belongs to: the one that sent it, or the one its reply is for. */
+  client: string;
+  /** The ACK that ends the three-way hello: a whole packet, not a small block. */
+  hello?: boolean;
   /** Text on the data card ("GET /", "example.com?"), or null for a packet with no data (SYN, ACK). */
   card: string | null;
   dataBytes: number;
@@ -135,6 +139,8 @@ export interface Story {
   site: string;
   /** The device the page is opened on (laptop or phone). */
   client: string;
+  /** Every device fetching something this run: the client first, then the one that joined in. */
+  clients: string[];
   /** All traffic goes through the VPN server. */
   vpn: boolean;
   /** Which device each address belongs to. */
@@ -271,29 +277,33 @@ function messageOf(app: LayerPdu | undefined): Message | undefined {
   return undefined;
 }
 
-/** Which packets the story follows. ARP only when asked for: it is the first thing on the cable, and the dullest. */
-function chosen(r: SimResult, arp: boolean): PacketInfo[] {
-  const out: PacketInfo[] = [];
+/** Which packets the story follows, and which of them end a hello. ARP only when asked for: it is the first thing on the cable, and the dullest. */
+function chosen(r: SimResult, arp: boolean): { packets: PacketInfo[]; hellos: Set<string> } {
+  const packets: PacketInfo[] = [];
+  const hellos = new Set<string>();
   const helloAckFrom = new Set<string>();
   for (const p of r.packets.values()) {
     if (p.kind === 'dns' || (p.kind === 'arp' && arp)) {
-      out.push(p);
+      packets.push(p);
       continue;
     }
     if (p.kind !== 'tcp' || !p.tcp) continue;
     const { flags, len } = p.tcp;
     if (flags & TCP_FIN) continue;
     if (flags & TCP_SYN || len > 0) {
-      out.push(p);
+      packets.push(p);
       continue;
     }
     // The third handshake packet: the first empty ACK from whoever sent the first SYN.
     const opener = [...r.packets.values()].find((q) => q.tcp && q.tcp.flags === TCP_SYN && q.tcp.connId === p.tcp!.connId);
     const hello = flags === TCP_ACK && opener?.origin === p.origin && !helloAckFrom.has(p.tcp.connId);
-    if (hello) helloAckFrom.add(p.tcp.connId);
-    if (hello || (flags === TCP_ACK && !answersFin(r, p))) out.push(p);
+    if (hello) {
+      helloAckFrom.add(p.tcp.connId);
+      hellos.add(p.id);
+    }
+    if (hello || (flags === TCP_ACK && !answersFin(r, p))) packets.push(p);
   }
-  return out;
+  return { packets, hellos };
 }
 
 /** An ACK beyond all the data the other side sent: it answers that side's FIN, which is teardown. */
@@ -302,7 +312,7 @@ function answersFin(r: SimResult, ack: PacketInfo): boolean {
   return (ack.tcp?.relAck ?? 0) > Math.max(...other.map((q) => (q.tcp?.relSeq ?? 0) + (q.tcp?.len ?? 0)));
 }
 
-function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, client: string): Trip | null {
+function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: string[]): Trip | null {
   const steps: Step[] = [];
   let frame: PduSnapshot | undefined;
   /** The packet as the sender first made it, before any VPN sealed it. */
@@ -422,7 +432,9 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, client: s
     start: p.createdAt,
     sent: firstTx?.at ?? p.createdAt,
     origin,
-    outward: origin === client,
+    outward: clients.includes(origin),
+    // Which device's fetch: filled in once every trip is known (a reply is for whoever asked).
+    client: clients.includes(origin) ? origin : clients[0]!,
     card,
     dataBytes,
     l4: arp ? 'none' : isTcp ? 'tcp' : 'udp',
@@ -470,8 +482,9 @@ function imageOf(r: SimResult): string | null {
   return `data:image/jpeg;base64,${btoa(Array.from(bytes.subarray(end + 4), (b) => String.fromCharCode(b)).join(''))}`;
 }
 
-function pageTitle(r: SimResult): string | null {
-  const got = r.events.find((e) => e.type === 'app' && e.action === 'http-response-received');
+/** What the client's browser got (another device fetching at the same time does not count). */
+function pageTitle(r: SimResult, client: string): string | null {
+  const got = r.events.find((e) => e.type === 'app' && e.action === 'http-response-received' && e.deviceId === client);
   const pdu = got && 'pduId' in got && got.pduId ? r.pdus.get(got.pduId) : undefined;
   if (!pdu) return null;
   const text = new TextDecoder('latin1').decode(pdu.bytes);
@@ -479,10 +492,30 @@ function pageTitle(r: SimResult): string | null {
   return /<title>([^<]*)<\/title>/i.exec(text)?.[1]?.trim() || 'example.com';
 }
 
-function dnsAnswer(r: SimResult, action: 'dns-answer' | 'dns-cache-hit' = 'dns-answer'): string | null {
-  const e = r.events.find((x) => x.type === 'app' && x.action === action);
+function dnsAnswer(r: SimResult, client: string, action: 'dns-answer' | 'dns-cache-hit' = 'dns-answer'): string | null {
+  const e = r.events.find((x) => x.type === 'app' && x.action === action && x.deviceId === client);
   const a = e?.type === 'app' ? e.info?.addresses : undefined;
   return Array.isArray(a) ? (a[0] ?? null) : null;
+}
+
+/**
+ * Whose fetch each reply belongs to, told the way the home router tells: by the outside port it gave the request. A reply
+ * is known before the router has sent it on, so a lost one still waits at the right device. Without a swap (one device,
+ * or inside a VPN tunnel) everything is the client's own.
+ */
+function assignClients(trips: Trip[]): void {
+  const byPort = new Map<number, string>();
+  for (const t of trips) {
+    const nat = t.steps.find((s): s is Extract<Step, { kind: 'nat' }> => s.kind === 'nat');
+    if (t.outward && nat?.which === 'from') byPort.set(nat.afterPort, t.origin);
+  }
+  for (const t of trips) {
+    if (t.outward) continue;
+    const pdu = t.steps[0]?.pdu;
+    const l4 = pdu && (layer(pdu, 'tcp') ?? layer(pdu, 'udp'));
+    const port = l4 && parseInt(field(l4, `${l4.protocol}.dstport`), 10);
+    t.client = (port ? byPort.get(port) : undefined) ?? t.client;
+  }
 }
 
 export interface StoryOptions {
@@ -494,16 +527,20 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
   const asked = new Map<string, number>();
   const start = r.events.find((e) => e.type === 'app' && e.action === 'start');
   const client = start?.type === 'app' ? start.deviceId : r.scenario.startDevice;
-  const trips = chosen(r, !!opts.arp)
-    .map((p) => trip(r, p, asked, client))
+  const clients = [client, ...(r.scenario.companion ? [r.scenario.companion.device] : [])];
+  const { packets, hellos } = chosen(r, !!opts.arp);
+  const trips = packets
+    .map((p) => trip(r, p, asked, clients))
     .filter((t): t is Trip => !!t)
     .sort((a, b) => a.sent - b.sent || a.start - b.start);
-  const tls = r.scenario.devices.flatMap((d) => d.apps).find((a) => a.kind === 'browser')?.tls;
-  if (tls) labelTls(trips, r, tls);
-  numberParts(trips, r);
-  const title = pageTitle(r);
+  for (const t of trips) if (hellos.has(t.packetId)) t.hello = true;
+  assignClients(trips);
+  const tls = r.scenario.devices.find((d) => d.id === client)?.apps.find((a) => a.kind === 'browser')?.tls;
+  if (tls) labelTls(trips, r, tls, client);
+  numberParts(trips, r, client);
+  const title = pageTitle(r, client);
   addLookups(trips, title);
-  const shown = streams(r) ? gatherStream(trips) : smallAcks(trips);
+  const shown = streams(r) ? gatherStream(trips, client) : smallAcks(trips);
   const url = start?.type === 'app' ? String(start.info?.url ?? '') : '';
   const wifiIfaces = new Set(r.scenario.devices.flatMap((d) => d.ifaces.filter((i) => i.wifi).map((i) => i.id)));
   const ifaceDevice = new Map(r.scenario.devices.flatMap((d) => d.ifaces.map((i) => [i.id, d.id] as const)));
@@ -518,18 +555,19 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
     })),
     site: url ? new URL(url).hostname : '',
     client,
+    clients,
     vpn: r.scenario.devices.some((d) => d.tunnel),
-    names: Object.fromEntries(r.scenario.devices.flatMap((d) => [...d.ifaces.map((i) => [i.ip, d.label]), ...(d.tunnel ? [[d.tunnel.ip, d.label]] : [])])),
+    names: Object.fromEntries(r.scenario.devices.flatMap((d) => [...d.ifaces.flatMap((i) => [i.ip, ...(i.aliases ?? [])].map((ip) => [ip, d.label])), ...(d.tunnel ? [[d.tunnel.ip, d.label]] : [])])),
     trips: shown,
     pageTitle: title,
     image: imageOf(r),
-    dnsAnswer: dnsAnswer(r),
+    dnsAnswer: dnsAnswer(r, client),
     dnsTtl: (() => {
-      const e = r.events.find((x) => x.type === 'app' && x.action === 'dns-answer');
+      const e = r.events.find((x) => x.type === 'app' && x.action === 'dns-answer' && x.deviceId === client);
       const ttl = e?.type === 'app' ? Number(e.info?.ttl) : NaN;
       return Number.isFinite(ttl) ? ttl : null;
     })(),
-    remembered: dnsAnswer(r, 'dns-cache-hit'),
+    remembered: dnsAnswer(r, client, 'dns-cache-hit'),
   };
 }
 
@@ -537,10 +575,10 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
  * The ACK that ends the hello is a whole packet. The rest run as small blocks, as in a stream: there is nothing to open, but
  * you see the receiver answer, so a sender that hears nothing has a visible reason to wait.
  */
-function smallAcks(trips: Trip[], hello = trips.find((t) => t.l4Label === 'ACK'), from: Chapter = 'dns'): Trip[] {
+function smallAcks(trips: Trip[], from: Chapter = 'dns'): Trip[] {
   let chapter = from;
   return trips.map((t) => {
-    if (t.l4Label !== 'ACK' || t === hello) {
+    if (t.l4Label !== 'ACK' || t.hello) {
       chapter = t.chapter;
       return t;
     }
@@ -550,43 +588,43 @@ function smallAcks(trips: Trip[], hello = trips.find((t) => t.l4Label === 'ACK')
 
 /**
  * The reply and the ACKs for it become one step from its first packet on. What else was said then (a TLS goodbye and the ACK
- * for that) goes on after it. A lookup stays in front of the stream.
+ * for that, another device's own fetch) goes on after it. A lookup stays in front of the stream.
  */
-function gatherStream(trips: Trip[]): Trip[] {
-  const hello = trips.find((t) => t.l4Label === 'ACK');
-  const inStream = (t: Trip): boolean => !!t.part || (t.l4Label === 'ACK' && t !== hello && t.outward);
+function gatherStream(trips: Trip[], client: string): Trip[] {
+  const inStream = (t: Trip): boolean => t.client === client && (!!t.part || (t.l4Label === 'ACK' && !t.hello && t.outward));
   const first = trips.findIndex((t) => t.part);
   if (first < 0) return smallAcks(trips);
   const packets = trips.slice(first).filter(inStream);
   const lookups = packets.flatMap((t) => t.steps.filter((s) => s.kind === 'lookup'));
   const stream: Trip = { ...trips[first]!, part: undefined, retry: false, timedOut: false, lost: false, locked: false, steps: [...lookups, { kind: 'flow', packets }] };
-  return [...smallAcks(trips.slice(0, first), hello), stream, ...smallAcks(trips.slice(first).filter((t) => !inStream(t)), hello, 'page')];
+  return [...smallAcks(trips.slice(0, first)), stream, ...smallAcks(trips.slice(first).filter((t) => !inStream(t)), 'page')];
 }
 
 /**
  * Before a server answers it does its job. The resolver finds the name in its book, for each answer it sends; the web
- * server takes the file off its shelf once, for the first packet of the reply. Both show what the real messages carry.
+ * server takes the file off its shelf once per fetch, for the first packet of the reply. Both show what the real messages carry.
  */
 function addLookups(trips: Trip[], title: string | null): void {
-  let path = '/';
-  let served = false;
+  const path = new Map<string, string>();
+  const served = new Set<string>();
   for (const t of trips) {
     const m = t.message;
-    if (m?.kind === 'http-request') path = m.path;
+    if (m?.kind === 'http-request') path.set(t.client, m.path);
     if (m?.kind === 'dns-answer') t.steps.unshift({ kind: 'lookup', device: t.origin, what: 'dns', ask: m.name, found: t.card ?? '' });
-    if (m?.kind === 'http-response' && !served) {
-      served = true;
-      t.steps.unshift({ kind: 'lookup', device: t.origin, what: 'web', ask: path, found: title ?? t.card ?? '' });
+    if (m?.kind === 'http-response' && !served.has(t.client)) {
+      served.add(t.client);
+      t.steps.unshift({ kind: 'lookup', device: t.origin, what: 'web', ask: path.get(t.client) ?? '/', found: (t.client === trips[0]?.client ? title : null) ?? t.card ?? '' });
     }
   }
 }
 
 /**
  * A reply too big for one packet goes out in numbered parts (by where each sits in the byte stream; a resend keeps
- * its number). The first part's card says "200 OK 1/2", the rest just "2/2".
+ * its number). The first part's card says "200 OK 1/2", the rest just "2/2". Only the client's own page: a device
+ * fetching alongside gets the plain one-packet page.
  */
-function numberParts(trips: Trip[], r: SimResult): void {
-  const parts = trips.filter((t) => t.chapter === 'page' && !t.outward);
+function numberParts(trips: Trip[], r: SimResult, client: string): void {
+  const parts = trips.filter((t) => t.chapter === 'page' && !t.outward && t.client === client);
   const seqOf = (t: Trip): number => r.packets.get(t.packetId)?.tcp?.relSeq ?? 0;
   const seqs = [...new Set(parts.map(seqOf))].sort((a, b) => a - b);
   if (streams(r) && seqs.length) {
@@ -638,7 +676,7 @@ const RANK = (rec: OpenedRecord): number =>
  * mark it locked when what it carries is encrypted, and put the handshake into its own chapter. Segments of the same
  * flight get numbered ("certificate 2/4").
  */
-function labelTls(trips: Trip[], r: SimResult, session: TlsSession): void {
+function labelTls(trips: Trip[], r: SimResult, session: TlsSession, client: string): void {
   const opened = {
     client: openRecords(session, 'client', sessionStream(session, 'client')),
     server: openRecords(session, 'server', sessionStream(session, 'server')),
@@ -659,7 +697,7 @@ function labelTls(trips: Trip[], r: SimResult, session: TlsSession): void {
   const groups = new Map<string, Trip[]>();
   for (const t of trips) {
     const info = r.packets.get(t.packetId)?.tcp;
-    if (!info || !t.dataBytes) continue;
+    if (!info || !t.dataBytes || t.client !== client) continue;
     const side = t.outward ? 'client' : 'server';
     const from = info.relSeq - 1;
     const to = from + t.dataBytes;

@@ -180,6 +180,9 @@ export function startHttpServer(host: Host, spec: HttpServerSpec, mss: number): 
         if (answered || !httpMessageComplete(received)) return;
         answered = true;
         const reqLine = toAscii(received, 0, Math.min(received.length, 128)).split('\r\n')[0] ?? '';
+        // Several sites on one server: the Host header says which one was asked for.
+        const site = /^Host: (\S+)/im.exec(toAscii(received, 0, Math.min(received.length, 512)))?.[1]?.toLowerCase();
+        const response = (site ? spec.responses?.[site] : undefined) ?? spec.response;
         sim.emit({
           type: 'app',
           deviceId: host.id,
@@ -190,10 +193,10 @@ export function startHttpServer(host: Host, spec: HttpServerSpec, mss: number): 
         });
         sim.after(spec.processing, () => {
           const msg = sim.newPacket(host.id, 'stream', 'HTTP 200 OK (application bytes)');
-          const pduId = sim.pdu(msg.id, spec.response, 'http');
-          sim.emit({ type: 'app', deviceId: host.id, app: 'http-server', action: 'http-response-sent', pduId, info: { bytes: spec.response.length } });
+          const pduId = sim.pdu(msg.id, response, 'http');
+          sim.emit({ type: 'app', deviceId: host.id, app: 'http-server', action: 'http-response-sent', pduId, info: { bytes: response.length } });
           sim.emit({ type: 'encapsulate', deviceId: host.id, packetId: msg.id, layer: 5, protocol: 'http', pduId });
-          c.write(spec.response, 'HTTP 200 OK');
+          c.write(response, 'HTTP 200 OK');
           c.close(); // "Connection: close": the server ends its side once the response is queued
         });
       },

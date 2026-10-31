@@ -549,7 +549,7 @@ export class TcpConnection {
         flags,
       },
     });
-    this.host.ipOutput(6, this.remoteIp, tcpBytes, pk.id, true, this.opts.app);
+    this.host.ipOutput(6, this.remoteIp, tcpBytes, pk.id, true, this.opts.app, this.localIp);
     return pk.id;
   }
 

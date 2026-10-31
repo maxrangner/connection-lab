@@ -262,7 +262,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
     const dns = trip.chapter === 'dns';
     const askedAgain = dns && story.trips.slice(ti + 1).some((x) => x.chapter === 'dns' && x.retry);
     if (trip.lost && !story.pageTitle && trip.l4Label !== 'ACK' && !resent.has(trip.packetId) && !askedAgain) {
-      ring({ kind: 'wait', device: dns ? story.client : trip.origin, seconds: 0, giveUp: true, mood: 'cry' });
+      ring({ kind: 'wait', device: dns ? trip.client : trip.origin, seconds: 0, giveUp: true, mood: 'cry' });
     }
     // Arrived: the receiver reacts, and the picture lingers a moment so you can see it.
     const last = segs[segs.length - 1];
@@ -270,7 +270,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
       const face = arrivalFace(trip, last.step.device, arrived, filled);
       if (face) {
         // The server has proved who it is: the stamp says so, and stays long enough to read.
-        const stamp = trip.identity && last.step.device === story.client ? trip.identity : undefined;
+        const stamp = trip.identity && last.step.device === trip.client ? trip.identity : undefined;
         reactions.push({ t: last.t1, device: last.step.device, face, ...(stamp ? { stamp } : {}) });
         t += stamp ? 1.8 : 0.6;
       }
@@ -389,10 +389,10 @@ function planFlow(
     for (let m = 1; m < n; m++) gap ||= !filled.has(m);
     // A hole in what has come so far, or a part that had already come.
     const odd = gap || !fresh;
-    if (odd && !puzzled) reactions.push({ t: landed, device: story.client, face: 'confused' });
+    if (odd && !puzzled) reactions.push({ t: landed, device: trip.client, face: 'confused' });
     puzzled = odd;
     if (fresh && filled.size === trip.part.of) {
-      reactions.push({ t: landed, device: story.client, face: 'love' });
+      reactions.push({ t: landed, device: trip.client, face: 'love' });
       cues.push({ t: landed, sound: 'chime' });
     }
     return { trip, hops, t0, t1: landed, landed };

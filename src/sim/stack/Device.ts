@@ -47,7 +47,7 @@ export abstract class Device {
   }
 
   ownsIp(ip: Ip4): boolean {
-    return this.spec.ifaces.some((i) => i.ip === ip);
+    return this.spec.ifaces.some((i) => i.ip === ip || i.aliases?.includes(ip));
   }
 
   newTimerId(kind: string): string {

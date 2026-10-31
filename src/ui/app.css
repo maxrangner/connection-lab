@@ -1136,6 +1136,21 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* The Setup menu's pair of cards: two devices at once */
+.pair-card {
+  fill: var(--app);
+  stroke: #3b7a50;
+  stroke-width: 2.5;
+}
+
+.pair-back {
+  fill: #8fd0a6;
+}
+
+.pair-dot {
+  fill: #fffdf8;
+}
+
 /* The Setup menu's ARP bubble */
 .bubble {
   fill: #fffdf8;

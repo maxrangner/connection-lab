@@ -46,6 +46,13 @@ export function drawQuestion(g: SVGGElement): void {
   el('text', { x: 0, y: -6, dy: '0.35em', 'text-anchor': 'middle', class: 'bubble-text' }, g).textContent = '?';
 }
 
+/** Two cards, one behind the other: two devices fetching at once. */
+export function drawPair(g: SVGGElement): void {
+  el('rect', { x: -10, y: -24, width: 30, height: 20, rx: 5, class: 'pair-card pair-back' }, g);
+  el('rect', { x: -22, y: -8, width: 30, height: 20, rx: 5, class: 'pair-card' }, g);
+  el('circle', { cx: -14, cy: 2, r: 4, class: 'pair-dot' }, g);
+}
+
 /** A long page: the bigger page. */
 export function drawPage(g: SVGGElement): void {
   el('path', { d: 'M-17 -27 H9 L19 -17 V27 H-17 Z', class: 'page-sheet' }, g);

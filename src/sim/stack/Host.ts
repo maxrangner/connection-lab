@@ -94,8 +94,8 @@ export class Host extends Device {
     this.tcpConns.delete(c.key);
   }
 
-  /** Wraps a transport segment in an IPv4 header and routes it. */
-  ipOutput(protocol: number, dst: Ip4, l4: Uint8Array, packetId: string, df: boolean, app?: Protocol): void {
+  /** Wraps a transport segment in an IPv4 header and routes it. A socket bound to one of several addresses sends from that one. */
+  ipOutput(protocol: number, dst: Ip4, l4: Uint8Array, packetId: string, df: boolean, app?: Protocol, src: Ip4 = this.ip): void {
     const sim = this.sim;
     if (protocol === IPPROTO_TCP) {
       sim.emit({
@@ -104,11 +104,11 @@ export class Host extends Device {
         packetId,
         layer: 4,
         protocol: 'tcp',
-        pduId: sim.pdu(packetId, l4, 'tcp', { srcIp: this.ip, dstIp: dst, appHint: app }),
+        pduId: sim.pdu(packetId, l4, 'tcp', { srcIp: src, dstIp: dst, appHint: app }),
       });
     }
     this.ipId = (this.ipId + 1) & 0xffff;
-    const ip = buildIpv4({ id: this.ipId, df, ttl: this.spec.initialTtl ?? 64, protocol, src: this.ip, dst }, l4);
+    const ip = buildIpv4({ id: this.ipId, df, ttl: this.spec.initialTtl ?? 64, protocol, src, dst }, l4);
     sim.emit({
       type: 'encapsulate',
       deviceId: this.id,

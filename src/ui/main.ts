@@ -3,7 +3,7 @@ import { fetchWebPage, runScenario, type Cut, type ManualFault } from '../sim';
 import { el } from './svg';
 import { clamp01, easeInOut, easeOutBack, iso, lerp } from './project';
 import { HexCard } from './hexCard';
-import { drawPadlock, drawPage, drawQuestion, drawSatellite, drawScissors, drawShield, drawSpyglass } from './icons';
+import { drawPadlock, drawPage, drawPair, drawQuestion, drawSatellite, drawScissors, drawShield, drawSpyglass } from './icons';
 import { Menu } from './menus';
 import { NetworkScene, type Camera } from './NetworkScene';
 import { Sound } from './sound';
@@ -23,10 +23,10 @@ const LINGER = 1.4;
 const BACK_GRACE = 1;
 
 /** What the next run is like, set from the Setup menu between runs: changing it mid-run would rewrite what happened. */
-type Setting = 'https' | 'big' | 'slow' | 'vpn' | 'arp';
+type Setting = 'https' | 'big' | 'slow' | 'vpn' | 'arp' | 'together';
 type Features = Record<Setting, boolean>;
-const SETTINGS: Setting[] = ['https', 'big', 'slow', 'vpn', 'arp'];
-const features: Features = { https: false, big: false, slow: false, vpn: false, arp: false };
+const SETTINGS: Setting[] = ['https', 'big', 'slow', 'vpn', 'arp', 'together'];
+const features: Features = { https: false, big: false, slow: false, vpn: false, arp: false, together: false };
 /** The line the spyglass is on, if any. */
 let spyLine: string | null = null;
 /** The visual time it was put there: it can only read what passes from then on. */
@@ -78,7 +78,7 @@ function remembers(): boolean {
   return !!k && k.site === siteName() && performance.now() < k.until;
 }
 function simulate(): void {
-  const scenario = fetchWebPage({ site: siteName(), revisit, slow: features.slow, vpn: features.vpn, https: features.https, from: client, warmArp });
+  const scenario = fetchWebPage({ site: siteName(), revisit, slow: features.slow, vpn: features.vpn, https: features.https, from: client, warmArp, together: features.together });
   const plan = { randomLoss: 0, decided, cuts, manual: faults };
   // Long enough for TCP to give up on a dead line (15 resends, backing off to a minute apart).
   story = buildStory(runScenario(scenario, { seed: runSeed, faults: plan, maxTime: 1000 }), { arp: features.arp });
@@ -251,6 +251,7 @@ const SETUP: { id: Setting; label: string; draw: (g: SVGGElement) => void; span:
   { id: 'slow', label: 'Satellite', draw: drawSatellite, span: 56 },
   { id: 'vpn', label: 'VPN', draw: drawShield, span: 34 },
   { id: 'arp', label: 'Show ARP', draw: drawQuestion, span: 34 },
+  { id: 'together', label: 'Together', draw: drawPair, span: 34 },
 ];
 function setSetting(id: Setting, on: boolean): void {
   features[id] = on;
@@ -700,6 +701,8 @@ function beginRun(): void {
   cuts = [...cutLines].map((link) => ({ link, from: 0 }));
   warmArp = cutLines.size > 0;
   revisit = remembers();
+  // A device joining in looks everything up afresh: it remembers nothing from before.
+  if (features.together) known.delete(client === 'laptop' ? 'phone' : 'laptop');
   simulate();
   scene.setStory(story, tl);
   showFeatures();

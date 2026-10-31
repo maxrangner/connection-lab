@@ -412,10 +412,10 @@ export class NetworkScene {
     return v3(x, y, 1.6);
   }
 
-  /** The middle of the device's screen. */
-  private screenPoint(): Vec3 {
-    const d = this.tl.pos.get(this.tl.client) ?? { x: 0, y: 0 };
-    return this.tl.kind.get(this.tl.client) === 'phone' ? v3(d.x, d.y + 0.2, 1.3) : v3(d.x, d.y - 0.6, 0.95);
+  /** The middle of a device's screen. */
+  private screenPoint(device = this.tl.client): Vec3 {
+    const d = this.tl.pos.get(device) ?? { x: 0, y: 0 };
+    return this.tl.kind.get(device) === 'phone' ? v3(d.x, d.y + 0.2, 1.3) : v3(d.x, d.y - 0.6, 0.95);
   }
 
   /** The parts of what came in several packets, and when each one landed on the sheet (not there: not yet). */
@@ -530,7 +530,7 @@ export class NetworkScene {
       p = this.blockAt(hit.seg.flow[0]!, v) ?? packetPos(this.tl, hit.seg, hit.k);
     } else if (hit) {
       p = packetPos(this.tl, hit.seg, hit.k);
-      if (hit.seg.step.kind === 'read' && hit.seg.step.device === this.tl.client) p = v3(p.x, p.y, lerp(p.z, 1.2, hit.k));
+      if (hit.seg.step.kind === 'read' && hit.seg.step.device === hit.seg.trip.client) p = v3(p.x, p.y, lerp(p.z, 1.2, hit.k));
     } else {
       p = v3(laptop.x, laptop.y, 1.6);
     }
@@ -705,7 +705,7 @@ export class NetworkScene {
     this.renderMoods(v);
     this.renderSpy();
     for (const [id, screen] of this.screens) {
-      if (id === tl.client && v >= 0) continue;
+      if (this.story.clients.includes(id) && v >= 0) continue;
       this.blank(screen);
       const known = this.remembered.get(id);
       screen.face.classList.toggle('remembers', !!known);
@@ -714,19 +714,23 @@ export class NetworkScene {
       screen.dnsAddr.textContent = known.ip;
       screen.dns.setAttribute('opacity', '1');
     }
-    const screen = this.screens.get(tl.client);
-    if (!screen || v < 0) return;
-    screen.face.classList.toggle('remembers', this.remembered.has(tl.client));
-    // A page in several parts shows once the finished sheet has slid into the screen.
-    const pageAt = parts ? clamp01((v - parts.complete - 0.7) / 0.25) : this.screenAfterRead(v, 'page');
-    const page = this.story.pageTitle ? pageAt : 0;
-    screen.page.setAttribute('opacity', page.toFixed(3));
-    // On a second visit the laptop already knows the address from the start.
-    const known = this.story.remembered ? (v >= 0 ? 1 : 0) : this.screenAfterRead(v, 'dns');
-    screen.dns.setAttribute('opacity', (known * (1 - page)).toFixed(3));
-    const last = tl.segs[tl.segs.length - 1];
-    const failed = !this.story.pageTitle && !!last && v >= last.t1;
-    screen.fail.setAttribute('opacity', failed ? '1' : '0');
+    if (v < 0) return;
+    for (const id of this.story.clients) {
+      const screen = this.screens.get(id);
+      if (!screen) continue;
+      const own = id === tl.client;
+      screen.face.classList.toggle('remembers', this.remembered.has(id));
+      // A page in several parts shows once the finished sheet has slid into the screen. A device fetching alongside gets the plain page.
+      const pageAt = own && parts ? clamp01((v - parts.complete - 0.7) / 0.25) : this.screenAfterRead(v, 'page', id);
+      const page = own && !this.story.pageTitle ? 0 : pageAt;
+      screen.page.setAttribute('opacity', page.toFixed(3));
+      // On a second visit the laptop already knows the address from the start.
+      const known = own && this.story.remembered ? 1 : this.screenAfterRead(v, 'dns', id);
+      screen.dns.setAttribute('opacity', (known * (1 - page)).toFixed(3));
+      const last = tl.segs[tl.segs.length - 1];
+      const failed = own && !this.story.pageTitle && !!last && v >= last.t1;
+      screen.fail.setAttribute('opacity', failed ? '1' : '0');
+    }
   }
 
   private blank(screen: Screen): void {
@@ -765,11 +769,11 @@ export class NetworkScene {
     t.textContent = glyph;
   }
 
-  /** 0..1: how far the laptop has shown what a card of this chapter brought (it fades in as the card goes in). */
-  private screenAfterRead(v: number, chapter: Trip['chapter']): number {
+  /** 0..1: how far a device has shown what a card of this chapter brought it (it fades in as the card goes in). */
+  private screenAfterRead(v: number, chapter: Trip['chapter'], device: string): number {
     let o = 0;
     for (const s of this.tl.segs) {
-      if (s.step.kind !== 'read' || s.trip.chapter !== chapter || s.step.device !== this.tl.client) continue;
+      if (s.step.kind !== 'read' || s.trip.chapter !== chapter || s.step.device !== device) continue;
       o = Math.max(o, clamp01((v - lerp(s.t0, s.t1, 0.8)) / 0.4));
     }
     return o;
@@ -857,7 +861,7 @@ export class NetworkScene {
       const d = this.tl.pos.get(step.device) ?? { x: 0, y: 0 };
       const part = seg.trip.part;
       // A part of a bigger page goes onto its band of the sheet; anything else into the screen or the device.
-      const target = step.device !== this.tl.client ? v3(d.x, d.y, this.deviceTop(step.device)) : part ? this.paperSlot(part.n, part.of) : this.screenPoint();
+      const target = step.device !== seg.trip.client ? v3(d.x, d.y, this.deviceTop(step.device)) : part ? this.paperSlot(part.n, part.of) : this.screenPoint(step.device);
       pose.pos = v3(lerp(pose.pos.x, target.x, sink), lerp(pose.pos.y, target.y, sink), lerp(pose.pos.z, target.z, sink));
       for (const p of parts) {
         if (p.key !== 'card') continue;

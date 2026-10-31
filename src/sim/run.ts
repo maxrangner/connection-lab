@@ -55,10 +55,13 @@ export function runScenario(scenario: Scenario, opts: RunOptions): SimResult {
       }
     }
   }
-  const start = world.devices.get(scenario.startDevice);
-  const browser = start ? scenario.devices.find((d) => d.id === start.id)?.apps.find((a) => a.kind === 'browser') : undefined;
-  if (start instanceof Host && browser?.kind === 'browser') {
-    world.sim.at(0, () => startBrowser(start, browser, scenario.tcp.clientMss));
+  const starts = [{ device: scenario.startDevice, at: 0 }, ...(scenario.companion ? [scenario.companion] : [])];
+  for (const s of starts) {
+    const start = world.devices.get(s.device);
+    const browser = start ? scenario.devices.find((d) => d.id === start.id)?.apps.find((a) => a.kind === 'browser') : undefined;
+    if (start instanceof Host && browser?.kind === 'browser') {
+      world.sim.at(s.at, () => startBrowser(start, browser, scenario.tcp.clientMss));
+    }
   }
   world.sim.run(opts.maxTime ?? 600);
   return {

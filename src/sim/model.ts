@@ -12,6 +12,8 @@ export interface IfaceSpec {
   prefixLen: number;
   /** A Wi-Fi radio instead of an Ethernet port: the access point side or a station (phone) side. */
   wifi?: 'ap' | 'station';
+  /** More addresses this interface answers to (`ip addr add`): one server, several sites. */
+  aliases?: Ip4[];
 }
 
 export interface RouteSpec {
@@ -47,7 +49,15 @@ export type AppSpec =
       tls?: TlsSession;
     }
   | { kind: 'dns-server'; records: Record<string, { ips: Ip4[]; ttl: number }>; processing: number }
-  | { kind: 'http-server'; response: Uint8Array; processing: number; /** Also serve HTTPS on 443 with this session. */ tls?: TlsSession };
+  | {
+      kind: 'http-server';
+      response: Uint8Array;
+      processing: number;
+      /** Also serve HTTPS on 443 with this session. */
+      tls?: TlsSession;
+      /** Other sites on the same server, by the name in the request's Host header (virtual hosting). */
+      responses?: Record<string, Uint8Array>;
+    };
 
 export interface DeviceSpec {
   id: string;
@@ -83,4 +93,6 @@ export interface Scenario {
   tcp: TcpSettings;
   /** Device whose browser app starts at t = 0. */
   startDevice: string;
+  /** A second device that opens its own page a moment later, so both share the home router at once. */
+  companion?: { device: string; at: number };
 }

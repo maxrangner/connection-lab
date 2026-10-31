@@ -71,7 +71,15 @@ export interface FetchWebPageOptions {
   warmArp?: boolean;
   /** Which device opens the page: the laptop on its Ethernet cable, or the phone over Wi-Fi. */
   from?: 'laptop' | 'phone';
+  /**
+   * The other device opens a page too, a few milliseconds later: plain http://example.com/, with no VPN and nothing
+   * remembered, so the home router has two conversations to tell apart at once.
+   */
+  together?: boolean;
 }
+
+/** How long after the first device the other one starts, in seconds: close enough that their packets interleave. */
+export const COMPANION_DELAY = 0.004;
 
 /** What the scenario needs to know about each real site. */
 const SITES = {
@@ -103,12 +111,23 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
       },
     ],
   });
+  // The other device, asking for the plain page on its own. When the server is another site's, it holds example.com's
+  // address too and serves it by the Host header, as one server hosting several sites does.
+  const other = from === 'phone' ? 'laptop' : 'phone';
+  const alias = opts.together && site.ip !== CAPTURED_FROM_IP ? CAPTURED_FROM_IP : undefined;
+  const companion = (gateway: { ip: string; mac: string }) => ({
+    ...(warm ? { arp: { [gateway.ip]: gateway.mac } } : {}),
+    apps: [{ kind: 'browser' as const, url: SITES['example.com'].url, resolver: ADDR.resolver.ip, request: ascii(HTTP_REQUEST) }],
+  });
+  const appsOf = (device: 'laptop' | 'phone', gateway: { ip: string; mac: string }) =>
+    device === from ? browser(gateway) : opts.together ? companion(gateway) : { apps: [] };
   // On a revisit the router still remembers whichever device asked last time.
   const remembered = from === 'phone' ? ADDR.phone : ADDR.laptop;
   return {
     id: 'fetch-web-page',
     title: `Fetch ${url}`,
     startDevice: from,
+    ...(opts.together ? { companion: { device: other, at: COMPANION_DELAY } } : {}),
     tcp: { clientMss: opts.vpn ? Math.min(mss, 1380) : mss, serverMss: 1460 },
     devices: [
       {
@@ -122,7 +141,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           { network: '192.168.1.0', prefixLen: 24, iface: 'laptop.eth0' },
           { network: '0.0.0.0', prefixLen: 0, via: ADDR.homeLan.ip, iface: 'laptop.eth0' },
         ],
-        ...(from === 'laptop' ? browser(ADDR.homeLan) : { apps: [] }),
+        ...appsOf('laptop', ADDR.homeLan),
       },
       {
         id: 'phone',
@@ -135,7 +154,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           { network: '192.168.1.0', prefixLen: 24, iface: 'phone.wlan0' },
           { network: '0.0.0.0', prefixLen: 0, via: ADDR.homeWlan.ip, iface: 'phone.wlan0' },
         ],
-        ...(from === 'phone' ? browser(ADDR.homeWlan) : { apps: [] }),
+        ...appsOf('phone', ADDR.homeWlan),
       },
       {
         id: 'home',
@@ -156,7 +175,11 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           { network: '203.0.113.0', prefixLen: 24, iface: 'home.wan' },
           { network: '0.0.0.0', prefixLen: 0, via: ADDR.ispCustomer.ip, iface: 'home.wan' },
         ],
-        arp: { [ADDR.ispCustomer.ip]: ADDR.ispCustomer.mac, ...(warm ? { [remembered.ip]: remembered.mac } : {}) },
+        arp: {
+          [ADDR.ispCustomer.ip]: ADDR.ispCustomer.mac,
+          ...(warm ? { [remembered.ip]: remembered.mac } : {}),
+          ...(warm && opts.together ? { [ADDR[other].ip]: ADDR[other].mac } : {}),
+        },
         nat: { inside: ['home.lan', 'home.wlan'], outside: 'home.wan' },
         apps: [],
       },
@@ -189,6 +212,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           [ADDR.resolver.ip]: ADDR.resolver.mac,
           [ADDR.vpn.ip]: ADDR.vpn.mac,
           [server.ip]: server.mac,
+          ...(alias ? { [alias]: server.mac } : {}),
         },
         apps: [],
       },
@@ -245,7 +269,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
         kind: 'web-server',
         layout: { x: 1480, y: 735 },
         ifaces: [
-          { id: 'server.eth0', name: 'eth0', mac: server.mac, ip: server.ip, prefixLen: 32 },
+          { id: 'server.eth0', name: 'eth0', mac: server.mac, ip: server.ip, prefixLen: 32, ...(alias ? { aliases: [alias] } : {}) },
           { id: 'server.eth1', name: 'eth1', mac: ADDR.serverFromVpn.mac, ip: server.ip, prefixLen: 32 },
         ],
         routes: [
@@ -253,7 +277,15 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           { network: ADDR.vpn.ip, prefixLen: 32, iface: 'server.eth1' },
         ],
         arp: { [ADDR.ispToServer.ip]: ADDR.ispToServer.mac, [ADDR.vpn.ip]: ADDR.vpnToServer.mac },
-        apps: [{ kind: 'http-server', processing: 0.0005, response: fromBase64(site.response), ...(tls ? { tls } : {}) }],
+        apps: [
+          {
+            kind: 'http-server',
+            processing: 0.0005,
+            response: fromBase64(site.response),
+            ...(tls ? { tls } : {}),
+            ...(alias ? { responses: { 'example.com': fromBase64(HTTP_RESPONSE_BASE64) } } : {}),
+          },
+        ],
       },
     ],
     links: [
