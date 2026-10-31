@@ -6,8 +6,22 @@ import { ARP_REPLY, ARP_REQUEST, buildArp, parseArp } from '../proto/arp';
 import { buildEthernet, ETHERTYPE_ARP, ETHERTYPE_IPV4, parseEthernet } from '../proto/ethernet';
 import { buildIcmp, ICMP_ECHO_REPLY, icmpTypeName, isIcmpError, parseIcmp, type ICMP_DEST_UNREACHABLE, type ICMP_TIME_EXCEEDED, type ParsedIcmp } from '../proto/icmp';
 import { buildIpv4, IPPROTO_ICMP, parseIpv4, type ParsedIpv4 } from '../proto/ipv4';
-import { buildWifi, parseWifi } from '../proto/wifi';
-import type { World } from './World';
+import {
+  buildWifi,
+  buildWifiAck,
+  parseWifi,
+  parseWifiAck,
+  WIFI_ACK_TIMEOUT,
+  WIFI_CW_MAX,
+  WIFI_CW_MIN,
+  WIFI_RETRY_LIMIT,
+  WIFI_SIFS,
+  WIFI_SLOT,
+  wifiFrameKind,
+  type WifiHeader,
+} from '../proto/wifi';
+import { backoffSlots } from '../faults';
+import type { Link, World } from './World';
 
 const ARP_TIMEOUT = 1; // seconds between ARP retries
 const ARP_ATTEMPTS = 3;
@@ -18,6 +32,21 @@ interface PendingArp {
   attempts: number;
   timer?: number;
   timerId?: string;
+}
+
+/** A frame waiting to go out of a Wi-Fi radio on a noisy link, or on the air waiting for its Ack. */
+interface WifiTx {
+  packetId: string;
+  header: WifiHeader;
+  payload: Uint8Array;
+  /** The copy on the air now: its snapshot. */
+  frameId: string;
+  /** Retries so far: 0 for the first copy. */
+  attempt: number;
+  /** The contention window the next backoff is drawn from. */
+  cw: number;
+  backoff: number;
+  timer?: number;
 }
 
 /** Common IPv4 + ARP + Ethernet behaviour shared by hosts and routers. */
@@ -35,6 +64,13 @@ export abstract class Device {
   private wifiSeq = new Map<string, number>();
   /** IPv4 identification for the packets the device makes itself (its ICMP messages). A host counts its own. */
   private ownIpId: number;
+  /**
+   * Per Wi-Fi radio on a noisy link: the frames waiting to go, the head on the air until its Ack comes or it is given up
+   * (stop-and-wait, as 802.11 does with one frame at a time).
+   */
+  private wifiOut = new Map<string, WifiTx[]>();
+  /** The newest sequence number heard from each transmitter over Wi-Fi, to spot a frame sent again after its Ack was lost. */
+  private wifiHeard = new Map<Mac, number>();
 
   constructor(
     readonly world: World,
@@ -118,16 +154,32 @@ export abstract class Device {
     sim.emit({ type: 'rx', deviceId: this.id, iface: ifaceId, linkId: link?.spec.id ?? '', packetId, frameId });
     const iface = this.iface(ifaceId);
     const l2 = iface.wifi ? 'wifi' : 'ethernet';
-    const eth = iface.wifi ? parseWifi(frame) : parseEthernet(frame);
+    if (iface.wifi && link?.arq && wifiFrameKind(frame) === 'ack') {
+      this.onWifiAck(iface, link, frame, packetId, frameId);
+      return;
+    }
+    const wifi = iface.wifi ? parseWifi(frame) : undefined;
+    const eth = wifi ?? parseEthernet(frame);
     if (!eth.fcsValid) {
       sim.emit({ type: 'drop', packetId, reason: 'bad-checksum', deviceId: this.id, frameId });
       return;
     }
     // Over Wi-Fi the radio receiver (address 1) must be us too.
-    const heard = !('addr1' in eth) || eth.addr1 === iface.mac || eth.addr1 === BROADCAST_MAC;
+    const heard = !wifi || wifi.addr1 === iface.mac || wifi.addr1 === BROADCAST_MAC;
     if (!heard || (eth.dst !== iface.mac && eth.dst !== BROADCAST_MAC)) {
       sim.emit({ type: 'drop', packetId, reason: 'not-for-me', deviceId: this.id, frameId });
       return;
+    }
+    if (wifi && link?.arq && wifi.addr1 === iface.mac) {
+      // 802.11: every unicast frame heard gets an Ack after SIFS, a copy sent again (Retry bit) included, or the sender would
+      // keep trying; the copy itself is dropped by its sequence number. Group-addressed frames are never acknowledged.
+      const duplicate = wifi.retry && this.wifiHeard.get(wifi.addr2) === wifi.seq;
+      this.wifiHeard.set(wifi.addr2, wifi.seq);
+      this.sendWifiAck(iface, link, wifi.addr2);
+      if (duplicate) {
+        sim.emit({ type: 'drop', packetId, reason: 'duplicate-frame', deviceId: this.id, linkId: link.spec.id, frameId });
+        return;
+      }
     }
     if (eth.type === ETHERTYPE_ARP) {
       const arpBytes = frame.slice(eth.payloadStart, eth.payloadStart + 28);
@@ -270,22 +322,100 @@ export abstract class Device {
   }
 
   protected sendFrame(iface: IfaceSpec, dstMac: Mac, type: number, payload: Uint8Array, packetId: string): void {
+    const link = this.world.ifaceLink.get(iface.id);
+    if (!link) throw new Error(`${iface.id} has no link`);
     let frame: Uint8Array;
+    let header: WifiHeader | undefined;
     if (iface.wifi) {
       const seq = this.wifiSeq.get(iface.id) ?? 0;
       this.wifiSeq.set(iface.id, (seq + 1) & 0xfff);
       // Going up, address 1 is the access point and 3 the real destination; coming down, 1 is the phone and 3 the sender.
       // Here the access point is built into the router, so the access point's MAC is the router's own (its BSSID).
       const up = iface.wifi === 'station';
-      frame = buildWifi({ toAp: up, addr1: up ? this.bssid(iface) : dstMac, addr2: iface.mac, addr3: up ? dstMac : iface.mac, seq, type }, payload);
+      header = { toAp: up, addr1: up ? this.bssid(iface) : dstMac, addr2: iface.mac, addr3: up ? dstMac : iface.mac, seq, type };
+      frame = buildWifi(header, payload);
     } else {
       frame = buildEthernet({ dst: dstMac, src: iface.mac, type }, payload);
     }
     const protocol = iface.wifi ? 'wifi' : 'ethernet';
     const frameId = this.sim.pdu(packetId, frame, protocol);
     this.sim.emit({ type: 'encapsulate', deviceId: this.id, packetId, layer: 2, protocol, pduId: frameId });
-    const link = this.world.ifaceLink.get(iface.id);
-    if (!link) throw new Error(`${iface.id} has no link`);
+    if (header && link.arq) {
+      // A noisy radio: the frame queues behind whatever is still waiting for its Ack.
+      const out = this.wifiOut.get(iface.id) ?? [];
+      this.wifiOut.set(iface.id, out);
+      out.push({ packetId, header, payload, frameId, attempt: 0, cw: WIFI_CW_MIN, backoff: 0 });
+      if (out.length === 1) this.wifiStart(iface, link);
+      return;
+    }
     link.transmit(iface.id, frame, packetId, frameId);
+  }
+
+  /** Puts the head of the radio's queue on the air (its first copy, or one more with the Retry bit) and waits for the Ack. */
+  private wifiStart(iface: IfaceSpec, link: Link): void {
+    const tx = this.wifiOut.get(iface.id)?.[0];
+    if (!tx) return;
+    let frame: Uint8Array;
+    if (tx.attempt === 0) {
+      frame = buildWifi(tx.header, tx.payload);
+    } else {
+      frame = buildWifi({ ...tx.header, retry: true }, tx.payload);
+      tx.frameId = this.sim.pdu(tx.packetId, frame, 'wifi');
+      this.sim.emit({ type: 'wifi:retry', deviceId: this.id, linkId: link.spec.id, packetId: tx.packetId, frameId: tx.frameId, attempt: tx.attempt, backoff: tx.backoff });
+    }
+    const txEnd = link.transmit(iface.id, frame, tx.packetId, tx.frameId, { attempt: tx.attempt }) ?? this.sim.now;
+    // Nobody acknowledges a frame to everyone: it is sent once and the next one follows.
+    if (tx.header.addr1 === BROADCAST_MAC) {
+      this.sim.at(txEnd, () => this.wifiNext(iface, link));
+      return;
+    }
+    tx.timer = this.sim.at(txEnd + WIFI_ACK_TIMEOUT, () => this.wifiTimeout(iface, link, tx));
+  }
+
+  /** No Ack came: try again after a backoff with a doubled contention window, or give up after dot11ShortRetryLimit tries. */
+  private wifiTimeout(iface: IfaceSpec, link: Link, tx: WifiTx): void {
+    if (tx.attempt >= WIFI_RETRY_LIMIT) {
+      this.sim.emit({ type: 'drop', packetId: tx.packetId, reason: 'retry-limit', deviceId: this.id, linkId: link.spec.id, frameId: tx.frameId });
+      this.wifiNext(iface, link);
+      return;
+    }
+    tx.attempt++;
+    tx.backoff = backoffSlots(this.world.seed, link.spec.id, tx.packetId, tx.attempt, tx.cw) * WIFI_SLOT;
+    tx.cw = Math.min(2 * tx.cw + 1, WIFI_CW_MAX);
+    this.sim.after(tx.backoff, () => this.wifiStart(iface, link));
+  }
+
+  private wifiNext(iface: IfaceSpec, link: Link): void {
+    this.wifiOut.get(iface.id)?.shift();
+    this.wifiStart(iface, link);
+  }
+
+  /** An Ack for the frame on the air: done with it, the next one may go. */
+  private onWifiAck(iface: IfaceSpec, link: Link, frame: Uint8Array, packetId: string, frameId: string): void {
+    const ack = parseWifiAck(frame);
+    if (!ack.fcsValid) {
+      this.sim.emit({ type: 'drop', packetId, reason: 'bad-checksum', deviceId: this.id, frameId });
+      return;
+    }
+    const tx = this.wifiOut.get(iface.id)?.[0];
+    if (ack.ra !== iface.mac || !tx || tx.timer === undefined) {
+      this.sim.emit({ type: 'drop', packetId, reason: 'not-for-me', deviceId: this.id, frameId });
+      return;
+    }
+    this.sim.cancel(tx.timer);
+    tx.timer = undefined;
+    this.sim.emit({ type: 'wifi:ack', deviceId: this.id, linkId: link.spec.id, packetId: tx.packetId, frameId: tx.frameId });
+    this.wifiNext(iface, link);
+  }
+
+  /** Answers a unicast frame with the 14-byte Ack control frame, SIFS after its last bit. */
+  private sendWifiAck(iface: IfaceSpec, link: Link, ra: Mac): void {
+    this.sim.after(WIFI_SIFS, () => {
+      const pk = this.sim.newPacket(this.id, 'wifi-ack', 'Wi-Fi ACK');
+      const frame = buildWifiAck(ra);
+      const frameId = this.sim.pdu(pk.id, frame, 'wifi');
+      this.sim.emit({ type: 'encapsulate', deviceId: this.id, packetId: pk.id, layer: 2, protocol: 'wifi', pduId: frameId });
+      link.transmit(iface.id, frame, pk.id, frameId, { ack: true });
+    });
   }
 }

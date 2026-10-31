@@ -15,7 +15,7 @@ import { parseRtp, RTP_HEADER_LEN, RTP_PORT, RTP_SAMPLES_PER_PACKET } from './pr
 import type { Field } from './proto/types';
 import { parseUdp } from './proto/udp';
 import { VOICE_CLIP_CALLER_BASE64, VOICE_CLIP_FRIEND_BASE64 } from './scenarios/voiceClip';
-import { parseWifi } from './proto/wifi';
+import { parseWifi, parseWifiAck, WIFI_ACK_LEN, WIFI_ACK_TIMEOUT, WIFI_FC_ACK, WIFI_RETRY_LIMIT, WIFI_SIFS, WIFI_SLOT } from './proto/wifi';
 import { openWgData } from './proto/wireguard';
 import { tunnelKeys } from './stack/vpn';
 import { CERN_HTTP_RESPONSE_BASE64, CERN_IP } from './scenarios/infoCernCapture';
@@ -118,6 +118,153 @@ describe('phone over Wi-Fi', () => {
 
   it('every Wi-Fi field has an explanation', () => {
     for (const f of frames('wlan')) for (const fld of f.layers[0]!.fields) expect(fld.explain.length).toBeGreaterThan(10);
+  });
+});
+
+describe('noisy Wi-Fi: 802.11 Acks and link-layer retries', () => {
+  const noisy = (opts: FetchWebPageOptions = {}, seed = 1) => runScenario(fetchWebPage({ from: 'phone', noise: 0.5, ...opts }), { seed, faults: { randomLoss: 0, manual: [] }, maxTime: 1000 });
+  const r = noisy();
+  const plain = run({ from: 'phone' });
+  const isAck = (x: SimResult, packetId: string) => x.packets.get(packetId)!.kind === 'wifi-ack';
+  const onAir = (x: SimResult) => of(x, 'tx').filter((e) => e.linkId === 'wlan');
+  const macOf = (x: SimResult, device: string) => x.scenario.devices.find((d) => d.id === device)!.ifaces.find((i) => i.wifi)!.mac;
+
+  it('every data frame that gets across is answered by a real 14-byte Ack, SIFS (10 µs at 2.4 GHz) after its last bit', () => {
+    const delivered = of(r, 'rx').filter((e) => e.linkId === 'wlan' && !isAck(r, e.packetId));
+    expect(delivered.length).toBeGreaterThan(8);
+    for (const rx of delivered) {
+      const data = parseWifi(r.pdus.get(rx.frameId)!.bytes);
+      // Only a frame addressed to this radio is acknowledged; one to everyone is not.
+      if (data.addr1 !== macOf(r, rx.deviceId)) continue;
+      const ack = onAir(r).find((e) => e.fromDevice === rx.deviceId && isAck(r, e.packetId) && e.start >= rx.t)!;
+      expect(ack.start - rx.t).toBeCloseTo(WIFI_SIFS, 9);
+      const frame = r.pdus.get(ack.frameId)!;
+      expect(frame.bytes.length).toBe(WIFI_ACK_LEN);
+      expect(frame.bytes[0]).toBe(WIFI_FC_ACK);
+      expect(frame.first).toBe('wifi');
+      expect(frame.layers.map((l) => l.summary)).toEqual([`Wi-Fi ACK → ${data.addr2}`]);
+      expect(parseWifiAck(frame.bytes)).toEqual({ ra: data.addr2, fcsValid: true });
+      expect(r.packets.get(ack.packetId)).toMatchObject({ kind: 'wifi-ack', label: 'Wi-Fi ACK', origin: rx.deviceId });
+    }
+    expect(onAir(r).filter((e) => isAck(r, e.packetId)).length).toBeGreaterThan(8);
+  });
+
+  it('frames fall to interference, the sender tries the same frame again with the Retry bit and the same sequence number, and the page still comes', () => {
+    const lost = of(r, 'drop').filter((d) => d.reason === 'interference');
+    expect(lost.length).toBeGreaterThan(0);
+    for (const d of lost) expect(d).toMatchObject({ linkId: 'wlan', deviceId: expect.stringMatching(/^(phone|home)$/), frameId: expect.any(String) });
+    const retries = of(r, 'wifi:retry');
+    expect(retries.length).toBeGreaterThan(0);
+    for (const e of retries) {
+      const again = parseWifi(r.pdus.get(e.frameId)!.bytes);
+      const first = parseWifi(r.pdus.get(onAir(r).find((t) => t.packetId === e.packetId)!.frameId)!.bytes);
+      expect(again.retry).toBe(true);
+      expect(first.retry).toBe(false);
+      expect(r.pdus.get(e.frameId)!.bytes[1]! & 0x08).toBe(0x08);
+      expect(again.seq).toBe(first.seq);
+      expect(again.fcsValid).toBe(true);
+      expect(e.attempt).toBeGreaterThanOrEqual(1);
+      expect(e.attempt).toBeLessThanOrEqual(WIFI_RETRY_LIMIT);
+      // The copy goes on the air right after the retry event, and it is the frame the event names.
+      const tx = of(r, 'tx').find((t) => t.frameId === e.frameId)!;
+      expect(tx).toMatchObject({ linkId: 'wlan', fromDevice: e.deviceId, packetId: e.packetId });
+      expect(tx.start - e.t).toBeLessThan(1e-4);
+    }
+    // The first retry comes after the Ack timeout (50 µs from the last bit) plus a backoff of whole 9 µs slots.
+    const first = retries[0]!;
+    const before = of(r, 'tx').filter((t) => t.packetId === first.packetId && t.linkId === 'wlan' && t.start < first.t).at(-1)!;
+    expect(first.backoff / WIFI_SLOT).toBeCloseTo(Math.round(first.backoff / WIFI_SLOT), 6);
+    expect(first.t).toBeCloseTo(before.txEnd + WIFI_ACK_TIMEOUT + first.backoff, 9);
+    expect(of(r, 'wifi:ack').length).toBeGreaterThan(8);
+    expect(of(r, 'app').some((e) => e.deviceId === 'phone' && e.action === 'done')).toBe(true);
+    expect(of(r, 'drop').filter((d) => d.reason === 'retry-limit')).toHaveLength(0);
+  });
+
+  it('a lost Ack makes the sender send the frame again although it arrived: the receiver drops the copy by its sequence number', () => {
+    const lostAcks = of(r, 'drop').filter((d) => d.reason === 'interference' && isAck(r, d.packetId));
+    expect(lostAcks.length).toBeGreaterThan(0);
+    let shown = 0;
+    for (const d of lostAcks) {
+      const ack = r.packets.get(d.packetId)!;
+      const acked = of(r, 'rx').filter((e) => e.linkId === 'wlan' && e.deviceId === ack.origin && !isAck(r, e.packetId) && e.t <= d.t).at(-1)!;
+      const dup = of(r, 'drop').find((x) => x.reason === 'duplicate-frame' && x.deviceId === ack.origin && x.packetId === acked.packetId && x.t > d.t);
+      if (!dup) continue;
+      shown++;
+      expect(parseWifi(r.pdus.get(dup.frameId!)!.bytes).retry).toBe(true);
+      // The copy was still acknowledged, or the sender would keep trying.
+      expect(onAir(r).some((e) => e.fromDevice === ack.origin && isAck(r, e.packetId) && Math.abs(e.start - dup.t - WIFI_SIFS) < 1e-9)).toBe(true);
+    }
+    expect(shown).toBeGreaterThan(0);
+    for (const dup of of(r, 'drop').filter((x) => x.reason === 'duplicate-frame')) expect(dup).toMatchObject({ linkId: 'wlan', frameId: expect.any(String) });
+  });
+
+  it('noise 1: every frame is lost, each tried 7 more times with a doubling window, then given up; DNS times out as usual', () => {
+    const x = noisy({ noise: 1 });
+    expect(of(x, 'rx').filter((e) => e.linkId === 'wlan')).toHaveLength(0);
+    expect([...x.packets.values()].filter((p) => p.kind === 'wifi-ack')).toHaveLength(0);
+    const byPacket = new Map<string, EventOf<'wifi:retry'>[]>();
+    for (const e of of(x, 'wifi:retry')) byPacket.set(e.packetId, [...(byPacket.get(e.packetId) ?? []), e]);
+    expect(byPacket.size).toBeGreaterThan(0);
+    for (const [packetId, tries] of byPacket) {
+      expect(tries.map((e) => e.attempt)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+      // Backoff i is drawn from 0..CW with CW 15, 31, 63 ... 1023 slots of 9 µs.
+      tries.forEach((e, i) => expect(e.backoff).toBeLessThanOrEqual((2 ** (i + 4) - 1) * WIFI_SLOT + 1e-12));
+      const gaveUp = of(x, 'drop').find((d) => d.reason === 'retry-limit' && d.packetId === packetId)!;
+      expect(gaveUp).toMatchObject({ deviceId: tries[0]!.deviceId, linkId: 'wlan', frameId: tries[6]!.frameId });
+      expect(gaveUp.t).toBeGreaterThan(tries[6]!.t);
+    }
+    expect(of(x, 'drop').filter((d) => d.reason === 'retry-limit')).toHaveLength(byPacket.size);
+    expect(of(x, 'app').map((e) => `${e.deviceId}:${e.action}`)).toEqual(['phone:start', 'phone:dns-lookup', 'phone:dns-lookup', 'phone:error']);
+    expect(of(x, 'app').at(-1)!.info?.reason).toBe('DNS lookup timed out');
+  });
+
+  it('with noise 0 nothing changes: no Acks, no radio events, the phone and laptop runs byte for byte as before', () => {
+    const quiet = [plain, run({ from: 'phone', noise: 0 }), run({}), run({ noise: 0.5 }), run({ site: 'httpbin.org', noise: 0 })];
+    for (const x of quiet) {
+      expect([...x.packets.values()].some((p) => p.kind === 'wifi-ack')).toBe(false);
+      expect(of(x, 'wifi:retry')).toHaveLength(0);
+      expect(of(x, 'wifi:ack')).toHaveLength(0);
+      expect(of(x, 'drop').filter((d) => ['interference', 'duplicate-frame', 'retry-limit'].includes(d.reason))).toHaveLength(0);
+    }
+    expect(JSON.stringify(quiet[1]!.events)).toBe(JSON.stringify(plain.events));
+    // Noise on a run from the laptop changes nothing: nobody is on the Wi-Fi.
+    expect(JSON.stringify(quiet[3]!.events)).toBe(JSON.stringify(quiet[2]!.events));
+    const frames = (x: SimResult) => of(x, 'tx').map((e) => [e.linkId, e.fromDevice, Array.from(x.pdus.get(e.frameId)!.bytes)]);
+    expect(frames(quiet[1]!)).toEqual(frames(plain));
+  });
+
+  it('is deterministic, decided by hash: the same seed gives the same run, and up to the first loss the same frames go as with a quiet radio', () => {
+    expect(JSON.stringify(noisy().events)).toBe(JSON.stringify(r.events));
+    expect(JSON.stringify(noisy({}, 2).events)).not.toBe(JSON.stringify(r.events));
+    const firstLoss = of(r, 'drop').find((d) => d.reason === 'interference')!.t;
+    const frames = (x: SimResult, until: number) => of(x, 'tx').filter((e) => e.t <= until && !isAck(x, e.packetId)).map((e) => [e.linkId, x.packets.get(e.packetId)!.label]);
+    const before = frames(r, firstLoss);
+    expect(before.length).toBeGreaterThan(0);
+    expect(before).toEqual(frames(plain, Infinity).slice(0, before.length));
+  });
+
+  it('works with the call, the photo and together, and every field of every frame on the air is explained', () => {
+    const call = noisy({ call: true });
+    expect(of(call, 'app').filter((e) => e.action === 'call-done').map((e) => e.info)).toEqual([{ received: 50, gaps: 0 }, { received: 50, gaps: 0 }]);
+    expect(of(call, 'wifi:retry').length).toBeGreaterThan(0);
+    const photo = noisy({ site: 'httpbin.org' });
+    expect(of(photo, 'app').find((e) => e.action === 'done')?.info?.bytes).toBe(fromBase64(PHOTO_HTTP_RESPONSE_BASE64).length);
+    expect(of(photo, 'wifi:retry').length).toBeGreaterThan(0);
+    const both = noisy({ together: true });
+    expect(of(both, 'app').filter((e) => e.action === 'done').map((e) => e.deviceId).sort()).toEqual(['laptop', 'phone']);
+    const walk = (fs: Field[]): Field[] => fs.flatMap((f) => [f, ...walk(f.children ?? [])]);
+    let seen = 0;
+    for (const x of [r, photo]) {
+      for (const pdu of x.pdus.values()) {
+        if (pdu.first !== 'wifi') continue;
+        seen++;
+        for (const f of walk(pdu.layers.flatMap((l) => l.fields))) {
+          expect(f.display, `${pdu.id} ${f.key}`).not.toContain('✗');
+          expect(f.explain.length, `${f.key} needs an explanation`).toBeGreaterThan(10);
+        }
+      }
+    }
+    expect(seen).toBeGreaterThan(50);
   });
 });
 

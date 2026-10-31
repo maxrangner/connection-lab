@@ -72,7 +72,7 @@ export type Step = (
   | { kind: 'wrap'; device: string; layer: Wrap; /** For the frame (layer 'eth'): which kind and its sizes. */ frame?: Frame; /** For the VPN case: the addresses showing from here on. */ addr?: { from: string; to: string } }
   | { kind: 'unwrap'; device: string; layer: Wrap; frame?: Frame; addr?: { from: string; to: string } }
   | { kind: 'nat'; device: string; which: 'from' | 'to'; before: string; after: string; /** The port changes with the address: it is how the way back is found. */ beforePort: number; afterPort: number }
-  | { kind: 'travel'; from: string; to: string; link: string; /** Sim time the frame was sent. */ at: number; /** What anyone on this line could read. */ seen?: Seen; /** Seconds it waited in the port's buffer before it started on the cable; absent when it did not wait. */ queued?: number }
+  | { kind: 'travel'; from: string; to: string; link: string; /** Sim time the frame was sent. */ at: number; /** What anyone on this line could read. */ seen?: Seen; /** Seconds it waited in the port's buffer before it started on the cable; absent when it did not wait. */ queued?: number; /** Noisy Wi-Fi: the same frame sent again by the radio after an earlier copy was lost (the `lost` step just before it on this link). */ retry?: boolean; /** Noisy Wi-Fi: the receiver's Ack for this copy came back. */ acked?: boolean }
   /**
    * Knocked off the cable on the way from `from` to `to`. For a packet the port's full buffer turned away (`Trip.droppedAtQueue`)
    * `at` is when it was dropped and there is nothing `seen`: it never reached the cable.
@@ -182,6 +182,8 @@ export interface Story {
   voice?: { sent: Uint8Array; heard: (Uint8Array | null)[] };
   /** A thin pipe: the line to the ISP is slow and its port's buffer small, so packets queue there and the tail can be dropped. */
   thin: boolean;
+  /** Noisy Wi-Fi: the chance any one frame on the air is lost to interference; 0 when the radio is a perfect cable. */
+  noise: number;
   /** Which device each address belongs to. */
   names: Record<string, string>;
   devices: { id: string; label: string; kind: string }[];
@@ -365,6 +367,8 @@ function chosen(r: SimResult, arp: boolean): { packets: PacketInfo[]; hellos: Se
   const hellos = new Set<string>();
   const helloAckFrom = new Set<string>();
   for (const p of r.packets.values()) {
+    // A Wi-Fi Ack is the radio's own business: the frame it answers gets `acked` on its travel step instead.
+    if (p.kind === 'wifi-ack') continue;
     if (p.kind === 'dns' || p.kind === 'dhcp' || p.kind === 'rtp' || p.kind === 'icmp' || p.kind === 'probe' || (p.kind === 'arp' && arp)) {
       packets.push(p);
       continue;
@@ -407,8 +411,12 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
   /** The packet as the sender first made it, before any VPN sealed it. */
   let inner: PduSnapshot | undefined;
   let tunnel = 0;
-  let lost = false;
   let droppedAtQueue = false;
+  /** A noisy radio sends a lost frame again by itself, so a loss there does not end the trip. */
+  const noisy = (link: string): boolean => (r.scenario.links.find((l) => l.id === link)?.noise ?? 0) > 0;
+  /** The last time this packet was on `link`: a travel that got across, or a lost copy. */
+  const lastOn = (link: string): Extract<Step, { kind: 'travel' | 'lost' }> | undefined =>
+    [...steps].reverse().find((s): s is Extract<Step, { kind: 'travel' | 'lost' }> => (s.kind === 'travel' || s.kind === 'lost') && s.link === link);
   /** Seconds the frame about to travel waited in a port's buffer, from the queue event just before its tx. */
   let queued = 0;
   let firstSeq = -1;
@@ -480,20 +488,39 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
       case 'queue':
         queued = e.wait;
         break;
-      case 'tx':
-        steps.push({ kind: 'travel', from: e.fromDevice, to: e.toDevice, link: e.linkId, at: e.start, seen: seenOn(r.pdus.get(e.frameId), p), ...(queued > 0 ? { queued } : {}) });
+      case 'tx': {
+        const before = lastOn(e.linkId);
+        // Sent again on a noisy radio after it had already got across: its Ack was lost, and the far end throws the copy
+        // away. The trip has moved on; the copy is not shown.
+        if (before?.kind === 'travel' && noisy(e.linkId)) break;
+        steps.push({ kind: 'travel', from: e.fromDevice, to: e.toDevice, link: e.linkId, at: e.start, seen: seenOn(r.pdus.get(e.frameId), p), ...(queued > 0 ? { queued } : {}), ...(before?.kind === 'lost' ? { retry: true } : {}) });
         queued = 0;
         break;
+      }
+      case 'wifi:retry':
+        // The copy about to go has the Retry bit set: that is the frame the next travel shows, unless it is a needless copy.
+        if (lastOn(e.linkId)?.kind === 'lost') update(e.frameId);
+        break;
+      case 'wifi:ack': {
+        const got = lastOn(e.linkId);
+        if (got?.kind === 'travel') got.acked = true;
+        break;
+      }
       case 'drop': {
         const last = steps[steps.length - 1];
-        if ((e.reason === 'fault' || e.reason === 'cut') && last?.kind === 'travel') {
+        if (e.reason === 'duplicate-frame') break;
+        if ((e.reason === 'fault' || e.reason === 'cut' || e.reason === 'interference') && last?.kind === 'travel' && (!e.linkId || last.link === e.linkId)) {
           steps[steps.length - 1] = { ...last, kind: 'lost' };
-          lost = true;
+          // On a noisy radio the sender tries the same frame again by itself: the next tx on this link is the retry, and
+          // only giving up (retry-limit) ends the trip.
+          if (noisy(last.link)) break;
+        } else if ((e.reason === 'interference' || e.reason === 'retry-limit') && e.linkId && lastOn(e.linkId)?.kind === 'travel') {
+          // A needless copy (the frame had got across, only its Ack was lost) fell or was given up: the trip has moved on.
+          break;
         } else if (e.reason === 'queue-full' && e.deviceId && e.linkId) {
           // The port's buffer was full, so it never left: there is no travel to turn into a loss. Its fall is told on the
           // line it was bound for, from the moment it was turned away, after the wrap at that device; nobody on the line saw it.
           steps.push({ kind: 'lost', from: e.deviceId, to: otherEnd(r, e.linkId, e.deviceId), link: e.linkId, at: e.t });
-          lost = true;
           droppedAtQueue = true;
         }
         done = true;
@@ -503,6 +530,8 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
     if (steps.length > count) Object.assign(steps[steps.length - 1]!, { details: now, pdu: nowPdu });
   }
   if (!frame || !steps.some((s) => s.kind === 'travel' || s.kind === 'lost')) return null;
+  // Lost for good only when the last thing that happened was a fall: a radio's retry that got across goes on.
+  const lost = steps[steps.length - 1]!.kind === 'lost';
 
   const eth = layer(frame, 'ethernet') ?? layer(frame, 'wifi')!;
   const packet = inner ?? frame;
@@ -718,6 +747,7 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
     call: !!voice,
     ...(voice ? { voice } : {}),
     thin: r.scenario.links.some((l) => l.queue !== undefined),
+    noise: Math.max(0, ...r.scenario.links.map((l) => l.noise ?? 0)),
     // An address a device gets by DHCP belongs to whoever has the MAC it is leased to.
     names: Object.fromEntries(r.scenario.devices.flatMap((d) => [
       ...d.ifaces.flatMap((i) => [i.ip, ...(i.aliases ?? [])].map((ip) => [ip, d.label])),

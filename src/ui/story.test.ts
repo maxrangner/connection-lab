@@ -414,6 +414,71 @@ describe('phone over Wi-Fi in the story', () => {
   });
 });
 
+describe('noisy Wi-Fi in the story', () => {
+  const noisy = (noise: number, warmArp = false) => runScenario(fetchWebPage({ from: 'phone', noise, warmArp }), { seed: 1, faults: { randomLoss: 0, manual: [] }, maxTime: 1000 });
+  const r = noisy(0.5);
+  const s = buildStory(r);
+  const onWlan = (t: Trip) => t.steps.filter((x): x is Extract<Trip['steps'][number], { kind: 'travel' | 'lost' }> => (x.kind === 'travel' || x.kind === 'lost') && x.link === 'wlan');
+
+  it('says how noisy the radio is, and follows no Ack frames', () => {
+    expect(s.noise).toBe(0.5);
+    expect(story.noise).toBe(0);
+    expect(buildStory(runScenario(fetchWebPage({ from: 'phone' }), { seed: 1, faults: { randomLoss: 0, manual: [] } })).noise).toBe(0);
+    for (const t of s.trips) expect(r.packets.get(t.packetId)!.kind).not.toBe('wifi-ack');
+    expect(s.pageTitle).toBe('Example Domain');
+  });
+
+  it('a frame lost to interference is a fall and then the same packet travels the Wi-Fi again, as a retry, with the Retry bit in its bytes', () => {
+    const retried = s.trips.filter((t) => onWlan(t).some((x) => x.kind === 'lost') && onWlan(t).some((x) => x.kind === 'travel'));
+    expect(retried.length).toBeGreaterThan(0);
+    for (const t of retried) {
+      const steps = onWlan(t);
+      expect(steps[0]!.kind).toBe('lost');
+      expect(steps.at(-1)).toMatchObject({ kind: 'travel', retry: true });
+      for (const x of steps.slice(1)) expect(x.kind === 'travel' ? x.retry : true).toBe(true);
+      // A mid-way fall does not lose the trip, and it is no resend by TCP or DNS.
+      expect(t.lost).toBe(false);
+      expect(t.retry).toBe(false);
+      expect(t.timedOut).toBe(false);
+      expect(t.steps.at(-1)!.kind).not.toBe('lost');
+      const again = steps.at(-1)!;
+      expect(again.pdu?.layers[0]?.summary).toContain('retry');
+      expect(again.details?.ethH?.some((row) => row.name === 'Retry' && row.value === '1 (sent again)')).toBe(true);
+      expect(again.seen).toBeTruthy();
+    }
+    // Every copy of a frame that got across was acknowledged, one way or another.
+    expect(s.trips.some((t) => onWlan(t).some((x) => x.kind === 'travel' && x.acked))).toBe(true);
+    const first = s.trips.find((t) => onWlan(t).length === 1 && onWlan(t)[0]!.kind === 'travel')!;
+    expect(onWlan(first)[0]).not.toHaveProperty('retry');
+  });
+
+  it('lays out on a timeline: a fall off the air, then the retry crossing it, and the page arriving', () => {
+    const tl = buildTimeline(s);
+    const segs = tl.segs.filter((x) => (x.step.kind === 'lost' || x.step.kind === 'travel') && x.step.link === 'wlan');
+    const i = segs.findIndex((x, n) => x.step.kind === 'lost' && segs[n + 1]?.step.kind === 'travel' && segs[n + 1]!.trip === x.trip);
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(segs[i + 1]!.t0).toBeGreaterThanOrEqual(segs[i]!.t1);
+    expect(tl.reactions.at(-1)).toMatchObject({ device: 'phone', face: 'love' });
+    expect(tl.segs.filter((x) => x.step.kind === 'wait')).toHaveLength(0);
+  });
+
+  it('a radio that gives up loses the packet for good: the trip ends with the last fall', () => {
+    // With the router's MAC known already, or the question would never reach the air: ARP fails first.
+    const dead = buildStory(noisy(1, true));
+    expect(dead.noise).toBe(1);
+    expect(dead.pageTitle).toBeNull();
+    const asked = dead.trips.filter((t) => t.chapter === 'dns' && t.outward);
+    expect(asked.length).toBeGreaterThan(0);
+    for (const t of asked) {
+      expect(t.lost).toBe(true);
+      expect(t.steps.at(-1)).toMatchObject({ kind: 'lost', link: 'wlan', from: 'phone', to: 'home' });
+      expect(onWlan(t).every((x) => x.kind === 'lost')).toBe(true);
+      expect(onWlan(t)).toHaveLength(1 + 7);
+    }
+    expect(() => buildTimeline(dead)).not.toThrow();
+  });
+});
+
 describe('HTTPS in the story', () => {
   const s = buildStory(runScenario(fetchWebPage({ https: true }), { seed: 1, faults: { randomLoss: 0, manual: [] } }));
 

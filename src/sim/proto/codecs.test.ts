@@ -15,6 +15,7 @@ import { buildIpv4, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP, parseIpv4 } from './
 import { buildTcp, encodeOptions, parseTcp, TCP_SYN } from './tcp';
 import type { Field, LayerPdu } from './types';
 import { buildUdp, parseUdp } from './udp';
+import { buildWifi, buildWifiAck, parseWifi, parseWifiAck, WIFI_ACK_LEN, wifiFrameKind } from './wifi';
 
 function allFields(layers: LayerPdu[]): Field[] {
   const out: Field[] = [];
@@ -433,5 +434,49 @@ describe('ICMP (RFC 792)', () => {
     expect(m.quoted).toMatchObject({ srcPort: inside.port, dstPort: 33437 });
     expect(back.slice(28)).toEqual(probe.slice(0, 28));
     expect(parseIpv4(back, 28).checksumValid).toBe(true);
+  });
+});
+
+describe('Wi-Fi (IEEE 802.11)', () => {
+  const phone = 'f0:5c:77:3e:91:2a';
+  const ap = 'a4:91:b1:7d:02:03';
+  const data = (retry: boolean) => buildWifi({ toAp: true, addr1: ap, addr2: phone, addr3: ap, seq: 7, type: ETHERTYPE_IPV4, retry }, Uint8Array.from([0x45, 0, 0, 0]));
+
+  it('an Ack is 14 bytes: Frame Control d4 00, Duration 0, the receiver, a CRC-32 like Ethernet', () => {
+    const ack = buildWifiAck(phone);
+    expect(ack.length).toBe(WIFI_ACK_LEN);
+    // CRC-32 of d4 00 00 00 f0 5c 77 3e 91 2a is 0x36fd5ea4, little-endian on air.
+    expect(hexBytes(ack, 0, 14, '')).toBe('d4000000f05c773e912aa45efd36');
+    expect(wifiFrameKind(ack)).toBe('ack');
+    expect(parseWifiAck(ack)).toEqual({ ra: phone, fcsValid: true });
+    const damaged = ack.slice();
+    damaged[5] = (damaged[5] ?? 0) ^ 0x01;
+    expect(parseWifiAck(damaged).fcsValid).toBe(false);
+    const [layer, ...rest] = decodePdu(ack, 'wifi');
+    expect(rest).toEqual([]);
+    expect(layer).toMatchObject({ protocol: 'wifi', layer: 2, headerEnd: 10, payloadEnd: 10, end: 14, summary: `Wi-Fi ACK → ${phone}` });
+    expect(layer!.fields.map((f) => [f.key, f.offset, f.length])).toEqual([['wifi.fc', 0, 2], ['wifi.duration', 2, 2], ['wifi.ra', 4, 6], ['wifi.fcs', 10, 4]]);
+    expect(layer!.fields.find((f) => f.key === 'wifi.fc')?.display).toBe('0xd400 (control, Ack)');
+    for (const f of allFields([layer!])) expect(f.explain.length, f.key).toBeGreaterThan(10);
+  });
+
+  it('the Retry bit is bit 3 of the second Frame Control byte, and a retried frame keeps its sequence number', () => {
+    const first = data(false);
+    const again = data(true);
+    expect([first[0], first[1]]).toEqual([0x08, 0x01]);
+    expect([again[0], again[1]]).toEqual([0x08, 0x09]);
+    expect(wifiFrameKind(first)).toBe('data');
+    expect(parseWifi(first)).toMatchObject({ retry: false, seq: 7, toAp: true, fcsValid: true });
+    expect(parseWifi(again)).toMatchObject({ retry: true, seq: 7, toAp: true, fcsValid: true, addr1: ap, addr2: phone, dst: ap, src: phone });
+    // Only that bit and the FCS differ.
+    expect(hexBytes(first, 2, first.length - 4)).toBe(hexBytes(again, 2, again.length - 4));
+    expect(hexBytes(first, first.length - 4)).not.toBe(hexBytes(again, again.length - 4));
+    const retryField = (frame: Uint8Array) => decodePdu(frame, 'wifi')[0]!.fields.find((f) => f.key === 'wifi.retry')!;
+    expect(retryField(first)).toMatchObject({ offset: 1, length: 1, bits: { start: 12, count: 1 }, display: '0', importance: 'detail' });
+    expect(retryField(again)).toMatchObject({ display: '1 (sent again)', importance: 'key' });
+    expect(retryField(again).explain).toContain('no acknowledgement');
+    expect(decodePdu(again, 'wifi')[0]!.summary).toContain('retry');
+    expect(decodePdu(first, 'wifi')[0]!.summary).not.toContain('retry');
+    for (const f of allFields(decodePdu(again, 'wifi'))) expect(f.explain.length, f.key).toBeGreaterThan(10);
   });
 });

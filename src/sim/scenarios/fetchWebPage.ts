@@ -125,6 +125,14 @@ export interface FetchWebPageOptions {
    * hop; the home router, the ISP router and finally the server itself answer). The name is looked up first, as always.
    */
   probe?: 'ping' | 'traceroute';
+  /**
+   * Noisy Wi-Fi: the chance (0..1) that any one frame on the air between the phone and the home router is lost to
+   * interference, data frames and Acks alike. With it the Wi-Fi is a real 802.11 radio: every unicast frame is answered by
+   * a 14-byte Ack after SIFS, and a frame with no Ack within the Ack timeout goes again with the Retry bit, up to 7 times,
+   * without TCP or DNS ever knowing. Only the phone is on Wi-Fi, so it only shows with `from: 'phone'` (or `together`).
+   * Off (0, the default) the Wi-Fi is a perfect cable through the air and no Acks are sent.
+   */
+  noise?: number;
 }
 
 /**
@@ -456,7 +464,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
     ],
     links: [
       { id: 'lan', a: 'laptop.eth0', b: 'home.lan', bitsPerSecond: 1e9, delay: 5e-8, label: 'Ethernet cable · 1 Gbit/s', name: 'the Ethernet cable' },
-      { id: 'wlan', a: 'phone.wlan0', b: 'home.wlan', bitsPerSecond: 300e6, delay: 3e-8, label: 'Wi-Fi · 300 Mbit/s', name: 'the Wi-Fi' },
+      { id: 'wlan', a: 'phone.wlan0', b: 'home.wlan', bitsPerSecond: 300e6, delay: 3e-8, label: 'Wi-Fi · 300 Mbit/s', name: 'the Wi-Fi', ...(opts.noise ? { noise: opts.noise } : {}) },
       opts.slow
         ? { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: 25e6, delay: 0.28, label: 'Satellite to ISP · 25 Mbit/s · 280 ms', name: 'the satellite link' }
         : opts.thin

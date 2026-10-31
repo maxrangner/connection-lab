@@ -9,7 +9,7 @@ import { describeIpv4, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP, parseIpv4 } from 
 import { describeRtp, RTP_PORT } from './rtp';
 import { describeTcp, parseTcp } from './tcp';
 import { describeTls } from './tls';
-import { describeWifi, parseWifi } from './wifi';
+import { describeWifi, parseWifi, wifiFrameKind } from './wifi';
 import { describeWireguard, WG_PORT } from './wireguard';
 import type { LayerPdu, Protocol } from './types';
 import { describeUdp, parseUdp } from './udp';
@@ -44,6 +44,11 @@ function walk(b: Uint8Array, proto: Protocol, o: number, end: number, ctx: Decod
       return b.length;
     }
     case 'wifi': {
+      // An Ack control frame carries nothing inside.
+      if (wifiFrameKind(b) === 'ack') {
+        out.push(describeWifi(b));
+        return b.length;
+      }
       const w = parseWifi(b);
       const idx = out.length;
       out.push(describeWifi(b));

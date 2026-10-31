@@ -41,6 +41,13 @@ export interface LinkSpec {
    * visibly or dropped for want of room.
    */
   queue?: number;
+  /**
+   * Interference on a Wi-Fi link: the chance (0..1) that any one frame on the air, data or Ack, is lost, decided per frame
+   * and per attempt by hash. With it set the link is a real 802.11 radio: half duplex, every unicast data frame answered by
+   * an Ack after SIFS, and a frame with no Ack sent again with the Retry bit, up to 7 times. Omitted or 0, the link behaves
+   * as a perfect cable through the air and no Acks are sent (today's simplification). Only meaningful on a Wi-Fi link.
+   */
+  noise?: number;
 }
 
 export type AppSpec =
