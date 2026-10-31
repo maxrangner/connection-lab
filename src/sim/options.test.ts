@@ -4,7 +4,8 @@ import type { PduSnapshot } from './core/Simulator';
 import type { EventOf, SimEventType } from './events/SimEvent';
 import type { FaultPlan } from './faults';
 import { runScenario, type SimResult } from './run';
-import { ADDR, fetchWebPage, type FetchWebPageOptions } from './scenarios/fetchWebPage';
+import { ADDR, fetchWebPage, THIN_BPS, THIN_QUEUE, type FetchWebPageOptions } from './scenarios/fetchWebPage';
+import { PHOTO_HTTP_RESPONSE_BASE64 } from './scenarios/photoCapture';
 import { parseDhcp } from './proto/dhcp';
 import { DNS_TRACES } from './scenarios/dnsTraceCapture';
 import { dnsReferral, parseDns } from './proto/dns';
@@ -185,6 +186,94 @@ describe('getting over a lost stretch', () => {
     for (const i of [21, 23]) expect(resent).not.toContain(data[i]!.tcp!.relSeq);
     for (const i of [20, 22, 24]) expect(resent).toContain(data[i]!.tcp!.relSeq);
     expect(of(r, 'app').some((e) => e.action === 'done')).toBe(true);
+  });
+});
+
+describe('a thin pipe: DSL to the ISP, with a small buffer on its port', () => {
+  const photo = (opts: FetchWebPageOptions = {}) => runScenario(fetchWebPage({ site: 'httpbin.org', thin: true, ...opts }), { seed: 1, faults: { randomLoss: 0, manual: [] }, maxTime: 1000 });
+  const r = photo();
+  const wanOf = (opts: FetchWebPageOptions) => fetchWebPage(opts).links.find((l) => l.id === 'wan')!;
+  /** The parts of the photo as the server first sent them, in order. */
+  const parts = [...r.packets.values()].filter((p) => p.origin === 'server' && (p.tcp?.len ?? 0) > 0 && !p.retransmitOf);
+  /** What waited at the ISP's port onto the line. */
+  const queued = of(r, 'queue').filter((e) => e.linkId === 'wan' && e.iface === 'isp.cust' && e.deviceId === 'isp');
+
+  it('is a 20 Mbit/s line with the same delay and a finite buffer; stretched it keeps both; the satellite wins over it', () => {
+    expect(wanOf({ thin: true })).toMatchObject({ bitsPerSecond: THIN_BPS, delay: 0.002, queue: THIN_QUEUE, label: 'DSL to ISP · 20 Mbit/s · 2 ms' });
+    expect(wanOf({ thin: true, wanDelay: 0.01 })).toMatchObject({ bitsPerSecond: THIN_BPS, delay: 0.01, queue: THIN_QUEUE, label: 'DSL to ISP · 20 Mbit/s · 10 ms' });
+    expect(wanOf({ thin: true, slow: true })).toMatchObject({ bitsPerSecond: 25e6, delay: 0.28 });
+    expect(wanOf({ thin: true, slow: true }).queue).toBeUndefined();
+    expect(wanOf({}).queue).toBeUndefined();
+  });
+
+  it('the server’s burst piles up at the ISP’s port: the first part goes straight on, each next one finds one more ahead of it', () => {
+    expect(queued.some((e) => e.packetId === parts[0]!.id)).toBe(false);
+    const burst = parts.slice(1, THIN_QUEUE + 1).map((p) => queued.find((e) => e.packetId === p.id)!);
+    expect(burst.map((e) => e.depth)).toEqual(burst.map((_, i) => i));
+    for (let i = 1; i < burst.length; i++) expect(burst[i]!.wait).toBeGreaterThan(burst[i - 1]!.wait);
+    // A part in the buffer waits a whole serialization time per frame ahead of it: 1522 bytes on the wire at 20 Mbit/s.
+    const perFrame = ((1448 + 20 + 20 + 12 + 14 + 4 + 8 + 12) * 8) / THIN_BPS;
+    expect(burst[0]!.wait).toBeCloseTo(perFrame, 5);
+    expect(burst[1]!.wait).toBeCloseTo(2 * perFrame, 5);
+  });
+
+  it('every wait is real: the queue event is when it was handed in, the tx starts when its turn comes', () => {
+    expect(queued.length).toBeGreaterThan(10);
+    for (const q of queued) {
+      expect(q.wait).toBeGreaterThan(0);
+      const tx = of(r, 'tx').find((e) => e.frameId === q.frameId)!;
+      expect(tx.fromIface).toBe('isp.cust');
+      expect(Math.abs(tx.start - q.t - q.wait)).toBeLessThan(1e-6);
+      expect(tx.t).toBeGreaterThanOrEqual(q.t);
+    }
+  });
+
+  it('when the buffer is full the tail is dropped at the router, before any cable, with no cut anywhere', () => {
+    const drops = of(r, 'drop');
+    expect(drops.length).toBeGreaterThan(0);
+    for (const d of drops) expect(d).toMatchObject({ reason: 'queue-full', deviceId: 'isp', linkId: 'wan' });
+    // The last of the first burst of ten finds the buffer full.
+    const data = drops.filter((d) => (r.packets.get(d.packetId)!.tcp?.len ?? 0) > 0);
+    expect(data.map((d) => d.packetId)).toEqual([parts[THIN_QUEUE + 1]!.id]);
+    for (const d of drops) {
+      expect(of(r, 'tx').some((e) => e.frameId === d.frameId)).toBe(false);
+      expect(of(r, 'queue').some((e) => e.frameId === d.frameId)).toBe(false);
+      expect(d.t).toBeLessThan(of(r, 'tx').find((e) => e.packetId === d.packetId && e.linkId === 'bb2')!.arrive + 1e-3);
+    }
+  });
+
+  it('TCP mends it on its own: three dup ACKs, a fast retransmit, no timer, and the whole photo byte for byte', () => {
+    expect(of(r, 'tcp:dup-ack').filter((e) => e.deviceId === 'server').length).toBeGreaterThanOrEqual(3);
+    const causes = of(r, 'tcp:retransmit').map((e) => e.cause);
+    expect(causes[0]).toBe('fast');
+    expect(causes.every((c) => c === 'fast' || c === 'recovery')).toBe(true);
+    expect(of(r, 'timer:fire').filter((e) => e.kind === 'tcp-rto')).toHaveLength(0);
+    const response = fromBase64(PHOTO_HTTP_RESPONSE_BASE64);
+    const got = of(r, 'app').find((e) => e.action === 'http-response-received')!;
+    expect(r.pdus.get(got.pduId!)!.bytes).toEqual(response);
+    expect(of(r, 'app').find((e) => e.action === 'done')?.info?.bytes).toBe(response.length);
+  });
+
+  it('a one-packet page has nothing to pile up: no drop', () => {
+    const x = run({ thin: true });
+    expect(of(x, 'drop')).toHaveLength(0);
+    expect(of(x, 'app').some((e) => e.action === 'done')).toBe(true);
+  });
+
+  it('with thin off nothing is ever queued visibly, whatever else is on', () => {
+    for (const o of [{}, { site: 'httpbin.org' as const }, { slow: true, site: 'httpbin.org' as const }, { vpn: true }, { dhcp: true }]) {
+      const x = runScenario(fetchWebPage(o), { seed: 1, faults: { randomLoss: 0, manual: [] }, maxTime: 1000 });
+      expect(of(x, 'queue')).toHaveLength(0);
+      expect(of(x, 'drop').filter((d) => d.reason === 'queue-full')).toHaveLength(0);
+    }
+  });
+
+  it('is deterministic, and the photo still arrives with the other settings on', () => {
+    expect(JSON.stringify(photo().events)).toBe(JSON.stringify(r.events));
+    for (const o of [{ https: true }, { vpn: true }, { from: 'phone' as const }, { slow: true }, { dhcp: true }, { cold: true }, { revisit: true }]) {
+      const x = photo(o);
+      expect(of(x, 'app').some((e) => e.action === 'done'), JSON.stringify(o)).toBe(true);
+    }
   });
 });
 

@@ -19,6 +19,7 @@ export type TcpState =
 export type DropReason =
   | 'fault' // lost in transit (user or random fault injection)
   | 'cut' // the cable it was sent on has been cut
+  | 'queue-full' // the port's transmit buffer had no room left (tail drop); it never reached the cable
   | 'not-for-me' // destination MAC/IP does not match
   | 'bad-checksum'
   | 'ttl-expired'
@@ -74,6 +75,11 @@ export type SimEventPayload =
   /** A whole IP packet went into (wrap) or came out of (unwrap) the VPN tunnel; the addresses are the ones it shows now. */
   | { type: 'tunnel:wrap'; deviceId: string; packetId: string; pduId: string; addr: { src: Ip4; dst: Ip4 } }
   | { type: 'tunnel:unwrap'; deviceId: string; packetId: string; pduId: string; addr: { src: Ip4; dst: Ip4 } }
+  /**
+   * The port was busy, so the frame went into its transmit buffer (only on a link with a finite `queue`): how many frames
+   * were waiting ahead of it and how long it waits before its `tx` starts (`tx.start - t`).
+   */
+  | { type: 'queue'; deviceId: string; iface: string; linkId: string; packetId: string; frameId: string; depth: number; wait: number }
   | { type: 'tx'; linkId: string; fromDevice: string; fromIface: string; toDevice: string; toIface: string; packetId: string; frameId: string; start: number; txEnd: number; arrive: number; wireBytes: number }
   | { type: 'rx'; deviceId: string; iface: string; linkId: string; packetId: string; frameId: string }
   | { type: 'drop'; packetId: string; reason: DropReason; deviceId?: string; linkId?: string; frameId?: string }
