@@ -6,7 +6,8 @@ import type { FaultPlan } from './faults';
 import { runScenario, type SimResult } from './run';
 import { ADDR, fetchWebPage, type FetchWebPageOptions } from './scenarios/fetchWebPage';
 import { parseDhcp } from './proto/dhcp';
-import { parseDns } from './proto/dns';
+import { DNS_TRACES } from './scenarios/dnsTraceCapture';
+import { dnsReferral, parseDns } from './proto/dns';
 import { parseIpv4 } from './proto/ipv4';
 import type { Field } from './proto/types';
 import { parseUdp } from './proto/udp';
@@ -437,6 +438,124 @@ describe('getting an address by DHCP', () => {
     const again = run({ dhcp: true });
     expect(JSON.stringify(again.events)).toBe(JSON.stringify(r.events));
     expect(JSON.stringify(run({ dhcp: true }, undefined, 2).events)).not.toBe(JSON.stringify(r.events));
+  });
+});
+
+describe('a cold resolver (the real walk root → .com → authoritative)', () => {
+  const r = run({ cold: true });
+  const warm = run({});
+  const UP = ['up1', 'up2', 'up3'];
+  const onUp = (x: SimResult) => of(x, 'tx').filter((e) => UP.includes(e.linkId));
+  const dnsOf = (x: SimResult, e: EventOf<'tx'>) => {
+    const pdu = x.pdus.get(e.frameId)!;
+    return parseDns(pdu.bytes, pdu.layers.find((l) => l.protocol === 'dns')!.start);
+  };
+  const hops = DNS_TRACES['example.com']!.hops;
+
+  it('asks the root, then the .com server, then the site’s own server, each a real RD=0 question on its own cable', () => {
+    const questions = onUp(r).filter((e) => e.fromDevice === 'resolver');
+    expect(questions.map((e) => [e.linkId, e.toDevice])).toEqual([['up1', 'root'], ['up2', 'tld'], ['up3', 'auth']]);
+    questions.forEach((e, i) => {
+      const q = dnsOf(r, e);
+      expect(q.flags).toBe(0);
+      expect(q.questions[0]).toMatchObject({ name: 'example.com', type: 1 });
+      const ip = parseIpv4(r.pdus.get(e.frameId)!.bytes, 14);
+      expect(ip.dst).toBe(hops[i]!.server.ip);
+      expect(ip.src).toBe(ADDR.resolver.ip);
+    });
+    const ids = new Set(questions.map((e) => dnsOf(r, e).id));
+    expect(ids.size).toBe(3);
+    const actions = of(r, 'app').map((e) => `${e.deviceId}:${e.action}`);
+    expect(actions.slice(0, 11)).toEqual([
+      'laptop:start', 'laptop:dns-lookup',
+      'resolver:dns-iterate', 'root:dns-serve', 'resolver:dns-referral',
+      'resolver:dns-iterate', 'tld:dns-serve', 'resolver:dns-referral',
+      'resolver:dns-iterate', 'auth:dns-serve', 'resolver:dns-learn',
+    ]);
+    expect(actions.slice(11, 13)).toEqual(['resolver:dns-serve', 'laptop:dns-answer']);
+  });
+
+  it('the referrals on the wire are the captured bytes: NS records plus glue, only the id changed', () => {
+    const replies = onUp(r).filter((e) => e.toDevice === 'resolver');
+    expect(replies.map((e) => e.fromDevice)).toEqual(['root', 'tld', 'auth']);
+    replies.forEach((e, i) => {
+      const pdu = r.pdus.get(e.frameId)!;
+      const dns = pdu.layers.find((l) => l.protocol === 'dns')!;
+      const captured = fromBase64(hops[i]!.response);
+      expect(pdu.bytes.slice(dns.start + 2, dns.end)).toEqual(captured.slice(2));
+    });
+    const root = dnsReferral(dnsOf(r, replies[0]!))!;
+    expect(root.zone).toBe('com');
+    expect(root.servers).toHaveLength(13);
+    expect(root.servers[0]).toEqual({ name: 'l.gtld-servers.net', ip: '192.41.162.30' });
+    const com = dnsReferral(dnsOf(r, replies[1]!))!;
+    expect(com).toMatchObject({ zone: 'example.com', servers: [{ name: 'hera.ns.cloudflare.com', ip: '108.162.192.162' }, { name: 'elliott.ns.cloudflare.com' }] });
+    expect(dnsReferral(dnsOf(r, replies[2]!))).toBeUndefined();
+  });
+
+  it('the laptop gets the same address as from a warm resolver, with the authoritative TTL, and the page arrives', () => {
+    const answer = (x: SimResult) => of(x, 'app').find((e) => e.action === 'dns-answer')!.info!;
+    expect(answer(r).addresses).toEqual(answer(warm).addresses);
+    expect(answer(r).ttl).toBe(300);
+    expect(of(r, 'app').some((e) => e.action === 'done')).toBe(true);
+    expect(of(r, 'drop')).toHaveLength(0);
+    for (const site of ['info.cern.ch', 'httpbin.org'] as const) {
+      const x = run({ cold: true, site });
+      expect(onUp(x)).toHaveLength(6);
+      expect(of(x, 'app').some((e) => e.action === 'done')).toBe(true);
+    }
+  });
+
+  it('each upstream cable takes half the measured round trip', () => {
+    onUp(r).forEach((e) => {
+      const hop = hops[Number(e.linkId.slice(2)) - 1]!;
+      expect(e.arrive - e.start).toBeGreaterThan(hop.rttMs / 2000);
+      expect(e.arrive - e.start).toBeLessThan(hop.rttMs / 2000 + 0.001);
+    });
+  });
+
+  it('answers a second question from its cache: the walk happens once', () => {
+    const reply = of(r, 'tx').find((e) => e.linkId === 'bb1' && e.fromDevice === 'resolver')!;
+    const again = run({ cold: true }, { randomLoss: 0, manual: [{ packetId: reply.packetId, linkId: 'bb1' }] });
+    const actions = of(again, 'app').map((e) => `${e.deviceId}:${e.action}`);
+    expect(actions.filter((a) => a === 'laptop:dns-lookup')).toHaveLength(2);
+    expect(actions.filter((a) => a === 'resolver:dns-serve')).toHaveLength(2);
+    expect(actions.filter((a) => a === 'resolver:dns-iterate')).toHaveLength(3);
+    expect(onUp(again)).toHaveLength(6);
+    expect(of(again, 'app').some((e) => e.action === 'done')).toBe(true);
+  });
+
+  it('with cold off nothing crosses the upstream cables, whatever else is on', () => {
+    for (const o of [{}, { site: 'info.cern.ch' as const }, { from: 'phone' as const }, { vpn: true }, { https: true }, { revisit: true }]) {
+      expect(onUp(run(o))).toHaveLength(0);
+    }
+    expect(warm.scenario.devices.map((d) => d.kind)).toEqual(expect.arrayContaining(['root-server', 'tld-server', 'auth-server']));
+    expect(warm.scenario.devices.find((d) => d.id === 'tld')).toMatchObject({ label: '.com server', sublabel: 'l.gtld-servers.net' });
+    expect(run({ site: 'info.cern.ch' }).scenario.devices.find((d) => d.id === 'tld')).toMatchObject({ label: '.ch server', sublabel: 'b.nic.ch' });
+  });
+
+  it('every field of every frame on the upstream cables is explained and checks out', () => {
+    const walk = (fs: Field[]): Field[] => fs.flatMap((f) => [f, ...walk(f.children ?? [])]);
+    for (const e of onUp(r)) {
+      for (const f of walk(r.pdus.get(e.frameId)!.layers.flatMap((l) => l.fields))) {
+        expect(f.display, f.key).not.toContain('✗');
+        expect(f.explain.length, `${f.key} needs an explanation`).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it('is deterministic', () => {
+    expect(JSON.stringify(run({ cold: true }).events)).toBe(JSON.stringify(r.events));
+  });
+
+  it('a server that stays quiet is asked twice, then the laptop hears SERVFAIL', () => {
+    const x = runScenario(fetchWebPage({ cold: true }), { seed: 1, faults: { randomLoss: 0, manual: [], cuts: [{ link: 'up2', from: 0 }] }, maxTime: 1000 });
+    const asked = of(x, 'tx').filter((e) => e.linkId === 'up2');
+    expect(asked).toHaveLength(2);
+    expect(asked[1]!.start - asked[0]!.start).toBeCloseTo(2, 3);
+    const answer = of(x, 'app').find((e) => e.action === 'dns-answer')!;
+    expect(answer.info?.rcode).toBe(2);
+    expect(of(x, 'app').find((e) => e.action === 'error')?.info?.reason).toBe('the resolver could not find out');
   });
 });
 

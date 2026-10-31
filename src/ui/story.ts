@@ -24,7 +24,8 @@ import {
  * log and PDU snapshots; nothing is invented, we only leave things out (ARP, teardown). Plain ACKs run as small blocks.
  * TTL only shows in an opened pill, and ports there and at a NAT.
  *
- *   1 Find the address  DNS question to the resolver and the answer back (UDP)
+ *   1 Find the address  DNS question to the resolver and the answer back (UDP); a cold resolver first walks
+ *                       root → TLD → authoritative, each referral a card saying who to ask next
  *   2 Say hello         SYN, SYN-ACK, ACK
  *   3 Get the page      GET / out, 200 OK back
  *
@@ -187,10 +188,21 @@ export function arpCardLabel(summary: string): string {
   return /is at (\S+)/.exec(summary)?.[1] !== undefined ? `at ${/is at (\S+)/.exec(summary)![1]}` : 'ARP';
 }
 
-/** "DNS query 0x85bb: example.com A?" → "example.com?", a response → its first address. */
+/**
+ * "DNS query 0x85bb: example.com A?" → "example.com?", a response → its first address, a referral → who to ask next:
+ * "ask .com" for a top-level zone, else the first server named, shortened to its first label and ending ("ask hera…com").
+ */
 export function dnsCardLabel(summary: string): string {
   const q = /^DNS query \S+: (\S+)/.exec(summary);
   if (q) return `${q[1]}?`;
+  const ref = /^DNS referral \S+: \S+ → (\S+) NS ([^,\s]+)/.exec(summary);
+  if (ref) {
+    const zone = ref[1]!;
+    const server = ref[2]!;
+    if (!zone.includes('.')) return `ask .${zone}`;
+    const labels = server.split('.');
+    return `ask ${server.length > 16 ? `${labels[0]}…${labels[labels.length - 1]}` : server}`;
+  }
   return /\d+\.\d+\.\d+\.\d+/.exec(summary)?.[0] ?? 'DNS';
 }
 
@@ -281,7 +293,8 @@ function httpMessage(line: string): Message | undefined {
 
 function messageOf(app: LayerPdu | undefined): Message | undefined {
   if (app?.protocol === 'http') return httpMessage(app.summary.replace(/^HTTP /, ''));
-  if (app?.protocol === 'dns' && app.summary.startsWith('DNS response')) return { kind: 'dns-answer', name: field(app, 'dns.question').split(' ')[0]! };
+  // A referral is a server's answer too: "not me, ask these"; it looked the name up to say so.
+  if (app?.protocol === 'dns' && /^DNS (response|referral)/.test(app.summary)) return { kind: 'dns-answer', name: field(app, 'dns.question').split(' ')[0]! };
   return undefined;
 }
 
@@ -430,11 +443,13 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
 
   const flags = p.tcp?.flags ?? 0;
   const firstTx = steps.find((s): s is Extract<Step, { kind: 'travel' | 'lost' }> => s.kind === 'travel' || s.kind === 'lost');
-  // A DNS question asked again by the same device, or the same DHCP message sent again: its timer ran out.
-  const askKey = p.kind === 'dhcp' ? `${origin}|${card}` : origin;
+  const to = arp ? field(arp, 'arp.tpa') : field(ip, 'ipv4.dst');
+  // A DNS question asked again by the same device of the same server, or the same DHCP message sent again: its timer ran
+  // out. (A cold resolver asks the same question of one server after another on its way down the hierarchy; those are not retries.)
+  const askKey = p.kind === 'dhcp' ? `${origin}|${card}` : `${origin}>${to}`;
   const ownDhcp = p.kind === 'dhcp' && clients.includes(origin);
   const askedAt = p.kind === 'dns' || ownDhcp ? asked.get(askKey) : undefined;
-  if ((p.kind === 'dns' && !packet.layers.some((x) => x.summary.startsWith('DNS response'))) || ownDhcp) asked.set(askKey, p.createdAt);
+  if ((p.kind === 'dns' && packet.layers.some((x) => x.summary.startsWith('DNS query'))) || ownDhcp) asked.set(askKey, p.createdAt);
   const resend = r.events.find((e) => e.type === 'tcp:retransmit' && e.packetId === p.id);
   const timer = resend?.type === 'tcp:retransmit' && resend.cause === 'rto' ? resend.rto : askedAt !== undefined ? p.createdAt - askedAt : undefined;
   return {
@@ -454,7 +469,7 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
     tunnel,
     trailer: eth.end - eth.payloadEnd,
     from: arp ? field(arp, 'arp.spa') : field(ip, 'ipv4.src'),
-    to: arp ? field(arp, 'arp.tpa') : field(ip, 'ipv4.dst'),
+    to,
     message: messageOf(app),
     steps,
     lost,

@@ -1,7 +1,7 @@
 import type { Ip4, Mac } from './bytes/addr';
 import type { TlsSession } from './proto/tls';
 
-export type DeviceKind = 'laptop' | 'phone' | 'home-router' | 'router' | 'dns-resolver' | 'web-server' | 'vpn-server';
+export type DeviceKind = 'laptop' | 'phone' | 'home-router' | 'router' | 'dns-resolver' | 'web-server' | 'vpn-server' | 'root-server' | 'tld-server' | 'auth-server';
 
 export interface IfaceSpec {
   /** Globally unique, e.g. "laptop.eth0". */
@@ -51,7 +51,19 @@ export type AppSpec =
     }
   /** The device starts with no address and gets one from the router by DHCP before the browser runs. */
   | { kind: 'dhcp-client'; /** What it calls itself (option 12), e.g. "laptop". */ hostName: string }
-  | { kind: 'dns-server'; records: Record<string, { ips: Ip4[]; ttl: number }>; processing: number }
+  | {
+      kind: 'dns-server';
+      /** What the resolver already has in its cache. */
+      records: Record<string, { ips: Ip4[]; ttl: number }>;
+      processing: number;
+      /**
+       * How to find out what is not cached: the servers of a real walk through the hierarchy, root first. The resolver
+       * asks the first, follows each referral to the server it names (the one with glue), and caches the final answer.
+       */
+      upstream?: { hops: { server: { name: string; ip: Ip4 } }[] };
+    }
+  /** A root, TLD or authoritative server: it answers a question for `name` with these captured bytes (only the id changes). */
+  | { kind: 'dns-authority'; answers: { name: string; response: Uint8Array }[]; processing: number }
   | {
       kind: 'http-server';
       response: Uint8Array;

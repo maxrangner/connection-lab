@@ -31,6 +31,21 @@ export function bytesToIp(b: Uint8Array, off: number): Ip4 {
   return [b[off], b[off + 1], b[off + 2], b[off + 3]].map((x) => x ?? 0).join('.');
 }
 
+/** An IPv6 address from 16 bytes, written the usual way: hex groups, the longest run of zero groups folded to "::". */
+export function bytesToIp6(b: Uint8Array, off: number): string {
+  const groups: number[] = [];
+  for (let i = 0; i < 8; i++) groups.push(((b[off + 2 * i] ?? 0) << 8) | (b[off + 2 * i + 1] ?? 0));
+  let best = { at: -1, len: 1 };
+  for (let i = 0; i < 8; i++) {
+    let j = i;
+    while (j < 8 && groups[j] === 0) j++;
+    if (j - i > best.len) best = { at: i, len: j - i };
+  }
+  const hexGroups = (gs: number[]): string => gs.map((g) => g.toString(16)).join(':');
+  if (best.at < 0) return hexGroups(groups);
+  return `${hexGroups(groups.slice(0, best.at))}::${hexGroups(groups.slice(best.at + best.len))}`;
+}
+
 export function ipToInt(ip: Ip4): number {
   const [a, b, c, d] = ipToBytes(ip) as [number, number, number, number];
   return ((a << 24) | (b << 16) | (c << 8) | d) >>> 0;

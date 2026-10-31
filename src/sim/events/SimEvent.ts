@@ -39,7 +39,10 @@ export type AppAction =
   | 'dns-lookup' // stub resolver sends a question
   | 'dns-answer' // client got the addresses
   | 'dns-cache-hit' // client still had the address cached, no lookup needed
-  | 'dns-serve' // resolver looked up its cache and answers
+  | 'dns-serve' // resolver looked up its cache and answers; a root/TLD/authoritative server answers too
+  | 'dns-iterate' // resolver has no cached answer and asks a server of the hierarchy (RD=0)
+  | 'dns-referral' // resolver was told which servers to ask next
+  | 'dns-learn' // resolver got the authoritative answer and caches it
   | 'dhcp-discover' // client with no address asks the whole link for one
   | 'dhcp-offer' // server proposes an address and a lease
   | 'dhcp-request' // client asks for the offered address
@@ -54,7 +57,7 @@ export type AppAction =
 
 /** Everything that can happen, in the order it happens. Narration text is derived in the UI. */
 export type SimEventPayload =
-  | { type: 'app'; deviceId: string; app: 'browser' | 'dns-client' | 'dns-server' | 'dhcp-client' | 'dhcp-server' | 'http-server'; action: AppAction; pduId?: string; info?: Record<string, string | number | string[]> }
+  | { type: 'app'; deviceId: string; app: 'browser' | 'dns-client' | 'dns-server' | 'dns-authority' | 'dhcp-client' | 'dhcp-server' | 'http-server'; action: AppAction; pduId?: string; info?: Record<string, string | number | string[]> }
   | { type: 'encapsulate'; deviceId: string; packetId: string; layer: LayerNum; protocol: Protocol; pduId: string }
   | { type: 'decapsulate'; deviceId: string; packetId: string; layer: LayerNum; protocol: Protocol; pduId: string }
   | { type: 'arp:miss'; deviceId: string; ip: Ip4; packetId: string }

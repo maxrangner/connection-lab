@@ -1,5 +1,7 @@
 import { ascii, fromBase64 } from '../bytes/bytes';
-import type { Scenario } from '../model';
+import type { DeviceSpec, LinkSpec, RouteSpec, Scenario } from '../model';
+import { dnsAddresses, parseDns } from '../proto/dns';
+import { DNS_TRACES } from './dnsTraceCapture';
 import {
   CAPTURED_A_RECORDS,
   CAPTURED_DNS_TTL,
@@ -19,6 +21,8 @@ import { PHOTO_A_RECORDS, PHOTO_DNS_TTL, PHOTO_HOST, PHOTO_HTTP_REQUEST, PHOTO_H
  * - The home router's public address is from 203.0.113.0/24, a documentation range (RFC 5737) standing in for
  *   whatever address your ISP gives you. The ISP's backbone links use 198.51.100.0/24, also documentation.
  * - 1.1.1.1 (Cloudflare's public resolver) and example.com's addresses are real.
+ * - The root, TLD and authoritative name servers have the real addresses the captured walk used (dnsTraceCapture.ts).
+ *   The resolver's own ends of the cables to them are from 198.51.100.0/24 (documentation range), like the ISP's.
  * - MACs: the first three bytes (OUI) identify a vendor; these are plausible but made up.
  */
 export const ADDR = {
@@ -36,6 +40,12 @@ export const ADDR = {
   vpnToResolver: { mac: '00:0c:29:5a:cc:05' },
   resolver: { ip: '1.1.1.1', mac: '00:0c:29:1d:aa:01' },
   resolverFromVpn: { mac: '00:0c:29:1d:aa:02' },
+  resolverUp: [
+    { ip: '198.51.100.17', mac: '00:0c:29:1d:aa:03' },
+    { ip: '198.51.100.21', mac: '00:0c:29:1d:aa:04' },
+    { ip: '198.51.100.25', mac: '00:0c:29:1d:aa:05' },
+  ],
+  nameServers: [{ mac: '00:50:56:9a:00:01' }, { mac: '00:50:56:9a:00:02' }, { mac: '00:50:56:9a:00:03' }],
   server: { ip: CAPTURED_FROM_IP, mac: '00:0c:29:7e:bb:02' },
   serverFromVpn: { mac: '00:0c:29:7e:bb:03' },
 } as const;
@@ -81,6 +91,12 @@ export interface FetchWebPageOptions {
    * router by DHCP first: DISCOVER, OFFER, REQUEST, ACK. The lease hands out the same addresses the scenario uses.
    */
   dhcp?: boolean;
+  /**
+   * A cold resolver: it has nothing cached for the site, so it really walks the hierarchy with the captured bytes of a real
+   * walk: it asks a root server, is referred to the TLD's servers, asks one, is referred to the site's own, asks one, caches
+   * the answer and only then answers the device. Off, the three servers stand idle and nothing changes.
+   */
+  cold?: boolean;
 }
 
 /** How long after the first device the other one starts, in seconds: close enough that their packets interleave. */
@@ -93,10 +109,53 @@ const SITES = {
   'httpbin.org': { url: `http://${PHOTO_HOST}${PHOTO_PATH}`, ip: PHOTO_IP, request: PHOTO_HTTP_REQUEST, response: PHOTO_HTTP_RESPONSE_BASE64, tls: tlsPhoto },
 } as const;
 
+/**
+ * The real walk root → TLD → authoritative for a site, as three devices behind the resolver, each with its real address and
+ * its captured reply, on a cable whose delay is half the round-trip time measured to it. They stand there in every run.
+ */
+function nameServers(host: string): { devices: DeviceSpec[]; links: LinkSpec[]; routes: RouteSpec[]; arp: Record<string, string>; answer: string | undefined } {
+  const hops = DNS_TRACES[host]?.hops ?? [];
+  // The classic three hops; a longer walk would still end at its last server.
+  const picked = [hops[0], hops[1], hops[hops.length - 1]];
+  const kinds = ['root-server', 'tld-server', 'auth-server'] as const;
+  const ids = ['root', 'tld', 'auth'];
+  const labels = ['Root server', `.${host.split('.').pop()} server`, 'Name server'];
+  const devices: DeviceSpec[] = [];
+  const links: LinkSpec[] = [];
+  const routes: RouteSpec[] = [];
+  const arp: Record<string, string> = {};
+  picked.forEach((hop, i) => {
+    if (!hop) return;
+    const up = ADDR.resolverUp[i]!;
+    const mac = ADDR.nameServers[i]!.mac;
+    const delay = hop.rttMs / 2000;
+    devices.push({
+      id: ids[i]!,
+      label: labels[i]!,
+      sublabel: hop.server.name,
+      kind: kinds[i]!,
+      layout: { x: 1920 + i * 240, y: 205 },
+      ifaces: [{ id: `${ids[i]}.eth0`, name: 'eth0', mac, ip: hop.server.ip, prefixLen: 32 }],
+      routes: [{ network: '0.0.0.0', prefixLen: 0, via: up.ip, iface: `${ids[i]}.eth0` }],
+      arp: { [up.ip]: up.mac },
+      apps: [{ kind: 'dns-authority', processing: 0.0002, answers: [{ name: host, response: fromBase64(hop.response) }] }],
+    });
+    links.push({ id: `up${i + 1}`, a: `resolver.up${i + 1}`, b: `${ids[i]}.eth0`, bitsPerSecond: 1e10, delay, label: `Backbone · 10 Gbit/s · ${Math.round(delay * 1e4) / 10} ms`, name: 'a backbone link' });
+    routes.push({ network: hop.server.ip, prefixLen: 32, iface: `resolver.up${i + 1}` });
+    arp[hop.server.ip] = mac;
+  });
+  const last = hops[hops.length - 1];
+  return { devices, links, routes, arp, answer: last && dnsAddresses(parseDns(fromBase64(last.response), 0))[0] };
+}
+
 export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
   const mss = opts.mss ?? 1460;
   const site = SITES[opts.site ?? 'example.com'];
-  const server = { ip: site.ip, mac: ADDR.server.mac };
+  const host = new URL(site.url).hostname;
+  const upstream = nameServers(host);
+  const cold = !!opts.cold && !!upstream.answer;
+  // Cold, the site's address is whatever its own name server answered on the day of the walk.
+  const server = { ip: cold ? upstream.answer! : site.ip, mac: ADDR.server.mac };
   const revisit = !!opts.revisit;
   const tls = opts.https ? { host: site.tls.TLS_HOST, flights: site.tls.TLS_FLIGHTS, secrets: site.tls.TLS_SECRETS } : undefined;
   const url = opts.https ? site.url.replace(/^http:/, 'https:') : site.url;
@@ -233,6 +292,8 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           { network: '188.184.0.0', prefixLen: 15, iface: 'isp.p2' },
           // The cloud address httpbin.org answered from.
           { network: PHOTO_IP, prefixLen: 32, iface: 'isp.p2' },
+          // Cold, the walk may end at another of the site's addresses than the one the page was captured from.
+          ...(server.ip !== site.ip ? [{ network: server.ip, prefixLen: 32, iface: 'isp.p2' }] : []),
         ],
         arp: {
           [ADDR.homeWan.ip]: ADDR.homeWan.mac,
@@ -271,24 +332,32 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
         ifaces: [
           { id: 'resolver.eth0', name: 'eth0', mac: ADDR.resolver.mac, ip: ADDR.resolver.ip, prefixLen: 32 },
           { id: 'resolver.eth1', name: 'eth1', mac: ADDR.resolverFromVpn.mac, ip: ADDR.resolver.ip, prefixLen: 32 },
+          // Its own cables up to the root, TLD and authoritative servers.
+          ...ADDR.resolverUp.map((up, i) => ({ id: `resolver.up${i + 1}`, name: `up${i + 1}`, mac: up.mac, ip: up.ip, prefixLen: 32 })),
         ],
         routes: [
           { network: '0.0.0.0', prefixLen: 0, via: ADDR.ispToResolver.ip, iface: 'resolver.eth0' },
           { network: ADDR.vpn.ip, prefixLen: 32, iface: 'resolver.eth1' },
+          ...upstream.routes,
         ],
-        arp: { [ADDR.ispToResolver.ip]: ADDR.ispToResolver.mac, [ADDR.vpn.ip]: ADDR.vpnToResolver.mac },
+        arp: { [ADDR.ispToResolver.ip]: ADDR.ispToResolver.mac, [ADDR.vpn.ip]: ADDR.vpnToResolver.mac, ...upstream.arp },
         apps: [
           {
             kind: 'dns-server',
             processing: 0.0003,
-            records: {
-              'example.com': { ips: [...CAPTURED_A_RECORDS], ttl: CAPTURED_DNS_TTL },
-              [CERN_HOST]: { ips: [...CERN_A_RECORDS], ttl: CERN_DNS_TTL },
-              [PHOTO_HOST]: { ips: [...PHOTO_A_RECORDS], ttl: PHOTO_DNS_TTL },
-            },
+            // Cold, the site is missing from the cache and the resolver knows the walk to make for it.
+            records: Object.fromEntries(
+              Object.entries({
+                'example.com': { ips: [...CAPTURED_A_RECORDS], ttl: CAPTURED_DNS_TTL },
+                [CERN_HOST]: { ips: [...CERN_A_RECORDS], ttl: CERN_DNS_TTL },
+                [PHOTO_HOST]: { ips: [...PHOTO_A_RECORDS], ttl: PHOTO_DNS_TTL },
+              }).filter(([name]) => !(cold && name === host)),
+            ),
+            ...(cold ? { upstream: { hops: DNS_TRACES[host]!.hops.map((h) => ({ server: h.server })) } } : {}),
           },
         ],
       },
+      ...upstream.devices,
       {
         id: 'server',
         label: 'Web server',
@@ -326,6 +395,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
       { id: 'bb2', a: 'isp.p2', b: 'server.eth0', bitsPerSecond: 1e10, delay: 0.004, label: 'Backbone · 10 Gbit/s · 4 ms', name: 'a backbone link' },
       { id: 'bb4', a: 'vpn.eth1', b: 'server.eth1', bitsPerSecond: 1e10, delay: 0.004, label: 'Backbone · 10 Gbit/s · 4 ms', name: 'a backbone link' },
       { id: 'bb5', a: 'vpn.eth2', b: 'resolver.eth1', bitsPerSecond: 1e10, delay: 0.003, label: 'Backbone · 10 Gbit/s · 3 ms', name: 'a backbone link' },
+      ...upstream.links,
     ],
   };
 }
