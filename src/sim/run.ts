@@ -2,7 +2,7 @@ import type { PacketInfo, PduSnapshot } from './core/Simulator';
 import type { SimEvent } from './events/SimEvent';
 import { NO_FAULTS, type FaultPlan } from './faults';
 import type { Scenario } from './model';
-import { startBrowser, startDnsServer, startHttpServer } from './stack/apps';
+import { startBrowser, startDnsAuthority, startDnsServer, startHttpServer } from './stack/apps';
 import { startHttpsServer } from './stack/https';
 import { TunnelClient, VpnServer } from './stack/vpn';
 import type { Device } from './stack/Device';
@@ -49,6 +49,7 @@ export function runScenario(scenario: Scenario, opts: RunOptions): SimResult {
     if (!(dev instanceof Host)) continue;
     for (const app of spec.apps) {
       if (app.kind === 'dns-server') startDnsServer(dev, app);
+      else if (app.kind === 'dns-authority') startDnsAuthority(dev, app);
       else if (app.kind === 'http-server') {
         startHttpServer(dev, app, scenario.tcp.serverMss);
         if (app.tls) startHttpsServer(dev, app.tls, app.processing, scenario.tcp.serverMss);

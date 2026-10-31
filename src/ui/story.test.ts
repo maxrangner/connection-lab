@@ -58,6 +58,60 @@ describe('network story', () => {
     expect(cardLabel('HTTP HTTP/1.1 200 OK')).toBe('200 OK');
     expect(dnsCardLabel('DNS query 0x85bb: example.com A?')).toBe('example.com?');
     expect(dnsCardLabel('DNS response 0x85bb: example.com A 104.20.23.154, 172.66.147.243')).toBe('104.20.23.154');
+    expect(dnsCardLabel('DNS referral 0xb8c1: example.com → com NS l.gtld-servers.net, j.gtld-servers.net, …')).toBe('ask .com');
+    expect(dnsCardLabel('DNS referral 0x80dd: example.com → example.com NS hera.ns.cloudflare.com, elliott.ns.cloudflare.com')).toBe('ask hera…com');
+    expect(dnsCardLabel('DNS referral 0x80dd: info.cern.ch → cern.ch NS scsnms.switch.ch, ext-dns-1.cern.ch, …')).toBe('ask scsnms.switch.ch');
+    expect(dnsCardLabel('DNS referral 0x80dd: httpbin.org → httpbin.org NS ns-173.awsdns-21.com, ns-884.awsdns-46.net, …')).toBe('ask ns-173…com');
+  });
+});
+
+describe('a cold resolver in the story', () => {
+  const s = buildStory(runScenario(fetchWebPage({ cold: true }), { seed: 1, faults: { randomLoss: 0, manual: [] } }));
+  const dns = s.trips.filter((t) => t.chapter === 'dns');
+
+  it('follows the walk root → .com → the site’s own server before the answer comes back', () => {
+    expect(dns.map((t) => [t.origin, t.card])).toEqual([
+      ['laptop', 'example.com?'],
+      ['resolver', 'example.com?'],
+      ['root', 'ask .com'],
+      ['resolver', 'example.com?'],
+      ['tld', 'ask hera…com'],
+      ['resolver', 'example.com?'],
+      ['auth', '104.20.23.154'],
+      ['resolver', '104.20.23.154'],
+    ]);
+    expect(dns.every((t) => t.card!.length <= 20)).toBe(true);
+    expect(s.trips[8]!.l4Label).toBe('SYN');
+  });
+
+  it('the same question to one server after another is not a retry', () => {
+    expect(dns.some((t) => t.retry || t.timedOut)).toBe(false);
+    expect(dns.filter((t) => t.outward)).toHaveLength(1);
+  });
+
+  it('every server looks the name up before it answers, and says what it found', () => {
+    const lookups = s.trips.flatMap((t) => t.steps.flatMap((x) => (x.kind === 'lookup' && x.what === 'dns' ? [[x.device, x.ask, x.found]] : [])));
+    expect(lookups).toEqual([
+      ['root', 'example.com', 'ask .com'],
+      ['tld', 'example.com', 'ask hera…com'],
+      ['auth', 'example.com', '104.20.23.154'],
+      ['resolver', 'example.com', '104.20.23.154'],
+    ]);
+  });
+
+  it('the answer the laptop keeps is the resolver’s, with the authoritative TTL', () => {
+    expect(s.dnsAnswer).toBe('104.20.23.154');
+    expect(s.dnsTtl).toBe(300);
+    expect(s.remembered).toBeNull();
+    expect(s.pageTitle).toBe('Example Domain');
+    expect(s.names['198.41.0.4']).toBe('Root server');
+  });
+
+  it('lays out on a timeline, with trips over the resolver’s own cables', () => {
+    const tl = buildTimeline(s);
+    const links = new Set(tl.segs.flatMap((x) => (x.step.kind === 'travel' ? [x.step.link] : [])));
+    for (const l of ['up1', 'up2', 'up3']) expect(links.has(l)).toBe(true);
+    expect(tl.reactions.filter((r) => r.device === 'resolver' && r.face === 'thumbs').length).toBeGreaterThanOrEqual(1);
   });
 });
 
