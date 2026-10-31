@@ -1,6 +1,15 @@
 import { drawSpyglass } from './icons';
 import type { Seen } from './story';
-import { el } from './svg';
+import { el, setText } from './svg';
+
+/**
+ * Which read to look at after stepping `by` from `picked` (null: following the newest) through `count` reads:
+ * stepping onto the newest goes back to following it.
+ */
+export function stepRead(picked: number | null, count: number, by: number): number | null {
+  const i = Math.min(picked ?? Infinity, count - 1) + by;
+  return i >= count - 1 ? null : Math.max(0, i);
+}
 
 /**
  * The popup above the bar with what the spyglass has read. It stays until dismissed and follows the newest read, unless
@@ -61,8 +70,7 @@ export class SpyCard {
   }
 
   private step(by: number): void {
-    const i = this.index + by;
-    this.picked = i >= this.log.length - 1 ? null : Math.max(0, i);
+    this.picked = stepRead(this.picked, this.log.length, by);
     this.draw();
   }
 
@@ -73,7 +81,7 @@ export class SpyCard {
     if (!seen) return;
     this.older.disabled = i === 0;
     this.newer.disabled = i === this.log.length - 1;
-    this.count.textContent = `${i + 1} / ${this.log.length}`;
+    setText(this.count, `${i + 1} / ${this.log.length}`);
     if (seen === this.drawn) return;
     this.drawn = seen;
     this.panel.className = `spy-card spy-${seen.kind}`;

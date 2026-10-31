@@ -1,4 +1,4 @@
-import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, iso, lerp, v3, type Pt, type Vec3 } from './project';
+import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, iso, ISO_X, ISO_Y, lerp, v3, type Pt, type Vec3 } from './project';
 import { box, tile } from './prims';
 import { el } from './svg';
 import type { Step } from './story';
@@ -30,7 +30,7 @@ function pill(parent: SVGGElement, c: Pt, text: string, scale: number, op: numbe
 /** Text lying flat on a page, reading along +x. */
 function flatText(parent: SVGGElement, p: Vec3, text: string, cls: string): void {
   const s = iso(p.x, p.y, p.z);
-  const t = el('text', { class: cls, dy: '0.35em', transform: `matrix(0.894 0.447 -0.894 0.447 ${s.sx.toFixed(1)} ${s.sy.toFixed(1)})` }, parent);
+  const t = el('text', { class: cls, dy: '0.35em', transform: `matrix(${ISO_X.toFixed(3)} ${ISO_Y.toFixed(3)} ${(-ISO_X).toFixed(3)} ${ISO_Y.toFixed(3)} ${s.sx.toFixed(1)} ${s.sy.toFixed(1)})` }, parent);
   t.textContent = text;
 }
 
@@ -99,7 +99,7 @@ export function drawBook(parent: SVGGElement, c: Vec3, top: Vec3, s: Lookup, k: 
 /** A flat sheet of paper standing up, facing the viewer's left, with the page's title on it. */
 function sheet(parent: SVGGElement, c: Pt, title: string, scale: number, op: number): void {
   const w = Math.max(92, title.length * 6.4 + 20);
-  const g = el('g', { class: 'web-sheet', opacity: op.toFixed(3), transform: `matrix(${(0.894 * scale).toFixed(3)} ${(0.447 * scale).toFixed(3)} 0 ${scale.toFixed(3)} ${c.sx.toFixed(1)} ${c.sy.toFixed(1)})` }, parent);
+  const g = el('g', { class: 'web-sheet', opacity: op.toFixed(3), transform: `matrix(${(ISO_X * scale).toFixed(3)} ${(ISO_Y * scale).toFixed(3)} 0 ${scale.toFixed(3)} ${c.sx.toFixed(1)} ${c.sy.toFixed(1)})` }, parent);
   el('rect', { x: -w / 2, y: -34, width: w, height: 68, rx: 3 }, g);
   el('text', { 'text-anchor': 'middle', y: -16, dy: '0.35em' }, g).textContent = title;
   for (const [i, l] of [0.8, 0.62, 0.7].entries()) el('rect', { x: (-w * l) / 2, y: 0 + i * 9, width: w * l, height: 3, rx: 1.5, class: 'web-line' }, g);

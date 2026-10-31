@@ -621,15 +621,21 @@ export interface Crossing {
   seen?: Seen;
 }
 
-/** Every frame of the run that crosses a cable. */
+/** Every frame of the run that crosses a cable. A timeline never changes, so its list is made once. */
 export function crossings(tl: Pick<Timeline, 'segs'>): Crossing[] {
-  return tl.segs.flatMap((s): Crossing[] => {
-    const st = s.step;
-    if (s.flow) return s.flow.flatMap((p) => p.hops.map((h) => ({ trip: p.trip, link: h.link, at: h.at, t0: h.t0, t1: h.t1, lost: h.lost, seen: h.seen })));
-    if (st.kind !== 'travel' && st.kind !== 'lost') return [];
-    return [{ trip: s.trip, link: st.link, at: st.at, t0: s.t0, t1: s.t1, lost: st.kind === 'lost', seen: st.seen }];
-  });
+  let list = CROSSINGS.get(tl.segs);
+  if (!list) {
+    list = tl.segs.flatMap((s): Crossing[] => {
+      const st = s.step;
+      if (s.flow) return s.flow.flatMap((p) => p.hops.map((h) => ({ trip: p.trip, link: h.link, at: h.at, t0: h.t0, t1: h.t1, lost: h.lost, seen: h.seen })));
+      if (st.kind !== 'travel' && st.kind !== 'lost') return [];
+      return [{ trip: s.trip, link: st.link, at: st.at, t0: s.t0, t1: s.t1, lost: st.kind === 'lost', seen: st.seen }];
+    });
+    CROSSINGS.set(tl.segs, list);
+  }
+  return list;
 }
+const CROSSINGS = new WeakMap<Seg[], Crossing[]>();
 
 /** What a spyglass put on a line at visual time `from` has read by v, oldest first. It reads a frame a quarter of the way along. */
 export function spyLog(tl: Timeline, line: string, v: number, from = -Infinity): Seen[] {
@@ -697,7 +703,7 @@ export interface LockPose {
   key: { to: number; turn: number } | null;
 }
 
-const NO_LOCK: LockPose = { show: false, drop: 0, open: 0, op: 1, dark: 0, key: null };
+export const NO_LOCK: LockPose = { show: false, drop: 0, open: 0, op: 1, dark: 0, key: null };
 const SHUT: LockPose = { show: true, drop: 0, open: 0, op: 1, dark: 1, key: null };
 
 export function lockPose(seg: Seg, k: number): LockPose {

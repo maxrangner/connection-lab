@@ -1,6 +1,6 @@
 import { concat, toAscii } from '../bytes/bytes';
 import type { AppSpec } from '../model';
-import { buildDnsQuery, buildDnsResponse, parseDns } from '../proto/dns';
+import { buildDnsQuery, buildDnsResponse, DNS_RCODE_NXDOMAIN, DNS_RCODE_OK, parseDns } from '../proto/dns';
 import type { Host } from './Host';
 import { httpsClient } from './https';
 
@@ -25,7 +25,7 @@ export function httpMessageComplete(bytes: Uint8Array): boolean {
 }
 
 /** Stub resolver (like glibc): one UDP question to the configured resolver, retried after a timeout. */
-function resolve(host: Host, name: string, resolver: string, done: (ips: string[]) => void, fail: () => void): void {
+function resolve(host: Host, name: string, resolver: string, done: (ips: string[]) => void, fail: (reason: string) => void): void {
   const sim = host.sim;
   const port = host.ephemeralPort();
   const id = host.random32() & 0xffff;
@@ -47,7 +47,7 @@ function resolve(host: Host, name: string, resolver: string, done: (ips: string[
       if (attempt < DNS_ATTEMPTS) send();
       else {
         host.udpUnbind(port);
-        fail();
+        fail('DNS lookup timed out');
       }
     });
   };
@@ -64,9 +64,11 @@ function resolve(host: Host, name: string, resolver: string, done: (ips: string[
       app: 'dns-client',
       action: 'dns-answer',
       pduId,
-      info: { name, addresses: ips, ttl: msg.answers[0]?.ttl ?? 0 },
+      info: { name, addresses: ips, ttl: msg.answers[0]?.ttl ?? 0, rcode: msg.rcode },
     });
-    done(ips);
+    // An error code or an empty answer is a real answer, just not one we can connect to.
+    if (msg.rcode !== DNS_RCODE_OK || ips.length === 0) fail(msg.rcode === DNS_RCODE_NXDOMAIN ? 'no such name' : 'no address');
+    else done(ips);
   });
   send();
 }
@@ -75,7 +77,7 @@ export function startBrowser(host: Host, spec: BrowserSpec, mss: number): void {
   const sim = host.sim;
   const url = new URL(spec.url);
   sim.emit({ type: 'app', deviceId: host.id, app: 'browser', action: 'start', info: { url: spec.url } });
-  const lookup = (done: (ips: string[]) => void, fail: () => void): void => {
+  const lookup = (done: (ips: string[]) => void, fail: (reason: string) => void): void => {
     if (!spec.knownAddress) return resolve(host, url.hostname, spec.resolver, done, fail);
     sim.emit({ type: 'app', deviceId: host.id, app: 'dns-client', action: 'dns-cache-hit', info: { name: url.hostname, addresses: [spec.knownAddress] } });
     done([spec.knownAddress]);
@@ -140,7 +142,7 @@ export function startBrowser(host: Host, spec: BrowserSpec, mss: number): void {
         },
       });
     },
-    () => sim.emit({ type: 'app', deviceId: host.id, app: 'browser', action: 'error', info: { reason: 'DNS lookup timed out' } }),
+    (reason) => sim.emit({ type: 'app', deviceId: host.id, app: 'browser', action: 'error', info: { reason } }),
   );
 }
 
@@ -151,14 +153,16 @@ export function startDnsServer(host: Host, spec: DnsServerSpec): void {
     const name = q.questions[0]?.name ?? '';
     const rec = spec.records[name.toLowerCase()];
     sim.after(spec.processing, () => {
+      // A name nobody knows gets an empty answer with rcode 3: "no such name" (NXDOMAIN).
       const resp = buildDnsResponse(
         q.id,
         name,
         (rec?.ips ?? []).map((ip) => ({ ip, ttl: rec?.ttl ?? 0 })),
+        rec ? DNS_RCODE_OK : DNS_RCODE_NXDOMAIN,
       );
-      const pk = sim.newPacket(host.id, 'dns', `DNS response: ${name} A ${rec?.ips.join(', ') ?? '(none)'}`);
+      const pk = sim.newPacket(host.id, 'dns', `DNS response: ${name} A ${rec?.ips.join(', ') ?? '(no such name)'}`);
       const pduId = sim.pdu(pk.id, resp, 'dns');
-      sim.emit({ type: 'app', deviceId: host.id, app: 'dns-server', action: 'dns-serve', pduId, info: { name, addresses: rec?.ips ?? [], from: from.ip } });
+      sim.emit({ type: 'app', deviceId: host.id, app: 'dns-server', action: 'dns-serve', pduId, info: { name, addresses: rec?.ips ?? [], from: from.ip, rcode: rec ? DNS_RCODE_OK : DNS_RCODE_NXDOMAIN } });
       sim.emit({ type: 'encapsulate', deviceId: host.id, packetId: pk.id, layer: 5, protocol: 'dns', pduId });
       host.udpSend(53, from.ip, from.port, resp, pk.id);
     });

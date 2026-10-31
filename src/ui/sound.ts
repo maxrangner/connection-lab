@@ -88,10 +88,17 @@ export class Sound {
     o.stop(t + dur + 0.02);
   }
 
+  /** One buffer of fading noise per length, made the first time it is needed. */
+  private readonly noises = new Map<number, AudioBuffer>();
+
   private noise(c: AudioContext, t: number, dur: number, gain: number, cutoff: number): void {
-    const buf = c.createBuffer(1, Math.ceil(c.sampleRate * dur), c.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+    let buf = this.noises.get(dur);
+    if (!buf) {
+      buf = c.createBuffer(1, Math.ceil(c.sampleRate * dur), c.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+      this.noises.set(dur, buf);
+    }
     const src = c.createBufferSource();
     src.buffer = buf;
     const filter = c.createBiquadFilter();

@@ -32,17 +32,16 @@ let spyLine: string | null = null;
 let spyFrom = -Infinity;
 /** The cables that are cut. They can change any time, before or during a run. */
 const cutLines = new Set<string>();
+// Only the Setup is remembered across visits: a cable left cut or a spyglass left out would make the next visit fail for no visible reason.
 try {
-  const saved = JSON.parse(localStorage.getItem('net.features') ?? '{}') as Partial<Features> & { spyLine?: string | null; cutLines?: string[] };
+  const saved = JSON.parse(localStorage.getItem('net.features') ?? '{}') as Partial<Features>;
   for (const k of SETTINGS) features[k] = !!saved[k];
-  spyLine = saved.spyLine ?? null;
-  for (const l of saved.cutLines ?? []) cutLines.add(l);
 } catch {
   // Nothing remembered; start plain.
 }
 function remember(): void {
   try {
-    localStorage.setItem('net.features', JSON.stringify({ ...features, spyLine, cutLines: [...cutLines] }));
+    localStorage.setItem('net.features', JSON.stringify(features));
   } catch {
     // Not remembered; fine.
   }
@@ -191,8 +190,9 @@ function toggleCut(line: string): void {
   const on = !cutLines.has(line);
   if (on) cutLines.add(line);
   else cutLines.delete(line);
-  remember();
   if (mode === 'play') {
+    // A step under way was aimed at the old timeline.
+    seek = null;
     for (const r of on ? ridingOn(tl, v, line) : []) {
       faults.push({ packetId: r.packetId, linkId: line });
       knocks.set(`${r.packetId}@${line}`, r.k);
@@ -226,7 +226,6 @@ function setSpyLine(line: string | null): void {
   spyFrom = mode === 'play' ? v : idleV;
   scene.setSpy(line);
   spyCard.reset();
-  remember();
   sound.play('snap');
 }
 const USE: Record<Tool, (line: string) => void> = { spy: (l) => setSpyLine(spyLine === l ? null : l), cut: toggleCut };
@@ -283,6 +282,7 @@ const chapter = document.createElement('button');
 chapter.className = 'chapter';
 chapter.hidden = true;
 chapter.setAttribute('aria-haspopup', 'true');
+chapter.setAttribute('aria-expanded', 'false');
 root.appendChild(chapter);
 let shownChapter: Chapter | null = null;
 
@@ -291,31 +291,37 @@ const chapterMenu = document.createElement('div');
 chapterMenu.className = 'chapter-menu';
 chapterMenu.hidden = true;
 root.appendChild(chapterMenu);
+/** The list's items by chapter, so the current one can be marked as the run moves on. */
+const chapterItems = new Map<Chapter, HTMLButtonElement>();
+function showChapterMenu(open: boolean): void {
+  chapterMenu.hidden = !open;
+  chapter.setAttribute('aria-expanded', String(open));
+}
 chapter.addEventListener('click', () => {
   if (!chapterMenu.hidden) {
-    chapterMenu.hidden = true;
+    showChapterMenu(false);
     return;
   }
   chapterMenu.replaceChildren();
-  const seen = new Set<Chapter>();
+  chapterItems.clear();
   for (const s of tl.segs) {
     const ch = s.trip.chapter;
-    if (seen.has(ch)) continue;
-    seen.add(ch);
+    if (chapterItems.has(ch)) continue;
     const item = document.createElement('button');
     item.innerHTML = `<span class="chapter-num">${chapterNumber(ch)}</span><span>${chapterName(ch)}</span>`;
     item.classList.toggle('current', ch === shownChapter);
     item.addEventListener('click', () => {
+      // Jumping keeps the viewer's pause: they land at the chapter's start, playing or not as before.
       v = s.t0;
       seek = null;
-      paused = false;
       peek = peekTarget = 0;
       camFree = false;
-      chapterMenu.hidden = true;
+      showChapterMenu(false);
     });
+    chapterItems.set(ch, item);
     chapterMenu.appendChild(item);
   }
-  chapterMenu.hidden = false;
+  showChapterMenu(true);
 });
 
 const controls = document.createElement('div');
@@ -329,7 +335,7 @@ const button = (text: string, label: string, onClick: () => void): HTMLButtonEle
   return b;
 };
 const backBtn = button('⏮', 'Step back', () => step(-1));
-const pauseBtn = button('', 'Pause or play', togglePause);
+const pauseBtn = button('', 'Pause', togglePause);
 const nextBtn = button('⏭', 'Step forward', () => step(1));
 const speedMenu = new Menu<string>(controls, root, '1×', 'Speed', ['0.5', '1', '2'].map((id) => ({ id, label: `${id}×` })), (id) => {
   speed = Number(id);
@@ -356,12 +362,17 @@ toolsMenu.button.addEventListener('click', () => {
 const setupMenu = new Menu<Setting>(controls, root, 'Setup', 'Setup', SETUP, (id) => setSetting(id, !features[id]));
 showSetup();
 const menus: { isOpen: boolean; setOpen(open: boolean): void; place(): void; button: HTMLButtonElement }[] = [speedMenu, toolsMenu, setupMenu];
-for (const menu of menus) menu.button.addEventListener('click', () => { for (const other of menus) if (other !== menu) other.setOpen(false); });
+for (const menu of menus) {
+  menu.button.addEventListener('click', () => {
+    for (const other of menus) if (other !== menu) other.setOpen(false);
+    showChapterMenu(false);
+  });
+}
 const placeMenus = (): void => {
   for (const menu of menus) menu.place();
   spyCard.place(controls);
 };
-const soundBtn = button('♪', 'Sound', () => {
+const soundBtn = button('♪', 'Mute', () => {
   sound.muted = !sound.muted;
   try {
     localStorage.setItem('net.muted', sound.muted ? '1' : '0');
@@ -370,6 +381,8 @@ const soundBtn = button('♪', 'Sound', () => {
   }
 });
 button('↺', 'Reset', reset);
+// On a narrow screen the bar breaks into two rows here (see app.css).
+controls.appendChild(Object.assign(document.createElement('span'), { className: 'bar-break' }));
 root.appendChild(controls);
 // Outside the bar, so the bar never moves.
 const followBtn = document.createElement('button');
@@ -447,6 +460,9 @@ for (const wanted of ['page', 'photo'] as const) {
     g.classList.toggle('over', !!dropTarget());
   });
   g.addEventListener('pointerup', dropCard);
+  // A drag the browser takes over (a second finger, a palm, leaving the page) still puts the card down.
+  g.addEventListener('pointercancel', dropCard);
+  g.addEventListener('lostpointercapture', dropCard);
 }
 
 /** The laptop or phone the card is over, if any. */
@@ -510,6 +526,7 @@ function spread(): { d: number; x: number; y: number } {
 svg.addEventListener('pointerdown', (e) => {
   // Working the stage leaves the Tools menu open while a tool is in hand; the other popups give way to it.
   for (const menu of menus) if (menu !== toolsMenu || !tool) menu.setOpen(false);
+  showChapterMenu(false);
   const target = e.target as Element;
   const chip = target.closest('[data-chip]')?.getAttribute('data-chip') as PartKey | undefined;
   if (chip) {
@@ -579,7 +596,9 @@ svg.addEventListener(
   (e) => {
     e.preventDefault();
     camFree = true;
-    zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0015));
+    // Wheel steps come in pixels, lines or pages depending on the browser and mouse.
+    const px = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 100 : 1);
+    zoomAt(e.clientX, e.clientY, Math.exp(-px * 0.0015));
   },
   { passive: false },
 );
@@ -626,25 +645,34 @@ function reset(): void {
   client = 'laptop';
   cardPos = { ...home };
   pickUp(null);
-  for (const l of [...cutLines]) clearLine(l);
-  setSpyLine(null);
+  // Everything goes back at once: one simulation and one sound, not one of each per thing undone.
+  cutLines.clear();
+  scene.setCut([]);
+  if (spyLine) {
+    spyLine = null;
+    scene.setSpy(null);
+    spyCard.reset();
+  }
   cuts = [];
   warmArp = false;
   for (const menu of menus) menu.setOpen(false);
-  for (const k of SETTINGS) if (features[k]) setSetting(k, false);
+  showChapterMenu(false);
+  for (const k of SETTINGS) features[k] = false;
+  showSetup();
   preview();
   sound.play('thud');
 }
 
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
-    // A menu item reached by keyboard works like any button; everywhere else Space pauses.
-    if (e.target instanceof Element && e.target.matches('.menu-item:focus-visible, .spy-card button:focus-visible')) return;
+    // A button reached by keyboard works like any button; everywhere else Space pauses.
+    if (e.target instanceof Element && e.target.closest('button')) return;
     e.preventDefault();
     togglePause();
   } else if (e.code === 'Escape') {
     pickUp(null);
     for (const menu of menus) menu.setOpen(false);
+    showChapterMenu(false);
   }
   else if (e.code === 'ArrowRight') step(1);
   else if (e.code === 'ArrowLeft') step(-1);
@@ -686,6 +714,12 @@ function endRun(): void {
 
 let last = performance.now();
 let clock = 0;
+/** The viewer asked their system for less motion: the idle card keeps still. */
+const stillness = window.matchMedia('(prefers-reduced-motion: reduce)');
+/** Text in the bar only changes when it has to: setting it every frame makes the browser lay the bar out again. */
+const setText = (e: HTMLElement, text: string): void => {
+  if (e.textContent !== text) e.textContent = text;
+};
 function frame(now: number): void {
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
@@ -724,7 +758,7 @@ function frame(now: number): void {
   if (!peekTarget) pillTarget = 0;
   pillOpen += (pillTarget - pillOpen) * Math.min(1, dt * 12);
 
-  const bob = mode === 'idle' ? Math.sin(clock * 2.4) * 4 : 0;
+  const bob = mode === 'idle' && !stillness.matches ? Math.sin(clock * 2.4) * 4 : 0;
   const dropK = mode === 'drop' ? clamp01(anim.t / anim.dur) : 0;
   const riseK = mode === 'return' ? clamp01(anim.t / anim.dur) : 1;
   cardPop += dt;
@@ -756,14 +790,14 @@ function frame(now: number): void {
   scene.drawPacket(shown, peek, pill && pillOpen > 0.02 ? { key: pill, k: pillOpen } : null);
   spyCard.update(spyLine ? spyLog(tl, spyLine, shown, spyFrom) : []);
   realClock.hidden = mode !== 'play';
-  const real = `real time ${formatWait(realAt(tl, v))}`;
-  if (mode === 'play' && realClock.textContent !== real) realClock.textContent = real;
+  if (mode === 'play') setText(realClock, `real time ${formatWait(realAt(tl, v))}`);
 
   const ch = mode === 'play' ? chapterAt(tl, v) : null;
   if (ch !== shownChapter) {
     shownChapter = ch;
     chapter.hidden = !ch;
-    if (!ch) chapterMenu.hidden = true;
+    if (!ch) showChapterMenu(false);
+    for (const [c, item] of chapterItems) item.classList.toggle('current', c === ch);
     if (ch) {
       chapter.innerHTML = `<span class="chapter-num">${chapterNumber(ch)}</span><span>${chapterName(ch)}</span>`;
       chapter.classList.remove('enter');
@@ -772,12 +806,15 @@ function frame(now: number): void {
     }
   }
 
-  pauseBtn.textContent = paused || peekTarget ? '▶' : '⏸';
+  const stopped = paused || !!peekTarget;
+  setText(pauseBtn, stopped ? '▶' : '⏸');
+  pauseBtn.setAttribute('aria-label', stopped ? 'Play' : 'Pause');
   soundBtn.classList.toggle('off', sound.muted);
+  soundBtn.setAttribute('aria-pressed', String(sound.muted));
   // A tall screen starts close on the laptop, so the rest of the network has to be a press away.
   const closeUp = mode !== 'play' && !showAll && scene.overviewCamera().scale > scene.wholeCamera().scale;
   followBtn.hidden = !camFree && !closeUp;
-  followBtn.textContent = mode === 'play' ? '◎ Follow packet' : '◎ Show all';
+  setText(followBtn, mode === 'play' ? '◎ Follow packet' : '◎ Show all');
   backBtn.disabled = pauseBtn.disabled = nextBtn.disabled = mode !== 'play';
   // The setup is for the next run: it would rewrite what has already happened.
   setupMenu.button.disabled = !canSetUp();

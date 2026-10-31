@@ -4,6 +4,7 @@ import type { EventOf, SimEventType } from './events/SimEvent';
 import type { FaultPlan } from './faults';
 import { runScenario, type SimResult } from './run';
 import { ADDR, fetchWebPage, type FetchWebPageOptions } from './scenarios/fetchWebPage';
+import { parseDns } from './proto/dns';
 import { parseIpv4 } from './proto/ipv4';
 import { parseWifi } from './proto/wifi';
 import { openWgData } from './proto/wireguard';
@@ -164,6 +165,39 @@ describe('getting over a lost stretch', () => {
     const r = photo({ manual: [2, 3].map((i) => ({ packetId: data[i]!.id, linkId: 'bb2' })) });
     expect(doneAt(r)).toBeLessThan(0.2);
     expect(of(r, 'tcp:retransmit').map((e) => e.cause)).toEqual(['fast', 'recovery']);
+  });
+
+  it('after a timeout what the SACK blocks said had arrived is not sent again', () => {
+    const data = [...clear.packets.values()].filter((p) => (p.tcp?.len ?? 0) > 1000);
+    const lose = [20, 22, 24].map((i) => ({ packetId: data[i]!.id, linkId: 'bb2' }));
+    // Three holes near the end: the fast retransmit would mend the first, so lose that too and leave it to the timer.
+    const fast = of(photo({ manual: lose }), 'tcp:retransmit').find((e) => e.cause === 'fast')!;
+    const r = photo({ manual: [...lose, { packetId: fast.packetId, linkId: 'bb2' }] });
+    expect(of(r, 'tcp:retransmit').map((e) => e.cause)).toEqual(['fast', 'rto', 'recovery', 'recovery', 'recovery']);
+    const resent = [...r.packets.values()].filter((p) => p.retransmitOf).map((p) => p.tcp!.relSeq);
+    for (const i of [21, 23]) expect(resent).not.toContain(data[i]!.tcp!.relSeq);
+    for (const i of [20, 22, 24]) expect(resent).toContain(data[i]!.tcp!.relSeq);
+    expect(of(r, 'app').some((e) => e.action === 'done')).toBe(true);
+  });
+});
+
+describe('a name the resolver does not know', () => {
+  const scenario = fetchWebPage();
+  const dns = scenario.devices.find((d) => d.id === 'resolver')!.apps[0]!;
+  if (dns.kind === 'dns-server') dns.records = {};
+  const r = runScenario(scenario, { seed: 1, faults: { randomLoss: 0, manual: [] } });
+
+  it('is answered with NXDOMAIN (rcode 3, no answers), and the browser gives up without connecting', () => {
+    const resp = of(r, 'tx').find((e) => e.linkId === 'bb1' && r.packets.get(e.packetId)!.label.startsWith('DNS response'))!;
+    const pdu = r.pdus.get(resp.frameId)!;
+    const msg = parseDns(pdu.bytes, pdu.layers.find((l) => l.protocol === 'dns')!.start);
+    expect(msg.flags).toBe(0x8183);
+    expect(msg.rcode).toBe(3);
+    expect(msg.answers).toHaveLength(0);
+    const actions = of(r, 'app').map((e) => `${e.deviceId}:${e.action}`);
+    expect(actions).toEqual(['laptop:start', 'laptop:dns-lookup', 'resolver:dns-serve', 'laptop:dns-answer', 'laptop:error']);
+    expect(of(r, 'app').find((e) => e.action === 'error')?.info?.reason).toBe('no such name');
+    expect([...r.packets.values()].some((p) => p.kind === 'tcp')).toBe(false);
   });
 });
 

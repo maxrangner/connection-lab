@@ -31,13 +31,11 @@ export function unproject(sx: number, sy: number, z = 0): { x: number; y: number
   return { x: (a + b) / 2, y: (b - a) / 2 };
 }
 
-/** Painter's key: larger is nearer the viewer. */
-export function depth(x: number, y: number): number {
-  return x + y;
-}
+/** The unit vector of +x on screen, for text and sheets lying flat on the table: `matrix(ISO_X ISO_Y ...)`. */
+export const ISO_X = 2 / Math.sqrt(5);
+export const ISO_Y = 1 / Math.sqrt(5);
 
 export const v3 = (x: number, y: number, z: number): Vec3 => ({ x, y, z });
-export const add = (a: Vec3, b: Partial<Vec3>): Vec3 => ({ x: a.x + (b.x ?? 0), y: a.y + (b.y ?? 0), z: a.z + (b.z ?? 0) });
 export const lerpV = (a: Vec3, b: Vec3, t: number): Vec3 => ({
   x: a.x + (b.x - a.x) * t,
   y: a.y + (b.y - a.y) * t,

@@ -25,10 +25,11 @@ const DEFAULT_PEER_MSS = 536; // RFC 9293: assume 536 if the peer sends no MSS o
 const INITIAL_CWND_SEGMENTS = 10; // RFC 6928
 const APP_WAKEUP = 0.0001; // time for a blocked application to be scheduled and read from its socket
 
-const seqAdd = (a: number, n: number): number => (a + n) >>> 0;
-const seqDiff = (a: number, b: number): number => (a - b) | 0; // signed distance a - b
-const seqLt = (a: number, b: number): boolean => seqDiff(a, b) < 0;
-const seqLe = (a: number, b: number): boolean => seqDiff(a, b) <= 0;
+// Sequence numbers wrap at 2^32: compare by signed distance, never by size.
+export const seqAdd = (a: number, n: number): number => (a + n) >>> 0;
+export const seqDiff = (a: number, b: number): number => (a - b) | 0; // signed distance a - b
+export const seqLt = (a: number, b: number): boolean => seqDiff(a, b) < 0;
+export const seqLe = (a: number, b: number): boolean => seqDiff(a, b) <= 0;
 
 interface OutSegment {
   seq: number;
@@ -88,6 +89,8 @@ export class TcpConnection {
   private dupAcks = 0;
   /** After a fast retransmit: everything sent up to here must be ACKed before recovery is over (RFC 6582). */
   private recover: number | undefined;
+  /** What the peer's latest SACK option says it already holds beyond its ACK: a timeout need not resend it (RFC 6675, in short). */
+  private sacked: [number, number][] = [];
   // congestion control (RFC 5681); the window opens with the first data
   private cwnd: number | undefined;
   private ssthresh = Infinity;
@@ -148,7 +151,7 @@ export class TcpConnection {
     this.irs = seg.seq;
     this.rcvNxt = seqAdd(seg.seq, 1);
     this.readSynOptions(seg);
-    this.updateTs(seg);
+    this.updateTs(seg, true);
     this.iss = this.host.random32();
     this.sndUna = this.iss;
     this.sndNxt = this.iss;
@@ -182,7 +185,7 @@ export class TcpConnection {
         this.irs = seg.seq;
         this.rcvNxt = seqAdd(seg.seq, 1);
         this.readSynOptions(seg);
-        this.updateTs(seg);
+        this.updateTs(seg, true);
         this.sndWnd = seg.window;
         this.processAck(seg);
         this.setState('ESTABLISHED');
@@ -206,9 +209,12 @@ export class TcpConnection {
       return;
     }
 
+    // Only a segment at or before what we last ACKed may set the clock we echo (RFC 7323 §4.3).
     if (this.tsOk && seqLe(seg.seq, this.rcvNxt)) this.updateTs(seg);
 
     if (ack) {
+      const sack = seg.options.find((o) => o.kind === 'sack');
+      if (sack?.kind === 'sack') this.sacked = sack.blocks;
       if (this.state === 'SYN_RCVD' && seqLt(this.iss, seg.ack) && seqLe(seg.ack, this.sndNxt)) {
         this.processAck(seg);
         this.setState('ESTABLISHED');
@@ -261,9 +267,12 @@ export class TcpConnection {
       s = this.rcvNxt;
     }
     if (s !== this.rcvNxt) {
-      // Out of order: keep it, and tell the sender what we are still missing.
-      this.ooo.set(s, { data: data.slice(), fin, packetId });
-      sim.emit({ type: 'tcp:ooo', deviceId: this.host.id, connId: this.id, packetId, seq: seqDiff(s, this.irs), len: data.length });
+      // Out of order: keep it, and tell the sender what we are still missing. Sent twice, it is just a duplicate.
+      if (this.ooo.has(s)) sim.emit({ type: 'tcp:duplicate', deviceId: this.host.id, connId: this.id, packetId });
+      else {
+        this.ooo.set(s, { data: data.slice(), fin, packetId });
+        sim.emit({ type: 'tcp:ooo', deviceId: this.host.id, connId: this.id, packetId, seq: seqDiff(s, this.irs), len: data.length });
+      }
       this.sendAck('dup ACK');
       return;
     }
@@ -282,6 +291,15 @@ export class TcpConnection {
     if (data.length) {
       this.rcvNxt = seqAdd(this.rcvNxt, data.length);
       this.delivered += data.length;
+      // Now the bytes really reach the application: unwrap them for it.
+      this.host.sim.emit({
+        type: 'decapsulate',
+        deviceId: this.host.id,
+        packetId,
+        layer: 4,
+        protocol: 'tcp',
+        pduId: this.host.sim.pdu(packetId, data, this.opts.app),
+      });
       this.host.sim.emit({
         type: 'tcp:deliver',
         deviceId: this.host.id,
@@ -311,27 +329,29 @@ export class TcpConnection {
     const ack = seg.ack;
     this.dupAcks = 0;
     let finAcked = false;
-    let sample: number | undefined;
+    let fresh: number | undefined;
+    let resent = false;
     this.growCwnd(seqDiff(ack, this.sndUna));
     while (this.outstanding.length) {
       const s = this.outstanding[0]!;
       const end = seqAdd(s.seq, s.data.length + (s.syn ? 1 : 0) + (s.fin ? 1 : 0));
       if (!seqLe(end, ack)) break;
       this.outstanding.shift();
-      if (s.retransmits === 0) sample = sim.now - s.sentAt; // Karn's algorithm
+      if (s.retransmits === 0) fresh = sim.now - s.sentAt; // Karn's algorithm: only a segment sent once is measured
+      else resent = true;
       if (s.fin) finAcked = true;
     }
     this.sndUna = ack;
-    // Timestamps say which send an ACK answers, so a resend can be measured too, and a backed-off timer recovers (RFC 7323).
-    sample ??= this.echoedRtt(seg);
+    this.sacked = this.sacked.filter(([, end]) => seqLt(ack, end));
+    // An ACK answering a resend also covers what waited behind the hole, so only the timestamp echo says how long the
+    // resend took (RFC 7323); that is also how a backed-off timer recovers.
+    const sample = resent ? this.echoedRtt(seg) : fresh ?? this.echoedRtt(seg);
     if (sample !== undefined) this.updateRtt(sample);
-    this.restartRtoTimer();
-    if (this.recover !== undefined) {
-      // A partial ACK: the next hole is lost too, and no more duplicate ACKs will say so (RFC 6582).
-      const next = seqLt(ack, this.recover) ? this.outstanding[0] : undefined;
-      if (next) this.retransmit(next, 'recovery', false);
-      else this.recover = undefined;
-    }
+    // A partial ACK: the next hole is lost too, and no more duplicate ACKs will say so (RFC 6582).
+    const next = this.recover !== undefined && seqLt(ack, this.recover) ? this.outstanding[0] : undefined;
+    if (!next) this.recover = undefined;
+    if (next) this.retransmit(next, 'recovery', false); // restarts the timer itself
+    else this.restartRtoTimer();
     if (finAcked) {
       if (this.state === 'FIN_WAIT_1') this.setState('FIN_WAIT_2');
       else if (this.state === 'CLOSING') this.enterTimeWait();
@@ -385,6 +405,12 @@ export class TcpConnection {
   /** What is really on its way: everything outstanding but what a timeout wrote off. */
   private pipe(): number {
     return this.outstanding.reduce((n, s) => n + (s.lost ? 0 : s.data.length + (s.syn ? 1 : 0) + (s.fin ? 1 : 0)), 0);
+  }
+
+  /** Did the peer's SACK blocks say it has this whole segment? (They describe data only, so never a FIN.) */
+  private isSacked(s: OutSegment): boolean {
+    const end = seqAdd(s.seq, s.data.length);
+    return s.data.length > 0 && !s.fin && this.sacked.some(([b, e]) => seqLe(b, s.seq) && seqLe(end, e));
   }
 
   /** After a timeout everything still out is sent again from the first lost byte, in slow start (RFC 5681 §3.1). */
@@ -554,9 +580,10 @@ export class TcpConnection {
     this.sackOk = this.peerSackPerm;
   }
 
-  private updateTs(seg: ParsedTcp): void {
+  /** Remember the peer's clock to echo it; it only moves forward (RFC 7323 §4.3), except when the SYN sets it. */
+  private updateTs(seg: ParsedTcp, first = false): void {
     const ts = seg.options.find((o) => o.kind === 'ts');
-    if (ts && ts.kind === 'ts') this.tsRecent = ts.val;
+    if (ts && ts.kind === 'ts' && (first || seqLe(this.tsRecent, ts.val))) this.tsRecent = ts.val;
   }
 
   private restartRtoTimer(): void {
@@ -583,7 +610,8 @@ export class TcpConnection {
         return;
       }
       this.recover = undefined;
-      for (const s of this.outstanding) s.lost = s !== first;
+      // Everything still out is written off, except what the peer's SACK blocks say has arrived.
+      for (const s of this.outstanding) s.lost = s !== first && !this.isSacked(s);
       this.retransmit(first, 'rto', true);
     });
   }

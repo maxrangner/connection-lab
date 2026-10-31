@@ -11,20 +11,13 @@ export function el<K extends keyof SVGElementTagNameMap>(
   return e;
 }
 
-export function text(parent: Element, x: number, y: number, s: string, cls = '', attrs: Record<string, string | number> = {}): SVGTextElement {
-  const t = el('text', { x, y, class: cls, ...attrs }, parent);
-  t.textContent = s;
-  return t;
-}
-
-/** Sets an attribute only if it changed (cheap per-frame updates). */
+/** Sets an attribute only if it changed: setting the same value again still makes the browser lay things out anew. */
 export function setAttr(e: Element, k: string, v: string | number): void {
   const s = String(v);
   if (e.getAttribute(k) !== s) e.setAttribute(k, s);
 }
 
-export function show(e: Element, visible: boolean): void {
-  const d = visible ? '' : 'none';
-  const st = (e as SVGElement).style;
-  if (st.display !== d) st.display = d;
+/** Sets an element's text only if it changed. */
+export function setText(e: Element, s: string): void {
+  if (e.textContent !== s) e.textContent = s;
 }
