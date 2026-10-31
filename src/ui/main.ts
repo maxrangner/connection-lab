@@ -1,7 +1,7 @@
 import './app.css';
 import { fetchWebPage, runScenario, type Cut, type ManualFault } from '../sim';
 import { el } from './svg';
-import { clamp01, easeInOut, easeOutBack, iso, lerp } from './project';
+import { clamp01, easeInOut, easeOutBack, iso, lerp, U } from './project';
 import { HexCard } from './hexCard';
 import { drawPadlock, drawPage, drawPair, drawQuestion, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawTag } from './icons';
 import { Menu } from './menus';
@@ -9,7 +9,7 @@ import { NetworkScene, type Camera } from './NetworkScene';
 import { Sound } from './sound';
 import { SpyCard } from './spyCard';
 import { buildStory, type Chapter, type PartKey, type Story } from './story';
-import { buildTimeline, chapterAt, formatWait, pduAt, realAt, ridingOn, seenSoFar, segAt, spyLog, stepTarget, type Timeline } from './timeline';
+import { buildTimeline, chapterAt, formatWait, MAX_STRETCH, pduAt, realAt, ridingOn, seenSoFar, segAt, spyLog, stepTarget, wanDelayFor, type Timeline } from './timeline';
 
 /**
  * "Get example.com". Drag the site card onto the laptop or the phone. The bar below holds the playback buttons, and
@@ -77,12 +77,26 @@ function remembers(): boolean {
   const k = known.get(client);
   return !!k && k.site === siteName() && performance.now() < k.until;
 }
+/** How far the ISP router has been dragged away, in tiles: the fibre gets longer and so does its delay. */
+let stretch = 0;
 function simulate(): void {
-  const scenario = fetchWebPage({ site: siteName(), revisit, slow: features.slow, vpn: features.vpn, https: features.https, from: client, warmArp, together: features.together, dhcp: features.dhcp, cold: features.cold });
+  const scenario = fetchWebPage({
+    site: siteName(),
+    revisit,
+    slow: features.slow,
+    vpn: features.vpn,
+    https: features.https,
+    from: client,
+    warmArp,
+    together: features.together,
+    dhcp: features.dhcp,
+    cold: features.cold,
+    ...(stretch > 0 ? { wanDelay: wanDelayFor(stretch) } : {}),
+  });
   const plan = { randomLoss: 0, decided, cuts, manual: faults };
   // Long enough for TCP to give up on a dead line (15 resends, backing off to a minute apart).
   story = buildStory(runScenario(scenario, { seed: runSeed, faults: plan, maxTime: 1000 }), { arp: features.arp });
-  tl = buildTimeline(story, knocks);
+  tl = buildTimeline(story, knocks, stretch);
 }
 simulate();
 
@@ -342,10 +356,12 @@ const button = (text: string, label: string, onClick: () => void): HTMLButtonEle
 const backBtn = button('⏮', 'Step back', () => step(-1));
 const pauseBtn = button('', 'Pause', togglePause);
 const nextBtn = button('⏭', 'Step forward', () => step(1));
-const speedMenu = new Menu<string>(controls, root, '1×', 'Speed', ['0.5', '1', '2'].map((id) => ({ id, label: `${id}×` })), (id) => {
+// 0.25× is for a stream: slow enough to see the window of packets go out and the ACKs let the next ones out.
+const SPEEDS = ['0.25', '0.5', '1', '2'];
+const speedMenu = new Menu<string>(controls, root, '1×', 'Speed', SPEEDS.map((id) => ({ id, label: `${id}×` })), (id) => {
   speed = Number(id);
   speedMenu.button.textContent = `${id}×`;
-  for (const x of ['0.5', '1', '2']) speedMenu.setOn(x, x === id);
+  for (const x of SPEEDS) speedMenu.setOn(x, x === id);
   speedMenu.setOpen(false);
 });
 speedMenu.setOn('1', true);
@@ -511,6 +527,8 @@ let screenPress: { device: string; x: number; y: number } | null = null;
 let toolPress: { x: number; y: number } | null = null;
 /** A press on the table: it only takes the view over once it really moves. */
 let panPress: { x: number; y: number } | null = null;
+/** A press on the ISP router between runs: dragging it away stretches the fibre to it. */
+let stretchPress: { x: number; from: number } | null = null;
 
 function zoomAt(clientX: number, clientY: number, factor: number): void {
   const r = svg.getBoundingClientRect();
@@ -552,6 +570,12 @@ svg.addEventListener('pointerdown', (e) => {
     return;
   }
   if (target.closest('.site-card') || (!tool && target.closest('.packet'))) return;
+  // The ISP router can be dragged further away between runs: the fibre to it gets longer.
+  if (!tool && canSetUp() && target.closest('[data-grab]')) {
+    stretchPress = { x: e.clientX, from: stretch };
+    svg.setPointerCapture(e.pointerId);
+    return;
+  }
   toolPress = tool ? { x: e.clientX, y: e.clientY } : null;
   const device = target.closest('[data-device]')?.getAttribute('data-device');
   screenPress = device && mode === 'idle' && known.has(device) ? { device, x: e.clientX, y: e.clientY } : null;
@@ -562,6 +586,18 @@ svg.addEventListener('pointerdown', (e) => {
 });
 svg.addEventListener('pointermove', (e) => {
   if (tool) scene.setHover(toolLine(e));
+  if (stretchPress) {
+    // Screen pixels to tiles along +x (which runs right-and-down on screen): the layout moves with the pointer,
+    // the simulation catches up when the router is let go.
+    const tiles = (e.clientX - stretchPress.x) / (cam.scale * U);
+    const next = Math.round(Math.max(0, Math.min(MAX_STRETCH, stretchPress.from + tiles)));
+    if (next !== stretch) {
+      stretch = next;
+      tl = buildTimeline(story, knocks, stretch);
+      scene.setStory(story, tl);
+    }
+    return;
+  }
   const prev = pointers.get(e.pointerId);
   if (!prev) return;
   if (panPress) {
@@ -593,6 +629,11 @@ svg.addEventListener('pointermove', (e) => {
 const release = (e: PointerEvent): void => {
   pointers.delete(e.pointerId);
   if (!pointers.size) svg.classList.remove('panning');
+  if (stretchPress) {
+    stretchPress = null;
+    preview();
+    sound.play('snap');
+  }
   if (screenPress) {
     forget(screenPress.device);
     screenPress = null;
@@ -670,6 +711,7 @@ function reset(): void {
   }
   cuts = [];
   warmArp = false;
+  stretch = 0;
   for (const menu of menus) menu.setOpen(false);
   showChapterMenu(false);
   for (const k of SETTINGS) features[k] = false;
@@ -829,6 +871,7 @@ function frame(now: number): void {
   const stopped = paused || !!peekTarget;
   setText(pauseBtn, stopped ? '▶' : '⏸');
   pauseBtn.setAttribute('aria-label', stopped ? 'Play' : 'Pause');
+  svg.classList.toggle('between', canSetUp());
   soundBtn.classList.toggle('off', sound.muted);
   soundBtn.setAttribute('aria-pressed', String(sound.muted));
   // A tall screen starts close on the laptop, so the rest of the network has to be a press away.
@@ -873,6 +916,11 @@ if (import.meta.env.DEV) {
       /** Cut a cable or mend it, as the scissors do. */
       cut(line: string): void {
         toggleCut(line);
+      },
+      /** Drag the ISP router this many tiles away, as a hand would. */
+      stretch(tiles: number): void {
+        stretch = Math.max(0, Math.min(MAX_STRETCH, tiles));
+        preview();
       },
       get tool() {
         return tool;

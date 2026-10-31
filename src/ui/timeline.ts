@@ -109,6 +109,8 @@ export interface Timeline {
   air: Set<string>;
   /** The device the page is opened on. */
   client: string;
+  /** How far the cable to the ISP has been stretched, in tiles. */
+  stretch: number;
 }
 
 /** World positions (tiles) by device kind: the chain runs along +x, the DNS resolver branches off along −y. */
@@ -160,9 +162,25 @@ const FLOW_TIMER = 1.6;
 /** Seconds per cable of an ACK on its own: small, and not what you came to watch. */
 const ACK_HOP = 0.7;
 
-export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> = new Map()): Timeline {
+/** Tiles between the home router and the ISP router as drawn, and the real fibre each tile stands for. */
+export const WAN_TILES = 8;
+export const KM_PER_TILE = 50;
+/** Light in glass fibre: about two thirds of c. */
+export const KM_PER_SECOND = 200_000;
+/** How far the ISP router may be dragged, in tiles: 8000 km, an ocean away. */
+export const MAX_STRETCH = 160;
+/** The one-way delay of the fibre to the ISP when it is stretched this many tiles. */
+export const wanDelayFor = (stretch: number): number => ((WAN_TILES + stretch) * KM_PER_TILE) / KM_PER_SECOND;
+
+export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> = new Map(), stretch = 0): Timeline {
   const kind = new Map(story.devices.map((d) => [d.id, d.kind]));
-  const pos = new Map(story.devices.map((d, i) => [d.id, POS[d.kind] ?? { x: i * 8, y: 0 }]));
+  // Stretching the cable to the ISP moves the ISP router and everything beyond it further along +x.
+  const pos = new Map(
+    story.devices.map((d, i) => {
+      const p = POS[d.kind] ?? { x: i * 8, y: 0 };
+      return [d.id, p.x >= POS.router!.x ? { x: p.x + stretch, y: p.y } : p];
+    }),
+  );
   const trayZ = (device: string, level: number): number => (DEVICE_TOP[kind.get(device) ?? ''] ?? 1) + 1.1 + level * LEVEL_GAP;
   const at = (device: string, level: number): Vec3 => {
     const p = pos.get(device) ?? { x: 0, y: 0 };
@@ -172,7 +190,8 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   // A slow link (a satellite hop, hundreds of ms each way) arches into the sky and takes longer to cross.
   const sky = new Map(story.links.filter((l) => l.delay >= SLOW_DELAY).map((l) => [l.id, SKY_HEIGHT] as const));
   const air = new Set(story.links.filter((l) => l.medium === 'wifi').map((l) => l.id));
-  const linkPace = (link: string): number => (sky.has(link) ? 2.4 : 1);
+  // A stretched cable takes longer to cross, but not in proportion: an ocean would be a minute of watching.
+  const linkPace = (link: string): number => (sky.has(link) ? 2.4 : link === 'wan' ? Math.sqrt(1 + stretch / WAN_TILES) : 1);
   const segs: Seg[] = [];
   const cues: Cue[] = [];
   const reactions: Reaction[] = [];
@@ -296,7 +315,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   // Each end makes its private half when it first has a hello to answer or to send.
   const halves = new Map<string, number>();
   for (const s of segs) if (s.trip.keyShare && (s.step.kind === 'appear' || s.step.kind === 'read') && !halves.has(s.step.device)) halves.set(s.step.device, s.t0);
-  return { segs, reactions, keys, halves, real: realClock(segs, story), cues, total: t, pos, kind, trayZ, isRouter, sky, air, client: story.client };
+  return { segs, reactions, keys, halves, real: realClock(segs, story), cues, total: t, pos, kind, trayZ, isRouter, sky, air, client: story.client, stretch };
 }
 
 /** The real clock along the visual time, from when each frame really left and arrived. */

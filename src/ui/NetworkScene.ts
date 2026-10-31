@@ -6,7 +6,7 @@ import { shade } from './shade';
 import type { Details, PartKey, Row, Story, Trip, Wrap } from './story';
 import { bandPoint, pageContent, Paper, PAPER_H, PAPER_W, photoContent, type Parts } from './paper';
 import { drawBook, drawShelf, SERVER } from './stations';
-import { addressBefore, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, LEVEL, lockPose, NO_LOCK, packetPos, packetPose, segAt, swapLanding, swapMoment, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
+import { addressBefore, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, LEVEL, lockPose, NO_LOCK, packetPos, packetPose, segAt, swapLanding, swapMoment, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
 
 export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', vpn: '#2e5e6e', eth: '#e08b33', wifi: '#2a9d8f' } as const;
 const DEVICE = '#d9d0c2';
@@ -174,6 +174,9 @@ export class NetworkScene {
   private cableViews: { g: SVGGElement; a: string; b: string }[] = [];
   /** Devices that take part in this run; the rest are greyed out once it starts. */
   private used = new Set<string>();
+  private readonly devs: SVGGElement;
+  /** The positions the devices were last built at. */
+  private laidOut = '';
   /** Where the spyglass was last drawn, so it is not drawn again every frame. */
   private spyDrawn = '';
   /** Whether any emoji is up, so an empty frame costs nothing. */
@@ -191,7 +194,7 @@ export class NetworkScene {
     const world = el('g', {}, this.svg);
     this.cables = el('g', { class: 'cables' }, world);
     this.hover = el('g', { class: 'hover' }, world);
-    const devs = el('g', {}, world);
+    this.devs = el('g', {}, world);
     this.sheet = new Paper(world);
     // Effects (impact bursts, timers) sit behind the packet, the way an anime impact star does.
     this.fx = el('g', { class: 'fx' }, world);
@@ -201,12 +204,24 @@ export class NetworkScene {
     this.moods = el('g', { class: 'moods' }, world);
     this.spyGlass = el('g', { class: 'spy' }, world);
 
+    this.buildDevices();
+    this.setStory(story, tl);
+  }
+
+  /** The devices where the timeline puts them; built again when the layout changes (the cable to the ISP stretched). */
+  private buildDevices(): void {
+    this.devs.replaceChildren();
+    this.devices.length = 0;
+    this.screens.clear();
+    this.laidOut = this.layoutKey();
     // Draw far devices first: a larger x + y is nearer the viewer.
-    const order = [...story.devices].sort((m, n) => this.depthOf(m.id) - this.depthOf(n.id));
+    const order = [...this.story.devices].sort((m, n) => this.depthOf(m.id) - this.depthOf(n.id));
     for (const d of order) {
-      const p = tl.pos.get(d.id) ?? { x: 0, y: 0 };
-      const trays = el('g', { class: 'trays', opacity: 0 }, devs);
-      const g = el('g', { class: 'device' }, devs);
+      const p = this.tl.pos.get(d.id) ?? { x: 0, y: 0 };
+      const trays = el('g', { class: 'trays', opacity: 0 }, this.devs);
+      const g = el('g', { class: 'device' }, this.devs);
+      // The ISP router can be dragged further away between runs.
+      if (d.kind === 'router') g.setAttribute('data-grab', d.id);
       const screen = this.buildDevice(g, d.kind, p.x, p.y);
       if (screen) {
         this.screens.set(d.id, screen);
@@ -218,13 +233,17 @@ export class NetworkScene {
       name.textContent = d.label;
       this.devices.push({ id: d.id, kind: d.kind, g, trays, l4Name, l2Tray, l2Name });
     }
-    this.setStory(story, tl);
   }
 
-  /** Swap in a re-simulated story (after a cut). Devices and cables stay; what's on the laptop screen may change. */
+  private layoutKey(): string {
+    return [...this.tl.pos].map(([id, p]) => `${id}:${p.x},${p.y}`).join(' ');
+  }
+
+  /** Swap in a re-simulated story (after a cut). Devices and cables stay unless the layout moved; what's on the laptop screen may change. */
   setStory(story: Story, tl: Timeline): void {
     this.story = story;
     this.tl = tl;
+    if (this.layoutKey() !== this.laidOut) this.buildDevices();
     this.fit();
     this.buildCables();
     const stops = (t: Trip): string[] => t.steps.flatMap((s) => (s.kind === 'flow' ? s.packets.flatMap(stops) : 'device' in s ? [s.device] : [s.from, s.to]));
@@ -355,6 +374,11 @@ export class NetworkScene {
         drawScissors(el('g', { transform: `translate(${c.sx.toFixed(1)} ${(c.sy - 8).toFixed(1)}) scale(0.5)` }, g));
       } else {
         line(g, path[0]!, path[1]!, { class: 'cable' });
+        // The fibre to the ISP says how long it is: light takes its time, and the router can be dragged further away.
+        if (l.id === 'wan') {
+          const note = this.linkSpot(l.id, 0.5, 14);
+          el('text', { x: note.sx, y: note.sy, 'text-anchor': 'middle', class: 'link-note' }, g).textContent = `${Math.round(l.delay * KM_PER_SECOND)} km · ${formatWait(l.delay)}`;
+        }
       }
       this.cableViews.push({ g, a: l.a, b: l.b });
     }

@@ -97,6 +97,8 @@ export interface FetchWebPageOptions {
    * the answer and only then answers the device. Off, the three servers stand idle and nothing changes.
    */
   cold?: boolean;
+  /** One-way delay of the fibre to the ISP in seconds, when the viewer has stretched it; 2 ms (about 400 km) by default. */
+  wanDelay?: number;
 }
 
 /** How long after the first device the other one starts, in seconds: close enough that their packets interleave. */
@@ -389,7 +391,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
       { id: 'wlan', a: 'phone.wlan0', b: 'home.wlan', bitsPerSecond: 300e6, delay: 3e-8, label: 'Wi-Fi · 300 Mbit/s', name: 'the Wi-Fi' },
       opts.slow
         ? { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: 25e6, delay: 0.28, label: 'Satellite to ISP · 25 Mbit/s · 280 ms', name: 'the satellite link' }
-        : { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: 1e9, delay: 0.002, label: 'Fiber to ISP · 1 Gbit/s · 2 ms', name: 'the fiber line to the ISP' },
+        : { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: 1e9, delay: opts.wanDelay ?? 0.002, label: `Fiber to ISP · 1 Gbit/s · ${Math.round((opts.wanDelay ?? 0.002) * 1000)} ms`, name: 'the fiber line to the ISP' },
       { id: 'bb1', a: 'isp.p1', b: 'resolver.eth0', bitsPerSecond: 1e10, delay: 0.003, label: 'Backbone · 10 Gbit/s · 3 ms', name: 'a backbone link' },
       { id: 'bb3', a: 'isp.p3', b: 'vpn.eth0', bitsPerSecond: 1e10, delay: 0.005, label: 'Backbone · 10 Gbit/s · 5 ms', name: 'a backbone link' },
       { id: 'bb2', a: 'isp.p2', b: 'server.eth0', bitsPerSecond: 1e10, delay: 0.004, label: 'Backbone · 10 Gbit/s · 4 ms', name: 'a backbone link' },

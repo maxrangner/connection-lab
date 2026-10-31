@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { fetchWebPage, runScenario } from '../sim';
 import { stepRead } from './spyCard';
 import { buildStory } from './story';
-import { buildTimeline, chapterAt, crossings, frameAt, realAt, ridingOn, segAt, stepTarget, trayOpacity, wrapsBefore, type Seg } from './timeline';
+import { buildTimeline, chapterAt, crossings, frameAt, MAX_STRETCH, realAt, ridingOn, segAt, stepTarget, trayOpacity, wanDelayFor, wrapsBefore, type Seg } from './timeline';
 
 const story = buildStory(runScenario(fetchWebPage(), { seed: 1, faults: { randomLoss: 0, manual: [] } }));
 const tl = buildTimeline(story);
@@ -76,6 +76,27 @@ describe('the small pure helpers of the timeline', () => {
     const onWire = travelOn(tl, 'wan');
     expect(trayOpacity(tl, 'laptop', onWire.t0 + 0.5 * (onWire.t1 - onWire.t0))).toBe(0);
     expect(trayOpacity(tl, 'laptop', ipWrap.t0 + 0.5 * (ipWrap.t1 - ipWrap.t0))).toBe(1);
+  });
+});
+
+describe('stretching the fibre to the ISP', () => {
+  it('moves the ISP router and everything beyond it, and makes that cable slower to cross', () => {
+    const far = buildTimeline(story, new Map(), 40);
+    for (const id of ['laptop', 'phone', 'home']) expect(far.pos.get(id)).toEqual(tl.pos.get(id));
+    for (const id of ['isp', 'resolver', 'server', 'vpn']) expect(far.pos.get(id)!.x).toBe(tl.pos.get(id)!.x + 40);
+    const wan = (t: typeof tl) => travelOn(t, 'wan');
+    expect(wan(far).t1 - wan(far).t0).toBeCloseTo((wan(tl).t1 - wan(tl).t0) * Math.sqrt(6), 5);
+    expect(travelOn(far, 'lan').t1 - travelOn(far, 'lan').t0).toBeCloseTo(travelOn(tl, 'lan').t1 - travelOn(tl, 'lan').t0, 5);
+    expect(far.stretch).toBe(40);
+  });
+
+  it('turns tiles into a real delay: 400 km of fibre is 2 ms, an ocean away is 40 ms', () => {
+    expect(wanDelayFor(0)).toBeCloseTo(0.002, 9);
+    expect(wanDelayFor(MAX_STRETCH)).toBeCloseTo(0.042, 9);
+    const r = runScenario(fetchWebPage({ wanDelay: wanDelayFor(40) }), { seed: 1, faults: { randomLoss: 0, manual: [] } });
+    expect(r.scenario.links.find((l) => l.id === 'wan')).toMatchObject({ delay: 0.012, label: 'Fiber to ISP · 1 Gbit/s · 12 ms' });
+    const syn = r.events.find((e) => e.type === 'tx' && e.linkId === 'wan');
+    expect(syn && syn.type === 'tx' ? syn.arrive - syn.txEnd : 0).toBeCloseTo(0.012, 9);
   });
 });
 

@@ -737,6 +737,11 @@ body {
   display: none;
 }
 
+/* Between runs the ISP router can be dragged further away */
+.net-stage.between .device[data-grab] {
+  cursor: grab;
+}
+
 .link.absent {
   display: none;
 }
