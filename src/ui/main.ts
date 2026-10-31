@@ -923,6 +923,7 @@ function reset(): void {
   stretch = 0;
   noise = 0;
   attacks.clear();
+  scene.setRevealed([]);
   for (const id of Object.keys(ATTACK_LINKS) as Attack[]) attackMenu.setOn(id, false);
   for (const menu of menus) menu.setOpen(false);
   showChapterMenu(false);
@@ -958,6 +959,8 @@ function beginRun(): void {
   warmArp = cutLines.size > 0;
   revisit = remembers();
   joined = null;
+  // Every run starts from your own devices and finds the network again.
+  scene.setRevealed([]);
   simulate();
   scene.setStory(story, tl);
   showFeatures();
@@ -979,6 +982,7 @@ function endRun(): void {
   // A call over: hear what came through, holes and all.
   if (story.voice) sound.playVoice(story.voice.heard.map((b) => (b ? ulawDecodeAll(b) : null)), 160);
   idleV = tl.total;
+  scene.setRevealed(tl.reveals.keys());
   const from = scene.dropPoints().find((d) => d.id === client) ?? home;
   anim = { from, to: { ...HOMES[carried] }, t: 0, dur: 0.8 };
   mode = 'return';
@@ -1105,7 +1109,7 @@ function frame(now: number): void {
   soundBtn.classList.toggle('off', sound.muted);
   soundBtn.setAttribute('aria-pressed', String(sound.muted));
   // A tall screen starts close on the laptop, so the rest of the network has to be a press away.
-  const closeUp = mode !== 'play' && !showAll && !attacks.size && scene.overviewCamera().scale > scene.wholeCamera().scale;
+  const closeUp = mode !== 'play' && !showAll && !attacks.size && scene.anythingRevealed && scene.overviewCamera().scale > scene.wholeCamera().scale;
   followBtn.hidden = !camFree && !closeUp;
   setText(followBtn, mode === 'play' ? '◎ Follow packet' : '◎ Show all');
   backBtn.disabled = pauseBtn.disabled = nextBtn.disabled = mode !== 'play';

@@ -223,6 +223,24 @@ describe('a card dropped in during a run', () => {
     expect(both.joinReadout.screens.at(-1)!.lines.at(-1)).toBe('reached in 3 hops');
   });
 
+  it('a device shows up the moment anything crosses to or from it, in the order a packet reaches them', () => {
+    const tl = buildTimeline(story('page'));
+    const order = [...tl.reveals].sort((a, b) => a[1] - b[1]).map(([d]) => d);
+    expect(order.indexOf('home')).toBeLessThan(order.indexOf('isp'));
+    expect(order.indexOf('isp')).toBeLessThan(order.indexOf('server'));
+    expect(tl.reveals.has('phone')).toBe(false);
+    expect(tl.reveals.has('friend')).toBe(false);
+    for (const a of JOBS) {
+      for (const b of JOBS) {
+        const { after, s } = dropped(a, b, 0.3);
+        for (const seg of after.segs) {
+          for (const h of (seg.flow ?? []).flatMap((p) => p.hops)) for (const d of [h.from, h.to]) expect(after.reveals.get(d)!).toBeLessThanOrEqual(h.t0);
+        }
+        expect([...after.reveals.keys()].every((d) => s.devices.some((x) => x.id === d))).toBe(true);
+      }
+    }
+  });
+
   it('does not touch a run nobody dropped anything into', () => {
     for (const a of JOBS) expect(buildTimeline(story(a)).segs.some((x) => x.trip.chapter === 'traffic')).toBe(false);
   });
