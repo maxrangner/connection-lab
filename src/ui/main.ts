@@ -131,11 +131,14 @@ let mode: Mode = 'idle';
 const home = iso(0, 7.4, 0.5);
 const HOMES: Record<Wanted, { sx: number; sy: number }> = {
   page: home,
-  photo: { sx: home.sx, sy: home.sy + 88 },
-  call: { sx: home.sx, sy: home.sy + 150 },
-  ping: { sx: home.sx, sy: home.sy + 212 },
-  trace: { sx: home.sx, sy: home.sy + 274 },
+  photo: { sx: home.sx, sy: home.sy + 62 },
+  call: { sx: home.sx, sy: home.sy + 124 },
+  ping: { sx: home.sx, sy: home.sy + 186 },
+  trace: { sx: home.sx, sy: home.sy + 248 },
 };
+// Above the stack, as it goes for every card in it. The first card's badges stick out above it, so this clears them.
+const hint = el('text', { class: 'cards-hint', 'text-anchor': 'middle', x: home.sx, y: home.sy - 46 }, svg);
+hint.textContent = 'drag a card onto a device';
 const card = el('g', { class: 'site-card' }, svg);
 const cardBody = el('g', {}, card);
 el('rect', { x: -88, y: -22, width: 176, height: 44, rx: 10, class: 'site-card-bg' }, cardBody);
@@ -143,8 +146,6 @@ el('circle', { cx: -66, cy: 0, r: 9, class: 'site-card-globe' }, cardBody);
 el('ellipse', { cx: -66, cy: 0, rx: 4, ry: 9, class: 'site-card-globe' }, cardBody);
 const cardText = el('text', { x: 12, y: 0, dy: '0.35em', 'text-anchor': 'middle' }, cardBody);
 cardText.textContent = 'example.com';
-const hint = el('text', { class: 'hint', 'text-anchor': 'middle', x: 0, y: 40 }, card);
-hint.textContent = 'drag a card onto a device';
 let cardPop = 9;
 /** Small badges on the card for what is set up. */
 const cardBadges = el('g', {}, card);
