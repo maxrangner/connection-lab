@@ -988,8 +988,9 @@ if (import.meta.env.DEV) {
         return tl.reactions;
       },
       /** Start a run straight away with these things on the table (for screenshots). */
-      start(f: Partial<Features> & { photo?: boolean; call?: boolean; ping?: boolean; trace?: boolean; spy?: string; cut?: string | string[]; slow?: boolean; vpn?: boolean; again?: boolean; from?: Client }): void {
+      start(f: Partial<Features> & { photo?: boolean; call?: boolean; ping?: boolean; trace?: boolean; spy?: string; cut?: string | string[]; slow?: boolean; vpn?: boolean; again?: boolean; from?: Client; noise?: number }): void {
         client = f.from ?? 'laptop';
+        if (f.noise !== undefined) noise = f.noise;
         carried = f.call ? 'call' : f.ping ? 'ping' : f.trace ? 'trace' : f.photo ? 'photo' : 'page';
         for (const k of SETTINGS) if (features[k] !== !!f[k]) setSetting(k, !!f[k]);
         for (const l of [...cutLines]) clearLine(l);

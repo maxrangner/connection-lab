@@ -379,14 +379,7 @@ body {
   stroke-linecap: round;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .chapter.enter,
-  .tunnel-flow,
-  .menu-panel,
-  .link.noisy .airwave {
-    animation: none;
-  }
-}
+/* Reduced motion: see the end of the sheet, where it wins over every animation above it. */
 
 /* The sheet a page in several parts comes together on */
 .paper-sheet {
@@ -1340,4 +1333,14 @@ body {
   font-size: 11px;
   font-weight: 700;
   fill: var(--ink);
+}
+
+/* Last, so it wins over every animation declared above it at the same specificity */
+@media (prefers-reduced-motion: reduce) {
+  .chapter.enter,
+  .tunnel-flow,
+  .menu-panel,
+  .link.noisy .airwave {
+    animation: none;
+  }
 }
