@@ -12,7 +12,7 @@ export interface PduSnapshot {
 }
 
 /** 'stream' = application bytes handed to TCP (or reassembled from it); not itself a packet on the wire. */
-export type PacketKind = 'arp' | 'dhcp' | 'dns' | 'tcp' | 'stream';
+export type PacketKind = 'arp' | 'dhcp' | 'dns' | 'tcp' | 'rtp' | 'stream';
 
 /** A logical packet. It keeps its id across hops even as MACs, TTL or NAT change its bytes. */
 export interface PacketInfo {
@@ -24,6 +24,8 @@ export interface PacketInfo {
   retransmitOf?: string;
   /** For TCP: which connection and direction; relative seq/ack are handy for display. */
   tcp?: { connId: string; relSeq: number; relAck: number; len: number; flags: number };
+  /** For RTP: the stream it belongs to and which packet of the clip this is (1-based) out of how many. */
+  rtp?: { seq: number; ssrc: number; part: number; of: number };
 }
 
 interface QItem {

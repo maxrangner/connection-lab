@@ -14,6 +14,8 @@ import * as tlsCern from './tlsCapture_info_cern_ch';
 import * as tlsPhoto from './tlsCapture_httpbin_org';
 import { CERN_A_RECORDS, CERN_DNS_TTL, CERN_HOST, CERN_HTTP_REQUEST, CERN_HTTP_RESPONSE_BASE64, CERN_IP, CERN_PATH } from './infoCernCapture';
 import { PHOTO_A_RECORDS, PHOTO_DNS_TTL, PHOTO_HOST, PHOTO_HTTP_REQUEST, PHOTO_HTTP_RESPONSE_BASE64, PHOTO_IP, PHOTO_PATH } from './photoCapture';
+import { RTP_PORT } from '../proto/rtp';
+import { VOICE_CLIP_CALLER_BASE64, VOICE_CLIP_FRIEND_BASE64 } from './voiceClip';
 
 /**
  * Addresses used by the "fetch a web page" scenario.
@@ -23,6 +25,9 @@ import { PHOTO_A_RECORDS, PHOTO_DNS_TTL, PHOTO_HOST, PHOTO_HTTP_REQUEST, PHOTO_H
  * - 1.1.1.1 (Cloudflare's public resolver) and example.com's addresses are real.
  * - The root, TLD and authoritative name servers have the real addresses the captured walk used (dnsTraceCapture.ts).
  *   The resolver's own ends of the cables to them are from 198.51.100.0/24 (documentation range), like the ISP's.
+ * - The friend's phone, on the far side of the internet, has 198.51.100.42: a public address from the same RFC 5737
+ *   documentation block (TEST-NET-2), standing in for whatever its own provider gave it. Its name, sam.example, is in
+ *   .example, the top-level domain RFC 2606 reserves for exactly this kind of use; the A record is invented.
  * - MACs: the first three bytes (OUI) identify a vendor; these are plausible but made up.
  */
 export const ADDR = {
@@ -35,6 +40,8 @@ export const ADDR = {
   ispToResolver: { ip: '198.51.100.1', mac: '00:1b:21:3a:4c:02' },
   ispToServer: { ip: '198.51.100.5', mac: '00:1b:21:3a:4c:03' },
   ispToVpn: { ip: '198.51.100.9', mac: '00:1b:21:3a:4c:04' },
+  ispToFriend: { ip: '198.51.100.13', mac: '00:1b:21:3a:4c:05' },
+  friend: { ip: '198.51.100.42', mac: '8c:f5:a3:1e:77:0b', name: 'sam.example', ttl: 300 },
   vpn: { ip: '198.51.100.10', mac: '00:0c:29:5a:cc:03', tunnelIp: '10.8.0.2' },
   vpnToServer: { mac: '00:0c:29:5a:cc:04' },
   vpnToResolver: { mac: '00:0c:29:5a:cc:05' },
@@ -99,6 +106,12 @@ export interface FetchWebPageOptions {
   cold?: boolean;
   /** One-way delay of the fibre to the ISP in seconds, when the viewer has stretched it; 2 ms (about 400 km) by default. */
   wanDelay?: number;
+  /**
+   * A voice call instead of a page: the device looks up the friend's name (sam.example) and streams one second of
+   * voice to the friend's phone as RTP over UDP, a 20 ms packet at a time; the friend talks back the same way. Nothing
+   * lost is ever sent again. No page is fetched; `together` still fetches the other device's page.
+   */
+  call?: boolean;
 }
 
 /** How long after the first device the other one starts, in seconds: close enough that their packets interleave. */
@@ -168,16 +181,24 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
     ...(opts.vpn ? { tunnel: { ip: ADDR.vpn.tunnelIp, server: ADDR.vpn.ip } } : {}),
     ...(warm ? { arp: { [gateway.ip]: gateway.mac } } : {}),
     apps: [
-      // With DHCP the device asks for an address first, and the browser's resolver comes from the lease.
+      // With DHCP the device asks for an address first, and the browser's (or the call's) resolver comes from the lease.
       ...(dhcp ? [{ kind: 'dhcp-client' as const, hostName: from }] : []),
-      {
-        kind: 'browser' as const,
-        url,
-        ...(dhcp ? {} : { resolver: ADDR.resolver.ip }),
-        request: ascii(opts.https ? site.tls.TLS_REQUEST : site.request),
-        ...(revisit ? { knownAddress: site.ip } : {}),
-        ...(tls ? { tls } : {}),
-      },
+      opts.call
+        ? {
+            kind: 'voice-call' as const,
+            to: ADDR.friend.name,
+            ...(dhcp ? {} : { resolver: ADDR.resolver.ip }),
+            clip: fromBase64(VOICE_CLIP_CALLER_BASE64),
+            ...(revisit ? { knownAddress: ADDR.friend.ip } : {}),
+          }
+        : {
+            kind: 'browser' as const,
+            url,
+            ...(dhcp ? {} : { resolver: ADDR.resolver.ip }),
+            request: ascii(opts.https ? site.tls.TLS_REQUEST : site.request),
+            ...(revisit ? { knownAddress: site.ip } : {}),
+            ...(tls ? { tls } : {}),
+          },
     ],
   });
   // The other device, asking for the plain page on its own. When the server is another site's, it holds example.com's
@@ -208,7 +229,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
   const remembered = from === 'phone' ? ADDR.phone : ADDR.laptop;
   return {
     id: 'fetch-web-page',
-    title: `Fetch ${url}`,
+    title: opts.call ? `Call ${ADDR.friend.name}` : `Fetch ${url}`,
     startDevice: from,
     ...(opts.together ? { companion: { device: other, at: COMPANION_DELAY } } : {}),
     tcp: { clientMss: opts.vpn ? Math.min(mss, 1380) : mss, serverMss: 1460 },
@@ -282,11 +303,13 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           { id: 'isp.p1', name: 'peer1', mac: ADDR.ispToResolver.mac, ip: ADDR.ispToResolver.ip, prefixLen: 30 },
           { id: 'isp.p2', name: 'peer2', mac: ADDR.ispToServer.mac, ip: ADDR.ispToServer.ip, prefixLen: 30 },
           { id: 'isp.p3', name: 'peer3', mac: ADDR.ispToVpn.mac, ip: ADDR.ispToVpn.ip, prefixLen: 30 },
+          { id: 'isp.p4', name: 'peer4', mac: ADDR.ispToFriend.mac, ip: ADDR.ispToFriend.ip, prefixLen: 30 },
         ],
         routes: [
           { network: '203.0.113.0', prefixLen: 24, iface: 'isp.cust' },
           { network: '1.1.1.0', prefixLen: 24, iface: 'isp.p1' },
           { network: ADDR.vpn.ip, prefixLen: 32, iface: 'isp.p3' },
+          { network: ADDR.friend.ip, prefixLen: 32, iface: 'isp.p4' },
           // Real Cloudflare prefixes containing example.com's addresses.
           { network: '104.16.0.0', prefixLen: 13, iface: 'isp.p2' },
           { network: '172.64.0.0', prefixLen: 13, iface: 'isp.p2' },
@@ -301,6 +324,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           [ADDR.homeWan.ip]: ADDR.homeWan.mac,
           [ADDR.resolver.ip]: ADDR.resolver.mac,
           [ADDR.vpn.ip]: ADDR.vpn.mac,
+          [ADDR.friend.ip]: ADDR.friend.mac,
           [server.ip]: server.mac,
           ...(alias ? { [alias]: server.mac } : {}),
         },
@@ -353,6 +377,8 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
                 'example.com': { ips: [...CAPTURED_A_RECORDS], ttl: CAPTURED_DNS_TTL },
                 [CERN_HOST]: { ips: [...CERN_A_RECORDS], ttl: CERN_DNS_TTL },
                 [PHOTO_HOST]: { ips: [...PHOTO_A_RECORDS], ttl: PHOTO_DNS_TTL },
+                // The friend's name is invented (no real walk was captured for it), so the resolver always has it cached.
+                [ADDR.friend.name]: { ips: [ADDR.friend.ip], ttl: ADDR.friend.ttl },
               }).filter(([name]) => !(cold && name === host)),
             ),
             ...(cold ? { upstream: { hops: DNS_TRACES[host]!.hops.map((h) => ({ server: h.server })) } } : {}),
@@ -385,6 +411,19 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           },
         ],
       },
+      {
+        // The friend's phone, beyond the web server, on another provider's network. It is there in every run and only
+        // speaks when called.
+        id: 'friend',
+        label: "Friend's phone",
+        sublabel: `${ADDR.friend.name} · ${ADDR.friend.ip}`,
+        kind: 'peer',
+        layout: { x: 1900, y: 1000 },
+        ifaces: [{ id: 'friend.eth0', name: 'eth0', mac: ADDR.friend.mac, ip: ADDR.friend.ip, prefixLen: 32 }],
+        routes: [{ network: '0.0.0.0', prefixLen: 0, via: ADDR.ispToFriend.ip, iface: 'friend.eth0' }],
+        arp: { [ADDR.ispToFriend.ip]: ADDR.ispToFriend.mac },
+        apps: [{ kind: 'voice-peer', clip: fromBase64(VOICE_CLIP_FRIEND_BASE64), port: RTP_PORT }],
+      },
     ],
     links: [
       { id: 'lan', a: 'laptop.eth0', b: 'home.lan', bitsPerSecond: 1e9, delay: 5e-8, label: 'Ethernet cable · 1 Gbit/s', name: 'the Ethernet cable' },
@@ -397,6 +436,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
       { id: 'bb2', a: 'isp.p2', b: 'server.eth0', bitsPerSecond: 1e10, delay: 0.004, label: 'Backbone · 10 Gbit/s · 4 ms', name: 'a backbone link' },
       { id: 'bb4', a: 'vpn.eth1', b: 'server.eth1', bitsPerSecond: 1e10, delay: 0.004, label: 'Backbone · 10 Gbit/s · 4 ms', name: 'a backbone link' },
       { id: 'bb5', a: 'vpn.eth2', b: 'resolver.eth1', bitsPerSecond: 1e10, delay: 0.003, label: 'Backbone · 10 Gbit/s · 3 ms', name: 'a backbone link' },
+      { id: 'bb6', a: 'isp.p4', b: 'friend.eth0', bitsPerSecond: 1e10, delay: 0.006, label: 'Backbone · 10 Gbit/s · 6 ms', name: 'a backbone link' },
       ...upstream.links,
     ],
   };

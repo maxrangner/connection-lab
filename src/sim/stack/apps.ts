@@ -2,6 +2,7 @@ import type { Ip4 } from '../bytes/addr';
 import { concat, setU16, toAscii } from '../bytes/bytes';
 import type { AppSpec } from '../model';
 import { buildDnsQuery, buildDnsResponse, DNS_RCODE_NXDOMAIN, DNS_RCODE_OK, DNS_RCODE_SERVFAIL, DNS_TYPE_A, dnsAddresses, dnsReferral, dnsSummary, parseDns } from '../proto/dns';
+import { buildRtp, parseRtp, RTP_PORT, RTP_PT_PCMU, RTP_SAMPLES_PER_PACKET, RTP_VERSION } from '../proto/rtp';
 import type { Host } from './Host';
 import { httpsClient } from './https';
 
@@ -9,8 +10,14 @@ const DNS_TIMEOUT = 5; // glibc resolv.conf default "timeout:5"
 const DNS_ATTEMPTS = 2; // glibc default "attempts:2"
 const UPSTREAM_TIMEOUT = 2; // a resolver gives a server of the hierarchy about this long before asking again
 const UPSTREAM_ATTEMPTS = 2;
+/** One voice packet every 20 ms: 160 samples of G.711, the usual packetisation (RFC 3551 §6). */
+const RTP_INTERVAL = RTP_SAMPLES_PER_PACKET / 8000;
+/** How long a caller who hears nothing back lets the line ring after its own clip before it hangs up. */
+const NO_ANSWER_WAIT = 2;
 
 type BrowserSpec = Extract<AppSpec, { kind: 'browser' }>;
+type VoiceCallSpec = Extract<AppSpec, { kind: 'voice-call' }>;
+type VoicePeerSpec = Extract<AppSpec, { kind: 'voice-peer' }>;
 type DnsServerSpec = Extract<AppSpec, { kind: 'dns-server' }>;
 type DnsAuthoritySpec = Extract<AppSpec, { kind: 'dns-authority' }>;
 type HttpServerSpec = Extract<AppSpec, { kind: 'http-server' }>;
@@ -78,18 +85,20 @@ function resolve(host: Host, name: string, resolver: string, done: (ips: string[
   send();
 }
 
+/** The addresses for a name: the one still cached from last time, or else what the stub resolver finds out. */
+function findAddress(host: Host, name: string, resolver: string | undefined, known: Ip4 | undefined, done: (ips: string[]) => void, fail: (reason: string) => void): void {
+  if (!known && !resolver) return fail('no DNS resolver configured');
+  if (!known) return resolve(host, name, resolver!, done, fail);
+  host.sim.emit({ type: 'app', deviceId: host.id, app: 'dns-client', action: 'dns-cache-hit', info: { name, addresses: [known] } });
+  done([known]);
+}
+
 /** `leased` is the resolver DHCP handed out, used when the spec names none. */
 export function startBrowser(host: Host, spec: BrowserSpec, mss: number, leased?: string): void {
   const sim = host.sim;
   const url = new URL(spec.url);
   sim.emit({ type: 'app', deviceId: host.id, app: 'browser', action: 'start', info: { url: spec.url } });
-  const lookup = (done: (ips: string[]) => void, fail: (reason: string) => void): void => {
-    const resolver = spec.resolver ?? leased;
-    if (!spec.knownAddress && !resolver) return fail('no DNS resolver configured');
-    if (!spec.knownAddress) return resolve(host, url.hostname, resolver!, done, fail);
-    sim.emit({ type: 'app', deviceId: host.id, app: 'dns-client', action: 'dns-cache-hit', info: { name: url.hostname, addresses: [spec.knownAddress] } });
-    done([spec.knownAddress]);
-  };
+  const lookup = (done: (ips: string[]) => void, fail: (reason: string) => void): void => findAddress(host, url.hostname, spec.resolver ?? leased, spec.knownAddress, done, fail);
   lookup(
     (ips) => {
       const target = ips[0]!;
@@ -152,6 +161,105 @@ export function startBrowser(host: Host, spec: BrowserSpec, mss: number, leased?
     },
     (reason) => sim.emit({ type: 'app', deviceId: host.id, app: 'browser', action: 'error', info: { reason } }),
   );
+}
+
+/**
+ * One end of a voice call on one UDP port: it streams its clip to whoever it is told to, a packet every 20 ms, and plays
+ * what comes in by sequence number. A skipped number is a gap: the packet is lost, nothing asks for it again, the call
+ * goes on. The call hangs up once both clips are through: its own sent, and the other's length heard from when its
+ * first packet came (the clips are the same length). No RTCP, no SIP and no jitter buffer: packets are played as they come.
+ */
+function voiceEndpoint(host: Host, app: 'voice-call' | 'voice-peer', port: number, clip: Uint8Array, onFirst?: (from: { ip: Ip4; port: number }) => void): { send(to: { ip: Ip4; port: number }): void } {
+  const sim = host.sim;
+  const packets = Math.ceil(clip.length / RTP_SAMPLES_PER_PACKET);
+  const rx = { ssrc: -1, expected: -1, received: 0, gaps: 0, firstAt: -1 };
+  let sentAll = -1;
+  let hangTimer: number | undefined;
+  let done = false;
+  const finish = (ok: boolean): void => {
+    done = true;
+    host.udpUnbind(port);
+    if (ok) sim.emit({ type: 'app', deviceId: host.id, app, action: 'call-done', info: { received: rx.received, gaps: rx.gaps } });
+    else sim.emit({ type: 'app', deviceId: host.id, app, action: 'error', info: { reason: 'nobody answered' } });
+  };
+  const hangUp = (): void => {
+    if (sentAll < 0) return;
+    sim.cancel(hangTimer);
+    if (rx.firstAt < 0) hangTimer = sim.at(sentAll + NO_ANSWER_WAIT, () => finish(false));
+    else hangTimer = sim.at(Math.max(sentAll, rx.firstAt + packets * RTP_INTERVAL), () => finish(true));
+  };
+  host.udpBind(port, 'rtp', (from, data, _packetId, pduId) => {
+    if (done) return;
+    const h = parseRtp(data, 0);
+    if (h.version !== RTP_VERSION || h.payloadType !== RTP_PT_PCMU) return;
+    const first = rx.ssrc < 0;
+    if (first) {
+      rx.ssrc = h.ssrc;
+      rx.firstAt = sim.now;
+    } else if (h.ssrc !== rx.ssrc) return; // another stream altogether; a real app keeps one receiver per source
+    const bytes = h.payloadEnd - h.payloadStart;
+    if (rx.expected >= 0 && h.seq !== rx.expected) {
+      const ahead = (h.seq - rx.expected) & 0xffff;
+      if (ahead >= 0x8000) {
+        sim.emit({ type: 'app', deviceId: host.id, app, action: 'rtp-late', pduId, info: { seq: h.seq, expected: rx.expected } });
+        return;
+      }
+      rx.gaps += ahead;
+      sim.emit({ type: 'app', deviceId: host.id, app, action: 'rtp-gap', pduId, info: { expected: rx.expected, got: h.seq, missing: ahead } });
+    }
+    rx.received++;
+    rx.expected = (h.seq + 1) & 0xffff;
+    sim.emit({ type: 'app', deviceId: host.id, app, action: 'rtp-received', pduId, info: { seq: h.seq, bytes, totalReceived: rx.received } });
+    if (first) {
+      onFirst?.(from);
+      hangUp();
+    }
+  });
+  return {
+    send(to) {
+      // RFC 3550 §5.1: the sequence number and timestamp start at random values, and the SSRC is random too.
+      const ssrc = host.random32();
+      const seq0 = host.random32() & 0xffff;
+      const ts0 = host.random32();
+      const start = sim.now;
+      for (let i = 0; i < packets; i++) {
+        sim.at(start + i * RTP_INTERVAL, () => {
+          if (done) return;
+          const seq = (seq0 + i) & 0xffff;
+          const timestamp = (ts0 + i * RTP_SAMPLES_PER_PACKET) >>> 0;
+          // The marker says "a talkspurt starts here": set on the first packet, as a phone does after silence.
+          const msg = buildRtp({ marker: i === 0, payloadType: RTP_PT_PCMU, seq, timestamp, ssrc }, clip.subarray(i * RTP_SAMPLES_PER_PACKET, (i + 1) * RTP_SAMPLES_PER_PACKET));
+          const pk = sim.newPacket(host.id, 'rtp', `RTP voice (part ${i + 1}/${packets})`, { rtp: { seq, ssrc, part: i + 1, of: packets } });
+          const pduId = sim.pdu(pk.id, msg, 'rtp');
+          sim.emit({ type: 'encapsulate', deviceId: host.id, packetId: pk.id, layer: 5, protocol: 'rtp', pduId });
+          host.udpSend(port, to.ip, to.port, msg, pk.id);
+          if (i === packets - 1) {
+            sentAll = sim.now + RTP_INTERVAL;
+            hangUp();
+          }
+        });
+      }
+    },
+  };
+}
+
+/** The caller: finds the friend's address (the cached one, or by DNS) and streams its clip to the friend's RTP port. */
+export function startVoiceCall(host: Host, spec: VoiceCallSpec, leased?: string): void {
+  const sim = host.sim;
+  sim.emit({ type: 'app', deviceId: host.id, app: 'voice-call', action: 'start', info: { to: spec.to } });
+  findAddress(
+    host,
+    spec.to,
+    spec.resolver ?? leased,
+    spec.knownAddress,
+    (ips) => voiceEndpoint(host, 'voice-call', host.ephemeralPort(), spec.clip).send({ ip: ips[0]!, port: RTP_PORT }),
+    (reason) => sim.emit({ type: 'app', deviceId: host.id, app: 'voice-call', action: 'error', info: { reason } }),
+  );
+}
+
+/** The friend's phone: listens on its RTP port and, when the first packet of a call comes, talks back to where it came from. */
+export function startVoicePeer(host: Host, spec: VoicePeerSpec): void {
+  const endpoint = voiceEndpoint(host, 'voice-peer', spec.port, spec.clip, (from) => endpoint.send(from));
 }
 
 /**

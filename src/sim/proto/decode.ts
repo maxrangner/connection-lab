@@ -5,6 +5,7 @@ import { describeDns } from './dns';
 import { describeEthernet, ETHERTYPE_ARP, ETHERTYPE_IPV4, parseEthernet } from './ethernet';
 import { describeHttp } from './http';
 import { describeIpv4, IPPROTO_TCP, IPPROTO_UDP, parseIpv4 } from './ipv4';
+import { describeRtp, RTP_PORT } from './rtp';
 import { describeTcp, parseTcp } from './tcp';
 import { describeTls } from './tls';
 import { describeWifi, parseWifi } from './wifi';
@@ -75,6 +76,8 @@ function walk(b: Uint8Array, proto: Protocol, o: number, end: number, ctx: Decod
         walk(b, 'dns', u.payloadStart, u.payloadEnd, ctx, out);
       } else if (u.payloadEnd > u.payloadStart && ([DHCP_SERVER_PORT, DHCP_CLIENT_PORT].includes(u.dstPort) || ctx.appHint === 'dhcp')) {
         walk(b, 'dhcp', u.payloadStart, u.payloadEnd, ctx, out);
+      } else if (u.payloadEnd > u.payloadStart && (u.srcPort === RTP_PORT || u.dstPort === RTP_PORT || ctx.appHint === 'rtp')) {
+        walk(b, 'rtp', u.payloadStart, u.payloadEnd, ctx, out);
       }
       return pdu.end;
     }
@@ -107,6 +110,10 @@ function walk(b: Uint8Array, proto: Protocol, o: number, end: number, ctx: Decod
     }
     case 'http': {
       out.push(describeHttp(b, o, end));
+      return end;
+    }
+    case 'rtp': {
+      out.push(describeRtp(b, o, end));
       return end;
     }
   }

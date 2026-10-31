@@ -2,7 +2,7 @@ import type { PacketInfo, PduSnapshot } from './core/Simulator';
 import type { SimEvent } from './events/SimEvent';
 import { NO_FAULTS, type FaultPlan } from './faults';
 import type { Scenario } from './model';
-import { startBrowser, startDnsAuthority, startDnsServer, startHttpServer } from './stack/apps';
+import { startBrowser, startDnsAuthority, startDnsServer, startHttpServer, startVoiceCall, startVoicePeer } from './stack/apps';
 import { startDhcpClient } from './stack/dhcp';
 import { startHttpsServer } from './stack/https';
 import { TunnelClient, VpnServer } from './stack/vpn';
@@ -54,19 +54,23 @@ export function runScenario(scenario: Scenario, opts: RunOptions): SimResult {
       else if (app.kind === 'http-server') {
         startHttpServer(dev, app, scenario.tcp.serverMss);
         if (app.tls) startHttpsServer(dev, app.tls, app.processing, scenario.tcp.serverMss);
-      }
+      } else if (app.kind === 'voice-peer') startVoicePeer(dev, app);
     }
   }
+  // The user starts the browser, or a voice call, at t = 0; after DHCP if the device needs an address first.
   const starts = [{ device: scenario.startDevice, at: 0 }, ...(scenario.companion ? [scenario.companion] : [])];
   for (const s of starts) {
     const start = world.devices.get(s.device);
     const apps = start ? (scenario.devices.find((d) => d.id === start.id)?.apps ?? []) : [];
     const browser = apps.find((a) => a.kind === 'browser');
+    const call = apps.find((a) => a.kind === 'voice-call');
     const dhcp = apps.find((a) => a.kind === 'dhcp-client');
-    if (start instanceof Host && browser?.kind === 'browser') {
-      const open = (resolver?: string): void => startBrowser(start, browser, scenario.tcp.clientMss, resolver);
-      world.sim.at(s.at, () => (dhcp?.kind === 'dhcp-client' ? startDhcpClient(start, dhcp, (lease) => open(lease.dns[0])) : open()));
-    }
+    if (!(start instanceof Host)) continue;
+    const open = (resolver?: string): void => {
+      if (call?.kind === 'voice-call') startVoiceCall(start, call, resolver);
+      else if (browser?.kind === 'browser') startBrowser(start, browser, scenario.tcp.clientMss, resolver);
+    };
+    if (call || browser) world.sim.at(s.at, () => (dhcp?.kind === 'dhcp-client' ? startDhcpClient(start, dhcp, (lease) => open(lease.dns[0])) : open()));
   }
   world.sim.run(opts.maxTime ?? 600);
   return {

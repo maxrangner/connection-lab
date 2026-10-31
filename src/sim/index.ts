@@ -12,3 +12,6 @@ export { ETH_PREAMBLE } from './proto/ethernet';
 export { flagNames, TCP_ACK, TCP_FIN, TCP_SYN } from './proto/tcp';
 export { buildDhcp, describeDhcp, dhcpTypeName, parseDhcp, type DhcpMessage, type ParsedDhcp } from './proto/dhcp';
 export { clientHelloSni, openRecords, sessionStream, TLS_ALERT, TLS_APPLICATION_DATA, TLS_HANDSHAKE, type OpenedRecord, type TlsSession } from './proto/tls';
+export { buildRtp, describeRtp, parseRtp, RTP_HEADER_LEN, RTP_PCMU_CLOCK, RTP_PORT, RTP_PT_PCMU, RTP_SAMPLES_PER_PACKET, type ParsedRtp, type RtpHeader } from './proto/rtp';
+export { ulawDecode, ulawDecodeAll, ulawEncode } from './bytes/ulaw';
+export { VOICE_CLIP_SAMPLES, VOICE_SAMPLE_RATE } from './scenarios/voiceClip';

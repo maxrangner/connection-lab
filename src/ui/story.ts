@@ -13,6 +13,7 @@ import {
   type OpenedRecord,
   type PacketInfo,
   type PduSnapshot,
+  RTP_SAMPLES_PER_PACKET,
   type SimEvent,
   type SimResult,
   type TlsSession,
@@ -30,7 +31,8 @@ import {
  *   3 Get the page      GET / out, 200 OK back
  *
  * A packet knocked off a cable (a manual fault) ends its trip with `lost`; the retry that the sim then sends
- * is simply the next trip.
+ * is simply the next trip. A voice call (scenario option `call`) has the DNS chapter and then one `call` chapter:
+ * all its RTP packets, both ways, in one flow; a lost one is a gap nobody fills.
  */
 
 /** Pieces that go around the data: transport (TCP or UDP), IP, the VPN case, and the link layer's frame (Ethernet or Wi-Fi). */
@@ -52,7 +54,7 @@ export interface Frame {
   head: number;
   tail: number;
 }
-export type Chapter = 'address' | 'arp' | 'dns' | 'hello' | 'secret' | 'page';
+export type Chapter = 'address' | 'arp' | 'dns' | 'hello' | 'secret' | 'page' | 'call';
 
 /** One piece of a packet, by where it sits. */
 export type PartKey = 'ethH' | 'vpn' | 'ip' | 'l4' | 'card' | 'ethT';
@@ -133,6 +135,8 @@ export interface Trip {
   locked?: boolean;
   /** One of several packets of the same message that is not the last: no reaction when it arrives. */
   quiet?: boolean;
+  /** A voice call gathered into one flow: every RTP packet of both directions, each with its `part` and `client`. */
+  kind?: 'call';
 }
 
 export interface Story {
@@ -148,6 +152,13 @@ export interface Story {
   cold: boolean;
   /** The device starts with no address and gets one by DHCP first. */
   dhcp: boolean;
+  /** A voice call to the friend instead of a page. */
+  call: boolean;
+  /**
+   * The call's sound, as G.711 µ-law bytes (decode with ulawDecode): what the caller says, and what it heard, one entry per
+   * packet of the friend's clip: the bytes that came, or null for a packet that never arrived.
+   */
+  voice?: { sent: Uint8Array; heard: (Uint8Array | null)[] };
   /** Which device each address belongs to. */
   names: Record<string, string>;
   devices: { id: string; label: string; kind: string }[];
@@ -247,6 +258,9 @@ function seenOn(pdu: PduSnapshot | undefined, p: PacketInfo): Seen | undefined {
   if (dns) return { ...base, lines: [dnsCardLabel(dns.summary)], kind: 'open' };
   const dhcp = layer(pdu, 'dhcp');
   if (dhcp) return { ...base, lines: [dhcpCardLabel(dhcp.summary)], kind: 'open' };
+  // Plain RTP: anyone on the line could listen in.
+  const rtp = layer(pdu, 'rtp');
+  if (rtp) return { ...base, lines: [`voice, ${field(rtp, 'rtp.payload')}`], kind: 'open' };
   const tls = layer(pdu, 'tls');
   if (tls) {
     const data = pdu.bytes.subarray(tls.start, tls.payloadEnd);
@@ -283,7 +297,7 @@ function detailsOf(pdu: PduSnapshot | undefined): Details {
   if (ip) d.ip = rowsOf(ip.fields);
   const l4 = layer(pdu, 'tcp') ?? layer(pdu, 'udp');
   if (l4) d.l4 = rowsOf(l4.fields);
-  const app = layer(pdu, 'http') ?? layer(pdu, 'dns') ?? layer(pdu, 'dhcp') ?? layer(pdu, 'tls') ?? layer(pdu, 'arp');
+  const app = layer(pdu, 'http') ?? layer(pdu, 'dns') ?? layer(pdu, 'dhcp') ?? layer(pdu, 'rtp') ?? layer(pdu, 'tls') ?? layer(pdu, 'arp');
   if (app) d.card = rowsOf(app.fields);
   return d;
 }
@@ -308,7 +322,7 @@ function chosen(r: SimResult, arp: boolean): { packets: PacketInfo[]; hellos: Se
   const hellos = new Set<string>();
   const helloAckFrom = new Set<string>();
   for (const p of r.packets.values()) {
-    if (p.kind === 'dns' || p.kind === 'dhcp' || (p.kind === 'arp' && arp)) {
+    if (p.kind === 'dns' || p.kind === 'dhcp' || p.kind === 'rtp' || (p.kind === 'arp' && arp)) {
       packets.push(p);
       continue;
     }
@@ -434,9 +448,9 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
   const ip = layer(packet, 'ipv4');
   const l4 = layer(packet, 'tcp') ?? layer(packet, 'udp');
   if (!arp && (!ip || !l4)) return null;
-  const app = layer(packet, 'http') ?? layer(packet, 'dns') ?? layer(packet, 'dhcp');
+  const app = layer(packet, 'http') ?? layer(packet, 'dns') ?? layer(packet, 'dhcp') ?? layer(packet, 'rtp');
   const dataBytes = arp ? arp.end - arp.start : l4!.payloadEnd - l4!.headerEnd;
-  const appCard = (a: LayerPdu): string => (a.protocol === 'http' ? cardLabel(a.summary) : a.protocol === 'dhcp' ? dhcpCardLabel(a.summary) : dnsCardLabel(a.summary));
+  const appCard = (a: LayerPdu): string => (a.protocol === 'http' ? cardLabel(a.summary) : a.protocol === 'dhcp' ? dhcpCardLabel(a.summary) : a.protocol === 'rtp' ? 'voice' : dnsCardLabel(a.summary));
   const card = arp ? arpCardLabel(arp.summary) : dataBytes > 0 ? (app ? appCard(app) : 'data') : null;
   const isTcp = l4?.protocol === 'tcp';
   const origin = steps[0]!.kind === 'travel' || steps[0]!.kind === 'lost' ? (steps[0] as { from: string }).from : (steps[0] as { device: string }).device;
@@ -458,7 +472,7 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
   const timer = resend?.type === 'tcp:retransmit' && resend.cause === 'rto' ? resend.rto : askedAt !== undefined ? p.createdAt - askedAt : undefined;
   return {
     packetId: p.id,
-    chapter: arp ? 'arp' : p.kind === 'dhcp' ? 'address' : p.kind === 'dns' ? 'dns' : dataBytes > 0 ? 'page' : 'hello',
+    chapter: arp ? 'arp' : p.kind === 'dhcp' ? 'address' : p.kind === 'dns' ? 'dns' : p.kind === 'rtp' ? 'call' : dataBytes > 0 ? 'page' : 'hello',
     start: p.createdAt,
     sent: firstTx?.at ?? p.createdAt,
     origin,
@@ -481,6 +495,8 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
     retransmitOf: p.retransmitOf,
     timedOut: timer !== undefined,
     waited: timer,
+    // A voice packet is one of its clip's 50, in either direction.
+    ...(p.rtp ? { part: { n: p.rtp.part, of: p.rtp.of } } : {}),
   };
 }
 
@@ -520,6 +536,25 @@ function pageTitle(r: SimResult, client: string): string | null {
   const text = new TextDecoder('latin1').decode(pdu.bytes);
   if (/^content-type: image\//im.test(text)) return 'photo';
   return /<title>([^<]*)<\/title>/i.exec(text)?.[1]?.trim() || 'example.com';
+}
+
+/**
+ * The call's sound: the caller's own clip, and what it heard of the friend's, packet by packet from the real bytes of each
+ * 'rtp-received' (the friend's clip is known, so a packet that never came is a null the UI can show as a hole).
+ */
+function voiceOf(r: SimResult, client: string): Story['voice'] {
+  const call = r.scenario.devices.find((d) => d.id === client)?.apps.find((a) => a.kind === 'voice-call');
+  if (call?.kind !== 'voice-call') return undefined;
+  const peer = r.scenario.devices.flatMap((d) => d.apps).find((a) => a.kind === 'voice-peer');
+  const heard: (Uint8Array | null)[] = Array.from({ length: peer?.kind === 'voice-peer' ? Math.ceil(peer.clip.length / RTP_SAMPLES_PER_PACKET) : 0 }, () => null);
+  for (const e of r.events) {
+    if (e.type !== 'app' || e.action !== 'rtp-received' || e.deviceId !== client || !e.pduId) continue;
+    const pdu = r.pdus.get(e.pduId);
+    const rtp = pdu && layer(pdu, 'rtp');
+    const part = pdu && r.packets.get(pdu.packetId)?.rtp?.part;
+    if (rtp && part) heard[part - 1] = pdu.bytes.slice(rtp.headerEnd, rtp.payloadEnd);
+  }
+  return { sent: call.clip, heard };
 }
 
 function dnsAnswer(r: SimResult, client: string, action: 'dns-answer' | 'dns-cache-hit' = 'dns-answer'): string | null {
@@ -570,7 +605,8 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
   numberParts(trips, r, client);
   const title = pageTitle(r, client);
   addLookups(trips, title);
-  const shown = streams(r) ? gatherStream(trips, client) : smallAcks(trips);
+  const voice = voiceOf(r, client);
+  const shown = voice ? gatherCall(trips) : streams(r) ? gatherStream(trips, client) : smallAcks(trips);
   const url = start?.type === 'app' ? String(start.info?.url ?? '') : '';
   const wifiIfaces = new Set(r.scenario.devices.flatMap((d) => d.ifaces.filter((i) => i.wifi).map((i) => i.id)));
   const ifaceDevice = new Map(r.scenario.devices.flatMap((d) => d.ifaces.map((i) => [i.id, d.id] as const)));
@@ -583,12 +619,15 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
       delay: l.delay,
       medium: wifiIfaces.has(l.a) || wifiIfaces.has(l.b) ? ('wifi' as const) : ('cable' as const),
     })),
-    site: url ? new URL(url).hostname : '',
+    // A call starts with the friend's name instead of a URL.
+    site: url ? new URL(url).hostname : start?.type === 'app' ? String(start.info?.to ?? '') : '',
     client,
     clients,
     vpn: r.scenario.devices.some((d) => d.tunnel),
     cold: r.scenario.devices.some((d) => d.apps.some((a) => a.kind === 'dns-server' && !!a.upstream)),
     dhcp: r.scenario.devices.some((d) => d.id === client && d.apps.some((a) => a.kind === 'dhcp-client')),
+    call: !!voice,
+    ...(voice ? { voice } : {}),
     // An address a device gets by DHCP belongs to whoever has the MAC it is leased to.
     names: Object.fromEntries(r.scenario.devices.flatMap((d) => [
       ...d.ifaces.flatMap((i) => [i.ip, ...(i.aliases ?? [])].map((ip) => [ip, d.label])),
@@ -635,6 +674,18 @@ function gatherStream(trips: Trip[], client: string): Trip[] {
   const lookups = packets.flatMap((t) => t.steps.filter((s) => s.kind === 'lookup'));
   const stream: Trip = { ...trips[first]!, part: undefined, retry: false, timedOut: false, lost: false, locked: false, steps: [...lookups, { kind: 'flow', packets }] };
   return [...smallAcks(trips.slice(0, first)), stream, ...smallAcks(trips.slice(first).filter((t) => !inStream(t)), 'page')];
+}
+
+/**
+ * A call: from its first voice packet on, every voice packet of both directions becomes one flow step on one trip (as the
+ * photo's reply does), each packet keeping its own part number and client. What is not voice goes on after it.
+ */
+function gatherCall(trips: Trip[]): Trip[] {
+  const first = trips.findIndex((t) => t.chapter === 'call');
+  if (first < 0) return smallAcks(trips);
+  const packets = trips.slice(first).filter((t) => t.chapter === 'call');
+  const call: Trip = { ...trips[first]!, part: undefined, retry: false, timedOut: false, lost: false, kind: 'call', steps: [{ kind: 'flow', packets }] };
+  return [...smallAcks(trips.slice(0, first)), call, ...smallAcks(trips.slice(first).filter((t) => t.chapter !== 'call'), 'call')];
 }
 
 /**

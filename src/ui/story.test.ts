@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fetchWebPage, runScenario, type ManualFault } from '../sim';
-import { buildStory, cardLabel, dhcpCardLabel, dnsCardLabel, type Trip } from './story';
+import { buildStory, cardLabel, dhcpCardLabel, dnsCardLabel, type Story, type Trip } from './story';
 import { addressBefore, buildTimeline, chapterAt, detailsAt, formatWait, lockPose, packetPose, realAt, seenSoFar, spyLog, stepTarget, swapLanding, swapMoment, trayAngle } from './timeline';
 
 const run = (manual: ManualFault[] = []) => buildStory(runScenario(fetchWebPage(), { seed: 1, faults: { randomLoss: 0, manual } }));
@@ -88,6 +88,70 @@ describe('network story', () => {
     expect(dnsCardLabel('DNS referral 0x80dd: example.com → example.com NS hera.ns.cloudflare.com, elliott.ns.cloudflare.com')).toBe('ask hera…com');
     expect(dnsCardLabel('DNS referral 0x80dd: info.cern.ch → cern.ch NS scsnms.switch.ch, ext-dns-1.cern.ch, …')).toBe('ask scsnms.switch.ch');
     expect(dnsCardLabel('DNS referral 0x80dd: httpbin.org → httpbin.org NS ns-173.awsdns-21.com, ns-884.awsdns-46.net, …')).toBe('ask ns-173…com');
+  });
+});
+
+describe('a voice call in the story', () => {
+  const call = (manual: ManualFault[] = []) => buildStory(runScenario(fetchWebPage({ call: true }), { seed: 1, faults: { randomLoss: 0, manual } }));
+  const s = call();
+  const flow = (x: Story): Trip[] => x.trips.flatMap((t) => t.steps.flatMap((y) => (y.kind === 'flow' ? y.packets : [])));
+
+  it('tells two chapters: find the address, then the call as one flow of every voice packet both ways', () => {
+    expect(s.trips.map((t) => [t.chapter, t.card ?? t.l4Label])).toEqual([
+      ['dns', 'sam.example?'],
+      ['dns', '198.51.100.42'],
+      ['call', 'voice'],
+    ]);
+    const stream = s.trips[2]!;
+    expect(stream.kind).toBe('call');
+    expect(stream.part).toBeUndefined();
+    expect(stream.steps.map((x) => x.kind)).toEqual(['flow']);
+    const packets = flow(s);
+    expect(packets).toHaveLength(100);
+    for (const outward of [true, false]) {
+      const side = packets.filter((t) => t.outward === outward);
+      expect(side.map((t) => t.part!.n)).toEqual(Array.from({ length: 50 }, (_, i) => i + 1));
+      expect(side.every((t) => t.part!.of === 50 && t.card === 'voice' && t.l4 === 'udp' && t.chapter === 'call' && t.client === 'laptop' && t.dataBytes === 172)).toBe(true);
+      expect(side[0]!.origin).toBe(outward ? 'laptop' : 'friend');
+    }
+    expect(packets[0]!.header).toEqual({ eth: 14, ip: 20, l4: 8 });
+    expect(packets.every((t) => !t.retry && !t.timedOut)).toBe(true);
+  });
+
+  it('is a call, not a page: no title, the friend’s address from DNS, the sound both ways', () => {
+    expect(s.call).toBe(true);
+    expect(s.site).toBe('sam.example');
+    expect(s.pageTitle).toBeNull();
+    expect(s.image).toBeNull();
+    expect(s.dnsAnswer).toBe('198.51.100.42');
+    expect(s.dnsTtl).toBe(300);
+    expect(s.voice!.sent).toHaveLength(8000);
+    expect(s.voice!.heard).toHaveLength(50);
+    expect(s.voice!.heard.every((h) => h?.length === 160)).toBe(true);
+    expect(s.names['198.51.100.42']).toBe("Friend's phone");
+    expect(story.call).toBe(false);
+    expect(story.voice).toBeUndefined();
+  });
+
+  it('a lost packet falls off the cable and leaves a hole nobody fills: no retry, no timer', () => {
+    const third = flow(s).find((t) => t.part?.n === 3 && !t.outward)!;
+    const x = call([{ packetId: third.packetId, linkId: 'bb6' }]);
+    const packets = flow(x);
+    expect(packets).toHaveLength(100);
+    const lost = packets.filter((t) => t.lost);
+    expect(lost.map((t) => [t.origin, t.part!.n])).toEqual([['friend', 3]]);
+    expect(lost[0]!.steps.at(-1)).toMatchObject({ kind: 'lost', link: 'bb6' });
+    expect(packets.some((t) => t.retry || t.timedOut)).toBe(false);
+    expect(x.voice!.heard.map((h, i) => (h ? null : i + 1)).filter((n) => n)).toEqual([3]);
+    expect(x.voice!.heard.filter((h) => h)).toHaveLength(49);
+    expect(() => buildTimeline(x)).not.toThrow();
+  });
+
+  it('a snoop on the line hears plain voice', () => {
+    const first = flow(s)[0]!;
+    const travel = first.steps.find((x) => x.kind === 'travel');
+    expect(travel?.kind === 'travel' && travel.seen).toMatchObject({ kind: 'open', lines: ['voice, 160 bytes (20 ms)'] });
+    expect(first.steps[0]?.details?.card?.map((row) => row.name)).toEqual(['Version', 'Payload type', 'Sequence number', 'Timestamp', 'SSRC', 'Audio']);
   });
 });
 
