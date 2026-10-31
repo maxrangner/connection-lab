@@ -29,6 +29,8 @@ export class World {
 
 export class Link {
   private busyUntil = new Map<string, number>();
+  /** Per port, when each frame waiting in its transmit buffer starts on the wire. Only kept for a link with a finite `queue`. */
+  private waiting = new Map<string, number[]>();
 
   constructor(
     readonly world: World,
@@ -41,7 +43,8 @@ export class Link {
 
   /**
    * Puts a frame on the wire. Each direction serializes one frame at a time (full duplex). The last bit arrives
-   * after serialization time plus propagation delay.
+   * after serialization time plus propagation delay. A frame that finds the port busy waits its turn; with a finite
+   * `queue` the wait is an event, and a frame that finds the buffer full is dropped at once (tail drop), silently.
    */
   transmit(fromIface: string, frame: Uint8Array, packetId: string, frameId: string): void {
     const sim = this.world.sim;
@@ -52,6 +55,16 @@ export class Link {
     const bps = this.spec.bitsPerSecond;
     const wireBytes = frame.length + PREAMBLE_BYTES;
     const start = Math.max(sim.now, this.busyUntil.get(fromIface) ?? 0);
+    if (this.spec.queue !== undefined && start > sim.now) {
+      // The frames still waiting ahead of it: the one being clocked out right now has left the buffer.
+      const ahead = (this.waiting.get(fromIface) ?? []).filter((s) => s > sim.now);
+      if (ahead.length >= this.spec.queue) {
+        sim.emit({ type: 'drop', packetId, reason: 'queue-full', deviceId: from.id, linkId: this.spec.id, frameId });
+        return;
+      }
+      this.waiting.set(fromIface, [...ahead, start]);
+      sim.emit({ type: 'queue', deviceId: from.id, iface: fromIface, linkId: this.spec.id, packetId, frameId, depth: ahead.length, wait: start - sim.now });
+    }
     const txEnd = start + (wireBytes * 8) / bps;
     this.busyUntil.set(fromIface, txEnd + (INTERFRAME_GAP_BYTES * 8) / bps);
     const arrive = txEnd + this.spec.delay;

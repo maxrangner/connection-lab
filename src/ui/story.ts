@@ -69,8 +69,11 @@ export type Step = (
   | { kind: 'wrap'; device: string; layer: Wrap; /** For the frame (layer 'eth'): which kind and its sizes. */ frame?: Frame; /** For the VPN case: the addresses showing from here on. */ addr?: { from: string; to: string } }
   | { kind: 'unwrap'; device: string; layer: Wrap; frame?: Frame; addr?: { from: string; to: string } }
   | { kind: 'nat'; device: string; which: 'from' | 'to'; before: string; after: string; /** The port changes with the address: it is how the way back is found. */ beforePort: number; afterPort: number }
-  | { kind: 'travel'; from: string; to: string; link: string; /** Sim time the frame was sent. */ at: number; /** What anyone on this line could read. */ seen?: Seen }
-  /** Knocked off the cable on the way from `from` to `to`. */
+  | { kind: 'travel'; from: string; to: string; link: string; /** Sim time the frame was sent. */ at: number; /** What anyone on this line could read. */ seen?: Seen; /** Seconds it waited in the port's buffer before it started on the cable; absent when it did not wait. */ queued?: number }
+  /**
+   * Knocked off the cable on the way from `from` to `to`. For a packet the port's full buffer turned away (`Trip.droppedAtQueue`)
+   * `at` is when it was dropped and there is nothing `seen`: it never reached the cable.
+   */
   | { kind: 'lost'; from: string; to: string; link: string; at: number; seen?: Seen }
   | { kind: 'read'; device: string }
   /** A server does its job before it answers: the resolver finds the name in its book, the web server the file on its shelf. */
@@ -115,6 +118,8 @@ export interface Trip {
   message?: Message;
   steps: Step[];
   lost: boolean;
+  /** Lost before it left: the port's transmit buffer was full, so it fell off the tray at that device, not off the cable. */
+  droppedAtQueue?: boolean;
   /** A resend of an earlier, lost packet. */
   retry: boolean;
   /** The packet this one sends again. */
@@ -148,11 +153,13 @@ export interface Story {
   cold: boolean;
   /** The device starts with no address and gets one by DHCP first. */
   dhcp: boolean;
+  /** A thin pipe: the line to the ISP is slow and its port's buffer small, so packets queue there and the tail can be dropped. */
+  thin: boolean;
   /** Which device each address belongs to. */
   names: Record<string, string>;
   devices: { id: string; label: string; kind: string }[];
-  /** Cables, with their one-way delay in seconds. */
-  links: { id: string; a: string; b: string; delay: number; medium: 'cable' | 'wifi' }[];
+  /** Cables, with their one-way delay in seconds, and the frames a port's buffer holds when it is finite. */
+  links: { id: string; a: string; b: string; delay: number; medium: 'cable' | 'wifi'; queue?: number }[];
   trips: Trip[];
   /** The page's <title> if the page arrived, else null. */
   pageTitle: string | null;
@@ -331,6 +338,13 @@ function chosen(r: SimResult, arp: boolean): { packets: PacketInfo[]; hellos: Se
   return { packets, hellos };
 }
 
+/** The device at the other end of a link from `device`. */
+function otherEnd(r: SimResult, linkId: string, device: string): string {
+  const link = r.scenario.links.find((l) => l.id === linkId);
+  const owner = (iface: string): string | undefined => r.scenario.devices.find((d) => d.ifaces.some((i) => i.id === iface))?.id;
+  return (link ? [owner(link.a), owner(link.b)] : []).find((d) => d && d !== device) ?? device;
+}
+
 /** An ACK beyond all the data the other side sent: it answers that side's FIN, which is teardown. */
 function answersFin(r: SimResult, ack: PacketInfo): boolean {
   const other = [...r.packets.values()].filter((q) => q.tcp?.len && q.origin !== ack.origin);
@@ -344,6 +358,9 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
   let inner: PduSnapshot | undefined;
   let tunnel = 0;
   let lost = false;
+  let droppedAtQueue = false;
+  /** Seconds the frame about to travel waited in a port's buffer, from the queue event just before its tx. */
+  let queued = 0;
   let firstSeq = -1;
   let done = false;
   /** The frame on the current link, so the receiver unwraps the same kind it was sent in. */
@@ -410,14 +427,24 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
           afterPort: e.after.port,
         });
         break;
+      case 'queue':
+        queued = e.wait;
+        break;
       case 'tx':
-        steps.push({ kind: 'travel', from: e.fromDevice, to: e.toDevice, link: e.linkId, at: e.start, seen: seenOn(r.pdus.get(e.frameId), p) });
+        steps.push({ kind: 'travel', from: e.fromDevice, to: e.toDevice, link: e.linkId, at: e.start, seen: seenOn(r.pdus.get(e.frameId), p), ...(queued > 0 ? { queued } : {}) });
+        queued = 0;
         break;
       case 'drop': {
         const last = steps[steps.length - 1];
         if ((e.reason === 'fault' || e.reason === 'cut') && last?.kind === 'travel') {
           steps[steps.length - 1] = { ...last, kind: 'lost' };
           lost = true;
+        } else if (e.reason === 'queue-full' && e.deviceId && e.linkId) {
+          // The port's buffer was full, so it never left: there is no travel to turn into a loss. Its fall is told on the
+          // line it was bound for, from the moment it was turned away, after the wrap at that device; nobody on the line saw it.
+          steps.push({ kind: 'lost', from: e.deviceId, to: otherEnd(r, e.linkId, e.deviceId), link: e.linkId, at: e.t });
+          lost = true;
+          droppedAtQueue = true;
         }
         done = true;
         break;
@@ -477,6 +504,7 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
     message: messageOf(app),
     steps,
     lost,
+    ...(droppedAtQueue ? { droppedAtQueue } : {}),
     retry: !!p.retransmitOf || askedAt !== undefined,
     retransmitOf: p.retransmitOf,
     timedOut: timer !== undefined,
@@ -582,6 +610,7 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
       b: ifaceDevice.get(l.b) ?? l.b,
       delay: l.delay,
       medium: wifiIfaces.has(l.a) || wifiIfaces.has(l.b) ? ('wifi' as const) : ('cable' as const),
+      ...(l.queue !== undefined ? { queue: l.queue } : {}),
     })),
     site: url ? new URL(url).hostname : '',
     client,
@@ -589,6 +618,7 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
     vpn: r.scenario.devices.some((d) => d.tunnel),
     cold: r.scenario.devices.some((d) => d.apps.some((a) => a.kind === 'dns-server' && !!a.upstream)),
     dhcp: r.scenario.devices.some((d) => d.id === client && d.apps.some((a) => a.kind === 'dhcp-client')),
+    thin: r.scenario.links.some((l) => l.queue !== undefined),
     // An address a device gets by DHCP belongs to whoever has the MAC it is leased to.
     names: Object.fromEntries(r.scenario.devices.flatMap((d) => [
       ...d.ifaces.flatMap((i) => [i.ip, ...(i.aliases ?? [])].map((ip) => [ip, d.label])),

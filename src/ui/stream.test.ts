@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fetchWebPage, runScenario, type Cut, type FaultPlan, type ManualFault } from '../sim';
-import type { FetchWebPageOptions } from '../sim/scenarios/fetchWebPage';
-import { buildStory, type Story, type Trip } from './story';
+import { THIN_QUEUE, type FetchWebPageOptions } from '../sim/scenarios/fetchWebPage';
+import { buildStory, type Step, type Story, type Trip } from './story';
 import { buildTimeline, crossings, ridingOn, seenSoFar, spyLog, stepTarget, type FlowPacket, type Seg, type Timeline } from './timeline';
 
 const CLEAN: FaultPlan = { randomLoss: 0, manual: [] };
@@ -119,6 +119,55 @@ describe('a packet of a photo gets lost', () => {
     const before = flowOf(buildTimeline(clean));
     const lostAt = flow.findIndex((p) => p.landed === null && p.trip.part);
     for (let i = 0; i <= lostAt; i++) expect(flow[i]!.t0).toBeCloseTo(before[i]!.t0, 6);
+  });
+});
+
+describe('a photo down a thin pipe: the first loss with no cut', () => {
+  const s = photo({ thin: true });
+  const tl = buildTimeline(s);
+  const flow = flowOf(tl);
+  const travelOn = (t: Trip, link: string) => t.steps.find((x): x is Extract<Step, { kind: 'travel' }> => x.kind === 'travel' && x.link === link);
+
+  it('the story knows, and each part carries how long it waited at the ISP’s port', () => {
+    expect(s.thin).toBe(true);
+    expect(photo().thin).toBe(false);
+    expect(s.links.find((l) => l.id === 'wan')?.queue).toBe(THIN_QUEUE);
+    expect(photo().links.find((l) => l.id === 'wan')?.queue).toBeUndefined();
+    const waits = packets(s).filter((t) => t.part && !t.retry && !t.lost).map((t) => travelOn(t, 'wan')?.queued ?? 0);
+    expect(waits[0]).toBe(0);
+    expect(waits[1]).toBeGreaterThan(0);
+    expect(waits[2]).toBeGreaterThan(waits[1]!);
+    expect(packets(photo()).every((t) => travelOn(t, 'wan')?.queued === undefined)).toBe(true);
+  });
+
+  it('one part falls off the full tray at the ISP router, never reaching the cable, and its resend fills the gap', () => {
+    const dropped = packets(s).filter((t) => t.droppedAtQueue);
+    expect(dropped).toHaveLength(1);
+    const d = dropped[0]!;
+    expect(d.lost).toBe(true);
+    expect(d.part?.n).toBe(THIN_QUEUE + 2);
+    expect(d.steps.map((x) => x.kind)).toEqual(['appear', 'wrap', 'wrap', 'wrap', 'travel', 'unwrap', 'wrap', 'lost']);
+    expect(d.steps.at(-2)).toMatchObject({ kind: 'wrap', device: 'isp', layer: 'eth' });
+    const last = d.steps.at(-1)!;
+    expect(last).toMatchObject({ kind: 'lost', from: 'isp', to: 'home', link: 'wan' });
+    if (last.kind !== 'lost') throw new Error('not lost');
+    expect(last.seen).toBeUndefined();
+    expect(last.at).toBeGreaterThan(travelOn(d, 'bb2')!.at);
+    const again = flow.filter((p) => p.trip.part?.n === d.part!.n);
+    expect(again.map((p) => p.landed === null)).toEqual([true, false]);
+    expect(again[1]!.trip).toMatchObject({ retry: true, retransmitOf: d.packetId });
+    expect(again[1]!.trip.timedOut).toBeFalsy();
+    expect(s.pageTitle).toBe('photo');
+    expect(faces(tl).at(-1)).toBe('love');
+    expect(stream(tl).waits).toEqual([]);
+  });
+
+  it('the spyglass on the line never reads what never got there', () => {
+    const wan = crossings(tl).filter((c) => c.link === 'wan');
+    const fallen = wan.filter((c) => c.lost);
+    expect(fallen).toHaveLength(1);
+    expect(fallen[0]!.trip.droppedAtQueue).toBe(true);
+    expect(spyLog(tl, 'wan', tl.total)).toHaveLength(wan.length - 1);
   });
 });
 

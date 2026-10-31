@@ -35,6 +35,12 @@ export interface LinkSpec {
   label: string;
   /** How narration refers to the link, e.g. "the Ethernet cable". */
   name: string;
+  /**
+   * The transmit buffer of each of the link's two ports, in frames: a frame that finds the port busy waits here, and one
+   * that finds the buffer full is dropped at once (tail drop). Omitted, the buffer is unbounded and nothing is ever queued
+   * visibly or dropped for want of room.
+   */
+  queue?: number;
 }
 
 export type AppSpec =
