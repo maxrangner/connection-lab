@@ -983,19 +983,20 @@ describe('ping and traceroute stories', () => {
   it('ping: after the lookup, "ping 1/4" goes out and "pong 1/4" comes back, each the whole card with no transport piece', () => {
     const s = probe('ping');
     expect(s.site).toBe('example.com');
-    expect(s.trips.map((t) => [t.chapter, t.card])).toEqual([
-      ['dns', 'example.com?'], ['dns', '104.20.23.154'],
-      ['ping', 'ping 1/4'], ['ping', 'pong 1/4'], ['ping', 'ping 2/4'], ['ping', 'pong 2/4'],
-      ['ping', 'ping 3/4'], ['ping', 'pong 3/4'], ['ping', 'ping 4/4'], ['ping', 'pong 4/4'],
+    // The lookup and every echo after the first run as small blocks: all of them are there, each kind only watched once.
+    expect(s.trips.map((t) => [t.chapter, t.steps[0]!.kind === 'flow' ? t.steps[0]!.packets.map((x) => x.card) : t.card])).toEqual([
+      ['dns', ['example.com?', '104.20.23.154']],
+      ['ping', 'ping 1/4'], ['ping', 'pong 1/4'],
+      ['ping', ['ping 2/4', 'pong 2/4', 'ping 3/4', 'pong 3/4', 'ping 4/4', 'pong 4/4']],
     ]);
-    const ping = s.trips[2]!;
+    const ping = s.trips[1]!;
     expect(ping).toMatchObject({ l4: 'none', l4Label: '', dataBytes: 64, header: { eth: 14, ip: 20, l4: 0 }, from: '192.168.1.23', to: '104.20.23.154', outward: true });
     expect(kinds(ping)).toEqual(['appear', 'wrap:ip', 'wrap:eth', 'travel', 'unwrap:eth', 'nat', 'wrap:eth', 'travel', 'unwrap:eth', 'wrap:eth', 'travel', 'unwrap:eth', 'unwrap:ip', 'read']);
     expect(ping.steps.find((x) => x.kind === 'nat')).toMatchObject({ device: 'home', which: 'from', after: '203.0.113.7' });
     expect(ping.steps[0]!.details?.card?.map((row) => row.name)).toEqual(['Type', 'Identifier', 'Sequence number', 'Data']);
     expect(ping.steps[0]!.details?.l4).toBeUndefined();
     // The reply comes back addressed to the home's public address and is translated at the router, like the page.
-    const pong = s.trips[3]!;
+    const pong = s.trips[2]!;
     expect(pong).toMatchObject({ outward: false, client: 'laptop', from: '104.20.23.154', to: '203.0.113.7' });
     expect(pong.steps.find((x) => x.kind === 'nat')).toMatchObject({ device: 'home', which: 'to', after: '192.168.1.23' });
     expect(s.probe).toMatchObject({ kind: 'ping', to: 'example.com', hops: [], done: { sent: 4, received: 4, lossPct: 0 } });

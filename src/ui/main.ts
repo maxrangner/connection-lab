@@ -3,7 +3,7 @@ import { fetchWebPage, runScenario, ulawDecodeAll, type Cut, type ManualFault } 
 import { el } from './svg';
 import { clamp01, easeInOut, easeOutBack, iso, ISO_X, ISO_Y, lerp, U } from './project';
 import { HexCard } from './hexCard';
-import { drawHandset, drawPadlock, drawPage, drawPair, drawPing, drawPipe, drawQuestion, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawTag, drawTrace } from './icons';
+import { drawHandset, drawHush, drawPadlock, drawPage, drawPair, drawPing, drawPipe, drawQuestion, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawTag, drawTrace } from './icons';
 import { Menu } from './menus';
 import { NetworkScene, type Camera } from './NetworkScene';
 import { Sound } from './sound';
@@ -23,10 +23,10 @@ const LINGER = 1.4;
 const BACK_GRACE = 1;
 
 /** What the next run is like, set from the Setup menu between runs: changing it mid-run would rewrite what happened. */
-type Setting = 'https' | 'big' | 'slow' | 'vpn' | 'arp' | 'together' | 'dhcp' | 'cold' | 'thin';
+type Setting = 'https' | 'big' | 'slow' | 'vpn' | 'arp' | 'together' | 'dhcp' | 'cold' | 'thin' | 'quiet';
 type Features = Record<Setting, boolean>;
-const SETTINGS: Setting[] = ['https', 'big', 'slow', 'vpn', 'arp', 'together', 'dhcp', 'cold', 'thin'];
-const features: Features = { https: false, big: false, slow: false, vpn: false, arp: false, together: false, dhcp: false, cold: false, thin: false };
+const SETTINGS: Setting[] = ['https', 'big', 'slow', 'vpn', 'arp', 'together', 'dhcp', 'cold', 'thin', 'quiet'];
+const features: Features = { https: false, big: false, slow: false, vpn: false, arp: false, together: false, dhcp: false, cold: false, thin: false, quiet: false };
 /** The line the spyglass is on, if any. */
 let spyLine: string | null = null;
 /** The visual time it was put there: it can only read what passes from then on. */
@@ -197,7 +197,8 @@ function showFeatures(): void {
   }
   for (const [badges, skip] of [[cardBadges, null], [photoBadges, 'big'], [callBadges, 'big']] as const) {
     badges.replaceChildren();
-    SETUP.filter((s) => features[s.id] && s.id !== skip).forEach((s, i) => {
+    // Quiet devices change nothing about the run, so the card has nothing to say about it.
+    SETUP.filter((s) => features[s.id] && s.id !== skip && s.id !== 'quiet').forEach((s, i) => {
       const g = el('g', { transform: `translate(${72 - i * 30} -24)` }, badges);
       el('circle', { r: 13, class: 'card-badge' }, g);
       s.draw(el('g', { transform: `scale(${(14 / s.span).toFixed(3)})` }, g));
@@ -295,16 +296,17 @@ scene.setSpy(spyLine);
 scene.setCut([...cutLines]);
 
 const VPN_LINKS = ['bb3', 'bb4', 'bb5'];
-const SETUP: { id: Setting; label: string; draw: (g: SVGGElement) => void; span: number }[] = [
-  { id: 'https', label: 'Secure', draw: drawPadlock, span: 34 },
-  { id: 'big', label: 'Bigger page', draw: drawPage, span: 34 },
-  { id: 'slow', label: 'Satellite', draw: drawSatellite, span: 56 },
-  { id: 'vpn', label: 'VPN', draw: drawShield, span: 34 },
-  { id: 'arp', label: 'Show ARP', draw: drawQuestion, span: 34 },
-  { id: 'together', label: 'Together', draw: drawPair, span: 34 },
-  { id: 'dhcp', label: 'No address', draw: drawTag, span: 34 },
-  { id: 'cold', label: 'Cold resolver', draw: drawSnowflake, span: 34 },
-  { id: 'thin', label: 'Thin pipe', draw: drawPipe, span: 34 },
+const SETUP: { id: Setting; label: string; hint: string; draw: (g: SVGGElement) => void; span: number }[] = [
+  { id: 'https', label: 'Secure page (HTTPS)', hint: 'Scrambles everything after hello', draw: drawPadlock, span: 34 },
+  { id: 'big', label: 'Bigger page', hint: 'Too big for one packet', draw: drawPage, span: 34 },
+  { id: 'slow', label: 'Satellite internet', hint: 'To space and back: long waits', draw: drawSatellite, span: 56 },
+  { id: 'vpn', label: 'VPN', hint: 'Sealed tunnel past your ISP', draw: drawShield, span: 34 },
+  { id: 'arp', label: 'Find the router first', hint: 'Shouts for its hardware address', draw: drawQuestion, span: 34 },
+  { id: 'together', label: 'Two devices at once', hint: 'Laptop and phone share one address', draw: drawPair, span: 34 },
+  { id: 'dhcp', label: 'New on the network', hint: 'Asks for an address first', draw: drawTag, span: 34 },
+  { id: 'cold', label: "DNS doesn't know it yet", hint: 'Must ask around for the name', draw: drawSnowflake, span: 34 },
+  { id: 'thin', label: 'Slow home line', hint: 'Big downloads lose packets', draw: drawPipe, span: 34 },
+  { id: 'quiet', label: 'Quiet devices', hint: 'No speech bubbles', draw: drawHush, span: 34 },
 ];
 function setSetting(id: Setting, on: boolean): void {
   features[id] = on;
@@ -323,6 +325,7 @@ function setSetting(id: Setting, on: boolean): void {
 function showSetup(): void {
   for (const k of SETTINGS) setupMenu.setOn(k, features[k]);
   setupMenu.button.classList.toggle('on', SETTINGS.some((k) => features[k]));
+  scene.setQuiet(features.quiet);
 }
 
 const CHAPTERS: Record<Chapter, string> = { address: 'Get an address', arp: 'Find the router', dns: 'Find the address', hello: 'Say hello', secret: 'Check and agree', page: 'Get the page', call: 'Make a call', ping: 'Ping the server', trace: 'Trace the path' };

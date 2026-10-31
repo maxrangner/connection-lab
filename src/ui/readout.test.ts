@@ -64,7 +64,7 @@ describe('what traceroute prints', () => {
   });
 
   it('takes much less watching than nine probes in full', () => {
-    expect(run('traceroute').total).toBeLessThan(95);
+    expect(run('traceroute').total).toBeLessThan(60);
   });
 
   it('thumbs up every router that answers: the same words from someone else are no duplicate', () => {
@@ -78,6 +78,12 @@ describe('what ping prints', () => {
     const tl = run('ping');
     expect(end(tl)).toEqual(['ping example.com', '1  12 ms', '2  12 ms', '3  12 ms', '4  12 ms', '4 sent, 4 received, 12 ms']);
     expect(tl.readout.flags).toEqual([]);
+  });
+
+  it('is quick: the lookup and the repeats run as small blocks, and every packet is still there', () => {
+    const tl = run('ping');
+    expect(tl.total).toBeLessThan(30);
+    expect(tl.segs.flatMap((s) => s.flow ?? []).filter((p) => p.trip.chapter === 'ping')).toHaveLength(6);
   });
 
   it('says so when no reply comes', () => {
