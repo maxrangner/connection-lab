@@ -204,7 +204,7 @@ body {
   font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
 }
 
-.site-card .hint {
+.cards-hint {
   fill: var(--ink-soft);
   font-size: 13px;
   font-weight: 500;
