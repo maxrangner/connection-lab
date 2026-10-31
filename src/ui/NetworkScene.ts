@@ -4,10 +4,9 @@ import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, easeOutBounce, iso, i
 import { drawSatellite, drawScissors, drawShield, drawSpyglass } from './icons';
 import { shade } from './shade';
 import type { Details, PartKey, Row, Story, Trip, Wrap } from './story';
-import { bandPoint, pageContent, Paper, PAPER_H, PAPER_W, photoContent, voiceContent, type Parts } from './paper';
-import { ulawDecode } from '../sim';
+import { bandPoint, pageContent, Paper, PAPER_H, PAPER_W, photoContent, type Parts } from './paper';
 import { drawBook, drawShelf, SERVER } from './stations';
-import { addressBefore, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, LEVEL, lockPose, NO_LOCK, packetPos, packetPose, segAt, swapLanding, swapMoment, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
+import { addressBefore, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, LEVEL, lockPose, NO_LOCK, NOTE_LIFE, packetPos, packetPose, segAt, swapLanding, swapMoment, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
 
 export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', vpn: '#2e5e6e', eth: '#e08b33', wifi: '#2a9d8f' } as const;
 const DEVICE = '#d9d0c2';
@@ -47,6 +46,15 @@ function pointAlong(path: Vec3[], t: number): { p: Vec3; ux: number; uy: number 
   }
   return { p: path[0] ?? v3(0, 0, 0), ux: 1, uy: 0 };
 }
+/** A music note, as the two halves of its head and its stem with a flag, so it can break down the middle. */
+const NOTE_HEAD_LEFT = 'M0 3 C-3 3 -9 5 -9 9 C-9 12 -4 13 0 12 Z';
+const NOTE_HEAD_RIGHT = 'M0 3 L0 12 C3 11 7 8 7 5 C7 3 3 3 0 3 Z';
+const NOTE_STEM = 'M7 5 V-16 C8 -10 14 -9 14 -3';
+/** How far beside a phone its notes rise, in SVG units. */
+const NOTE_SIDE = 95;
+/** The colours of a voice: its packets on the cables and its notes at the far end. */
+const VOICE_OF_CALLER = '#8b6fd0';
+const VOICE_OF_FRIEND = '#1f9a8c';
 /** The blade of the session key, with its teeth; the tip at the origin. */
 const KEY_BLADE = 'M0 -2.2 H30 V2.2 H16 V8 H12 V2.2 H8 V6 H4 V2.2 H0 Z';
 
@@ -138,6 +146,10 @@ export class NetworkScene {
   private readonly tags: SVGGElement;
   /** Emoji statuses over devices; on top of everything. */
   private readonly moods: SVGGElement;
+  /** A call's music notes. */
+  private readonly noteLayer: SVGGElement;
+  /** Whether any note is up, so an empty frame costs nothing. */
+  private notesUp = false;
   private readonly fx: SVGGElement;
   /** What the spyglass reads, and the line it is on. */
   private readonly spyGlass: SVGGElement;
@@ -203,6 +215,7 @@ export class NetworkScene {
     this.tags = el('g', { class: 'tags' }, world);
     this.keys = el('g', { class: 'keys' }, world);
     this.moods = el('g', { class: 'moods' }, world);
+    this.noteLayer = el('g', { class: 'moods' }, world);
     this.spyGlass = el('g', { class: 'spy' }, world);
 
     this.buildDevices();
@@ -251,7 +264,7 @@ export class NetworkScene {
     this.used = new Set(story.trips.flatMap(stops));
     const image = story.image ?? '';
     if ((this.photo.getAttribute('href') ?? '') !== image) this.photo.setAttribute('href', image);
-    this.sheet.setContent(story.voice ? voiceContent(story.voice.heard, ulawDecode) : story.image ? photoContent(PHOTO_ID) : pageContent(story.pageTitle ?? story.site));
+    this.sheet.setContent(story.image ? photoContent(PHOTO_ID) : pageContent(story.pageTitle ?? story.site));
     for (const screen of this.screens.values()) {
       if ((screen.photo.getAttribute('href') ?? '') !== image) screen.photo.setAttribute('href', image);
       screen.photo.style.display = image ? '' : 'none';
@@ -583,15 +596,19 @@ export class NetworkScene {
   /** A stream is too much to follow: the way it takes, and the sheet it ends on. */
   private flowCamera(flow: FlowPacket[]): Camera {
     const paper = this.paperAt();
-    // Room above the sheet for the chapter name.
-    const pts = [
-      { sx: paper.sx - 100, sy: paper.sy - 170 },
-      { sx: paper.sx + 100, sy: paper.sy + 110 },
-    ];
+    // Room above the sheet for the chapter name; a call has no sheet, but needs room for the notes above each device.
+    const pts = this.story.call
+      ? []
+      : [
+          { sx: paper.sx - 100, sy: paper.sy - 170 },
+          { sx: paper.sx + 100, sy: paper.sy + 110 },
+        ];
+    const above = this.story.call ? 300 : 90;
+    const beside = this.story.call ? 70 + NOTE_SIDE + 34 : 70;
     for (const id of new Set(flow.flatMap((p) => p.hops.flatMap((h) => [h.from, h.to])))) {
       const d = this.tl.pos.get(id) ?? { x: 0, y: 0 };
       const c = iso(d.x, d.y);
-      pts.push({ sx: c.sx - 70, sy: c.sy - 90 }, { sx: c.sx + 70, sy: c.sy + 100 });
+      pts.push({ sx: c.sx - beside, sy: c.sy - above }, { sx: c.sx + beside, sy: c.sy + 100 });
     }
     const x0 = Math.min(...pts.map((p) => p.sx));
     const x1 = Math.max(...pts.map((p) => p.sx));
@@ -765,9 +782,11 @@ export class NetworkScene {
         setAttr(d.l2Tray, 'stroke', color);
       }
     }
-    const parts = this.partArrivals();
+    // A call has no sheet: its voice is notes, not a file being put together.
+    const parts = this.story.call ? null : this.partArrivals();
     this.sheet.draw(this.paperAt(), isoV(this.screenPoint()), parts, v);
     this.renderMoods(v);
+    this.renderNotes(v);
     this.renderSpy();
     for (const [id, screen] of this.screens) {
       if (this.story.clients.includes(id) && v >= 0) continue;
@@ -815,6 +834,54 @@ export class NetworkScene {
       const c = iso(d.x, d.y, this.deviceTop(r.device) + 2.2 + 0.4 * dt);
       if (r.stamp) this.stamp(c, r.stamp, easeOutBack(clamp01(dt / 0.3)), 1 - clamp01((dt - 2.2) / 0.4));
       else this.emoji(this.moods, c, FACE_EMOJI[r.face], easeOutBack(clamp01(dt / 0.3)), 1 - clamp01((dt - 1.2) / 0.4));
+    }
+  }
+
+  /** A call's sound: notes bubbling up from the phone that hears them, higher for a higher pitch, bigger for a louder one. */
+  private renderNotes(v: number): void {
+    const live = this.tl.notes.map((n, i) => ({ n, i })).filter(({ n }) => v >= n.t && v - n.t < NOTE_LIFE);
+    if (!live.length && !this.notesUp) return;
+    this.notesUp = live.length > 0;
+    this.noteLayer.replaceChildren();
+    for (const { n, i } of live) {
+      const dt = v - n.t;
+      const d = this.tl.pos.get(n.device) ?? { x: 0, y: 0 };
+      const c = iso(d.x, d.y, this.deviceTop(n.device) + 0.6);
+      // Beside the phone, clear of its cable: each note has its own lane and its own sway, so they do not rise in a single file.
+      const lane = ((i * 37) % 11) / 5 - 1;
+      const side = n.heardBy === 'caller' ? -NOTE_SIDE : NOTE_SIDE;
+      const x = c.sx + side + lane * 34 + Math.sin(dt * 3 + i) * 7;
+      const y = c.sy - 18 - n.pitch * 90 - dt * 34;
+      const scale = (0.7 + 0.7 * n.loud) * easeOutBack(clamp01(dt / 0.2));
+      const op = 1 - clamp01((dt - (NOTE_LIFE - 0.8)) / 0.8);
+      const g = el('g', { class: `note ${n.heardBy === 'caller' ? 'note-caller' : 'note-friend'}`, opacity: op.toFixed(3), transform: `translate(${x.toFixed(1)} ${y.toFixed(1)}) scale(${scale.toFixed(3)})` }, this.noteLayer);
+      if (n.broken) this.brokenNote(g, dt);
+      else this.wholeNote(g);
+    }
+  }
+
+  private wholeNote(g: SVGGElement): void {
+    el('path', { d: NOTE_HEAD_LEFT, class: 'note-solid' }, g);
+    el('path', { d: NOTE_HEAD_RIGHT, class: 'note-solid' }, g);
+    el('path', { d: NOTE_STEM, class: 'note-line' }, g);
+  }
+
+  /** A note snapped in two: the halves fly apart and drop, with a little crack of lines at the start. */
+  private brokenNote(g: SVGGElement, dt: number): void {
+    const apart = 3 + easeOut(clamp01(dt / 0.5)) * 13;
+    const drop = 26 * dt * dt;
+    const turn = 40 * easeOut(clamp01(dt / 0.8));
+    const left = el('g', { transform: `translate(${(-apart).toFixed(1)} ${drop.toFixed(1)}) rotate(${(-turn).toFixed(1)} -4 8)` }, g);
+    el('path', { d: NOTE_HEAD_LEFT, class: 'note-solid' }, left);
+    const right = el('g', { transform: `translate(${apart.toFixed(1)} ${drop.toFixed(1)}) rotate(${turn.toFixed(1)} 4 8)` }, g);
+    el('path', { d: NOTE_HEAD_RIGHT, class: 'note-solid' }, right);
+    el('path', { d: NOTE_STEM, class: 'note-line' }, right);
+    if (dt < 0.3) {
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2;
+        const r = 10 + 40 * dt;
+        el('line', { x1: Math.cos(a) * r, y1: 4 + Math.sin(a) * r, x2: Math.cos(a) * (r + 6), y2: 4 + Math.sin(a) * (r + 6), class: 'note-crack', opacity: (1 - dt / 0.3).toFixed(2) }, g);
+      }
     }
   }
 
@@ -986,7 +1053,7 @@ export class NetworkScene {
     for (const p of flow) {
       if (v < p.t0 || v >= p.t1) continue;
       const data = p.trip.dataBytes > 0;
-      const color = !data ? COLOR.tcp : p.trip.locked ? LOCKED : COLOR.app;
+      const color = this.story.call ? (p.trip.outward ? VOICE_OF_CALLER : VOICE_OF_FRIEND) : !data ? COLOR.tcp : p.trip.locked ? LOCKED : COLOR.app;
       const size = data ? 0.9 : 0.5;
       const end = p.hops[p.hops.length - 1]!;
       const at = this.blockAt(p, v);

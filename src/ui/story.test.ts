@@ -108,13 +108,11 @@ describe('a voice call in the story', () => {
     expect(stream.steps.map((x) => x.kind)).toEqual(['flow']);
     const packets = flow(s);
     expect(packets).toHaveLength(100);
-    // Only what comes back is numbered: the sheet fills with what the caller hears; its own voice goes out as plain blocks.
-    expect(packets.filter((t) => t.outward).every((t) => t.part === undefined)).toBe(true);
-    {
-      const side = packets.filter((t) => !t.outward);
+    for (const outward of [true, false]) {
+      const side = packets.filter((t) => t.outward === outward);
       expect(side.map((t) => t.part!.n)).toEqual(Array.from({ length: 50 }, (_, i) => i + 1));
-      expect(side.every((t) => t.part!.of === 50 && t.card === 'voice' && t.l4 === 'udp' && t.chapter === 'call' && t.client === 'laptop' && t.dataBytes === 172)).toBe(true);
-      expect(side[0]!.origin).toBe('friend');
+      expect(side.every((t) => t.part!.of === 50 && t.card === 'voice' && t.l4 === 'udp' && t.chapter === 'call' && t.client === 'laptop' && t.dataBytes === 172 && t.audio?.length === 160)).toBe(true);
+      expect(side[0]!.origin).toBe(outward ? 'laptop' : 'friend');
     }
     expect(packets[0]!.header).toEqual({ eth: 14, ip: 20, l4: 8 });
     expect(packets.every((t) => !t.retry && !t.timedOut)).toBe(true);

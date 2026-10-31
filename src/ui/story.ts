@@ -143,6 +143,8 @@ export interface Trip {
   quiet?: boolean;
   /** A voice call gathered into one flow: every RTP packet of both directions, each with its `part` and `client`. */
   kind?: 'call';
+  /** A voice packet's sound: its real µ-law bytes. */
+  audio?: Uint8Array;
   /** A traceroute probe: the TTL it set out with, which is how many hops it may go. */
   probeTtl?: number;
 }
@@ -597,6 +599,7 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
     waited: timer,
     // A voice packet is one of its clip's 50, in either direction.
     ...(p.rtp ? { part: { n: p.rtp.part, of: p.rtp.of } } : {}),
+    ...(p.rtp && app ? { audio: packet.bytes.slice(app.headerEnd, app.payloadEnd) } : {}),
   };
 }
 
@@ -804,8 +807,7 @@ function gatherStream(trips: Trip[], client: string): Trip[] {
 function gatherCall(trips: Trip[]): Trip[] {
   const first = trips.findIndex((t) => t.chapter === 'call');
   if (first < 0) return smallAcks(trips);
-  // Only what comes back is numbered: the sheet beside the caller fills with what it hears; its own voice goes out as plain blocks.
-  const packets = trips.slice(first).filter((t) => t.chapter === 'call').map((t) => (t.outward ? { ...t, part: undefined } : t));
+  const packets = trips.slice(first).filter((t) => t.chapter === 'call');
   const call: Trip = { ...trips[first]!, part: undefined, retry: false, timedOut: false, lost: false, kind: 'call', steps: [{ kind: 'flow', packets }] };
   return [...smallAcks(trips.slice(0, first)), call, ...smallAcks(trips.slice(first).filter((t) => t.chapter !== 'call'), 'call')];
 }

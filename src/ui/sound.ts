@@ -8,7 +8,7 @@ export class Sound {
   private ctx: AudioContext | null = null;
   muted = false;
 
-  play(sound: Cue['sound']): void {
+  play(sound: Cue['sound'], hz = 440): void {
     if (this.muted) return;
     try {
       this.ctx ??= new AudioContext();
@@ -68,6 +68,15 @@ export class Sound {
         break;
       case 'found':
         [1040, 1560].forEach((f, i) => this.tone(c, t + i * 0.07, 'sine', f, f, 0.16, 0.09));
+        break;
+      case 'note':
+        // Soft: there are a hundred of these in a call. Two octaves up: the same tune, but a voice's own pitch is too low
+        // for a phone's speaker.
+        this.tone(c, t, 'sine', hz * 4, hz * 4, 0.09, 0.035);
+        break;
+      case 'break':
+        this.noise(c, t, 0.05, 0.1, 5000);
+        this.tone(c, t, 'triangle', 900, 180, 0.12, 0.1);
         break;
       case 'chime':
         [660, 830, 990].forEach((f, i) => this.tone(c, t + i * 0.09, 'sine', f, f, 0.35, 0.08));
