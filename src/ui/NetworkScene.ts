@@ -21,7 +21,6 @@ function mix(a: string, b: string, t: number): string {
   return `#${c.join('')}`;
 }
 
-const BURST = '#ffd84a';
 /** A fresh address label as it lands, and once it has settled. */
 const LABEL_FRESH = '#8fe3d0';
 const LABEL_SETTLED = '#d8f5ee';
@@ -1216,7 +1215,7 @@ export class NetworkScene {
       const rr = j % 2 ? r * 0.5 : r * (j % 4 ? 1 : 1.25);
       pts.push(`${(Math.cos(a) * rr).toFixed(1)},${(Math.sin(a) * rr).toFixed(1)}`);
     }
-    el('polygon', { points: pts.join(' '), fill: BURST, class: 'burst-star' }, g);
+    el('polygon', { points: pts.join(' '), class: 'burst-star' }, g);
     for (let j = 0; j < 14; j++) {
       const a = (j / 14) * Math.PI * 2 + 0.11 * j;
       const r1 = r * 1.15 + 6;
