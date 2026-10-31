@@ -63,6 +63,8 @@ const SPEECH_CHAR = 7.1;
 /** The colours of a voice: its packets on the cables and its notes at the far end. */
 const VOICE_OF_CALLER = '#8b6fd0';
 const VOICE_OF_FRIEND = '#1f9a8c';
+/** Once a card has been dropped in, whose packet a block is: the first device's, then the one that joined in. */
+const OWNERS = [COLOR.app, '#d6488f'];
 /** The blade of the session key, with its teeth; the tip at the origin. */
 const KEY_BLADE = 'M0 -2.2 H30 V2.2 H16 V8 H12 V2.2 H8 V6 H4 V2.2 H0 Z';
 
@@ -549,8 +551,9 @@ export class NetworkScene {
     }
     pts.push(...this.onTable);
     // What a probe printed stays up after the run, so the view between runs keeps it in frame.
-    const printed = this.terminalBox();
-    if (printed) pts.push({ sx: printed.x, sy: printed.y }, { sx: printed.x + printed.w, sy: printed.y + printed.h });
+    for (const printed of [this.terminalBox(), this.terminalBox(this.tl.joinReadout, this.story.clients[1])]) {
+      if (printed) pts.push({ sx: printed.x, sy: printed.y }, { sx: printed.x + printed.w, sy: printed.y + printed.h });
+    }
     const minX = Math.min(...pts.map((p) => p.sx)) - 20;
     const maxX = Math.max(...pts.map((p) => p.sx)) + 20;
     const minY = Math.min(...pts.map((p) => p.sy)) - 10;
@@ -918,23 +921,26 @@ export class NetworkScene {
   }
 
   /** The terminal's place: its size is for everything it will print, so it does not grow as it goes. */
-  private terminalBox(): { x: number; y: number; w: number; h: number } | null {
-    const all = this.tl.readout.screens.at(-1)?.lines;
+  private terminalBox(readout = this.tl.readout, device = this.tl.client): { x: number; y: number; w: number; h: number } | null {
+    const all = readout.screens.at(-1)?.lines;
     if (!all) return null;
-    const c = isoV(this.screenPoint());
+    const c = isoV(this.screenPoint(device));
     const w = Math.max(...all.map((l) => l.length)) * TERM_CHAR + TERM_PAD * 2;
     const h = all.length * TERM_LINE + TERM_PAD * 2;
     // Above the laptop is open table. Up from the phone is the home router and left of it the cards, so it goes below.
-    return this.tl.kind.get(this.tl.client) === 'phone' ? { x: c.sx + 50, y: c.sy + 40, w, h } : { x: c.sx - w / 2, y: c.sy - 150 - h, w, h };
+    return this.tl.kind.get(device) === 'phone' ? { x: c.sx + 50, y: c.sy + 40, w, h } : { x: c.sx - w / 2, y: c.sy - 150 - h, w, h };
   }
 
   /** The terminal beside the device that ran the tool, and each hop flagged under the name of whoever answered. */
   private renderReadout(v: number): void {
-    const { readout } = this.tl;
-    const lines = v < 0 ? null : screenAt(readout, v);
-    const flags = v < 0 ? [] : readout.flags.filter((f) => v >= f.t);
+    const terminals = [
+      { readout: this.tl.readout, device: this.tl.client },
+      { readout: this.tl.joinReadout, device: this.story.clients[1] ?? this.tl.client },
+    ];
+    const lines = terminals.map((x) => (v < 0 ? null : screenAt(x.readout, v)));
+    const flags = v < 0 ? [] : terminals.flatMap((x) => x.readout.flags).filter((f) => v >= f.t);
     const sizes = flags.map((f) => easeOutBack(clamp01((v - f.t) / 0.3)));
-    const drawn = `${lines?.join('\n')}|${sizes.map((s) => s.toFixed(2)).join(' ')}`;
+    const drawn = `${lines.map((l) => l?.join('\n')).join('|')}|${sizes.map((s) => s.toFixed(2)).join(' ')}`;
     if (drawn === this.readoutDrawn) return;
     this.readoutDrawn = drawn;
     this.readoutLayer.replaceChildren();
@@ -946,12 +952,14 @@ export class NetworkScene {
       el('rect', { x: -w / 2, y: -13, width: w, height: 26, rx: 13, class: 'hop-bg' }, g);
       el('text', { 'text-anchor': 'middle', dy: '0.36em', class: 'hop-text' }, g).textContent = f.text;
     });
-    const box = this.terminalBox();
-    if (!lines || !box) return;
-    const g = el('g', { class: 'mood', transform: `translate(${box.x.toFixed(1)} ${box.y.toFixed(1)})` }, this.readoutLayer);
-    el('rect', { width: box.w, height: box.h, rx: 8, class: 'term-bg' }, g);
-    lines.forEach((line, i) => {
-      el('text', { x: TERM_PAD, y: TERM_PAD + (i + 0.75) * TERM_LINE, class: i ? 'term-text' : 'term-text term-title' }, g).textContent = line;
+    terminals.forEach(({ readout, device }, n) => {
+      const box = this.terminalBox(readout, device);
+      if (!lines[n] || !box) return;
+      const g = el('g', { class: 'mood', transform: `translate(${box.x.toFixed(1)} ${box.y.toFixed(1)})` }, this.readoutLayer);
+      el('rect', { width: box.w, height: box.h, rx: 8, class: 'term-bg' }, g);
+      lines[n].forEach((line, i) => {
+        el('text', { x: TERM_PAD, y: TERM_PAD + (i + 0.75) * TERM_LINE, class: i ? 'term-text' : 'term-text term-title' }, g).textContent = line;
+      });
     });
   }
 
@@ -1029,7 +1037,8 @@ export class NetworkScene {
       if (s.step.kind !== 'read' || s.trip.chapter !== chapter || s.step.device !== device) continue;
       o = Math.max(o, clamp01((v - lerp(s.t0, s.t1, 0.8)) / 0.4));
     }
-    return o;
+    const landed = chapter === 'page' ? this.tl.pages.get(device) : undefined;
+    return landed === undefined ? o : Math.max(o, clamp01((v - landed) / 0.4));
   }
 
   /** Little hop when a packet lands on a device, and a big one when a timer runs out. */
@@ -1073,7 +1082,7 @@ export class NetworkScene {
       return;
     }
     if (seg.flow) {
-      this.drawFlow(seg.flow, seg.waits ?? [], v);
+      this.drawFlow(seg.flow, seg.waits ?? [], v, seg.trip.chapter === 'traffic');
       this.drawKeys(v, seg, NO_LOCK);
       return;
     }
@@ -1165,7 +1174,7 @@ export class NetworkScene {
   }
 
   /** A stream: its packets as small blocks on the cables, far ones first. A part flies onto the sheet, a lost one falls. */
-  private drawFlow(flow: FlowPacket[], waits: FlowWait[], v: number): void {
+  private drawFlow(flow: FlowPacket[], waits: FlowWait[], v: number, traffic: boolean): void {
     for (const w of waits) if (v >= w.t0 && v < w.t1) this.drawWait(w.step, (v - w.t0) / (w.t1 - w.t0), w.t1 - w.t0);
     const blocks: { at: Vec3; size: number; color: string; op: number; named?: boolean }[] = [];
     // A block says nothing by itself: an ACK on its own says what it is, and so do the first few of a stream.
@@ -1173,7 +1182,7 @@ export class NetworkScene {
     for (const p of flow) {
       if (v < p.t0 || v >= p.t1) continue;
       const data = p.trip.dataBytes > 0;
-      const color = this.story.call ? (p.trip.outward ? VOICE_OF_CALLER : VOICE_OF_FRIEND) : !data ? COLOR.tcp : p.trip.locked ? LOCKED : COLOR.app;
+      const color = traffic ? OWNERS[this.story.clients.indexOf(p.trip.client)]! : this.story.call ? (p.trip.outward ? VOICE_OF_CALLER : VOICE_OF_FRIEND) : !data ? COLOR.tcp : p.trip.locked ? LOCKED : COLOR.app;
       const size = data ? 0.9 : 0.5;
       const end = p.hops[p.hops.length - 1]!;
       const at = this.blockAt(p, v);

@@ -55,7 +55,7 @@ export interface Frame {
   head: number;
   tail: number;
 }
-export type Chapter = 'address' | 'arp' | 'dns' | 'hello' | 'secret' | 'page' | 'call' | 'ping' | 'trace';
+export type Chapter = 'address' | 'arp' | 'dns' | 'hello' | 'secret' | 'page' | 'call' | 'ping' | 'trace' | 'traffic';
 
 /** One piece of a packet, by where it sits. */
 export type PartKey = 'ethH' | 'vpn' | 'ip' | 'l4' | 'card' | 'ethT';
@@ -169,6 +169,8 @@ export interface Story {
   client: string;
   /** Every device fetching something this run: the client first, then the one that joined in. */
   clients: string[];
+  /** The devices whose browser got what it asked for. */
+  fetched: string[];
   /** All traffic goes through the VPN server. */
   vpn: boolean;
   /** The resolver has nothing cached and walks root → TLD → authoritative: those three servers are on the table. */
@@ -204,6 +206,8 @@ export interface Story {
   remembered: string | null;
   /** When the device pings or traces the path to the site instead of fetching the page. */
   probe?: Probe;
+  /** The same for a ping or trace dropped in on the other device. */
+  joinProbe?: Probe;
 }
 
 const WRAP_OF_LAYER: Record<number, Wrap | undefined> = { 4: 'l4', 3: 'ip', 2: 'eth' };
@@ -547,9 +551,10 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
   const dataBytes = arp ? arp.end - arp.start : icmp ? icmp.end - icmp.start : l4!.payloadEnd - l4!.headerEnd;
   const appCard = (a: LayerPdu): string => (a.protocol === 'http' ? cardLabel(a.summary) : a.protocol === 'dhcp' ? dhcpCardLabel(a.summary) : a.protocol === 'rtp' ? 'voice' : dnsCardLabel(a.summary));
   // What the device is running: ping numbers its cards out of its count, traceroute's probes say their TTL.
-  const probeApp = r.scenario.devices.flatMap((d) => d.apps).find((a) => a.kind === 'ping' || a.kind === 'traceroute');
+  const apps = r.scenario.devices.flatMap((d) => d.apps);
+  const probeApp = apps.find((a) => a.kind === 'ping');
   const probeTtl = p.kind === 'probe' ? parseInt(field(ip, 'ipv4.ttl'), 10) : undefined;
-  const card = arp ? arpCardLabel(arp.summary) : icmp ? icmpCardLabel(icmp.summary, probeApp?.kind === 'ping' ? probeApp.count : undefined) : probeTtl !== undefined ? `TTL ${probeTtl}` : dataBytes > 0 ? (app ? appCard(app) : 'data') : null;
+  const card = arp ? arpCardLabel(arp.summary) : icmp ? icmpCardLabel(icmp.summary, probeApp?.count) : probeTtl !== undefined ? `TTL ${probeTtl}` : dataBytes > 0 ? (app ? appCard(app) : 'data') : null;
   const isTcp = l4?.protocol === 'tcp';
   const origin = steps[0]!.kind === 'travel' || steps[0]!.kind === 'lost' ? (steps[0] as { from: string }).from : (steps[0] as { device: string }).device;
 
@@ -569,7 +574,7 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
   const resend = r.events.find((e) => e.type === 'tcp:retransmit' && e.packetId === p.id);
   const timer = resend?.type === 'tcp:retransmit' && resend.cause === 'rto' ? resend.rto : askedAt !== undefined ? p.createdAt - askedAt : undefined;
   // Echoes are ping's; probes, and the errors they provoke, traceroute's (an error in a ping run is ping's too).
-  const chapter: Chapter = arp ? 'arp' : p.kind === 'dhcp' ? 'address' : p.kind === 'dns' ? 'dns' : p.kind === 'rtp' ? 'call' : p.kind === 'probe' ? 'trace' : icmp ? (icmp.summary.startsWith('ICMP echo') || probeApp?.kind !== 'traceroute' ? 'ping' : 'trace') : dataBytes > 0 ? 'page' : 'hello';
+  const chapter: Chapter = arp ? 'arp' : p.kind === 'dhcp' ? 'address' : p.kind === 'dns' ? 'dns' : p.kind === 'rtp' ? 'call' : p.kind === 'probe' ? 'trace' : icmp ? (icmp.summary.startsWith('ICMP echo') || !apps.some((a) => a.kind === 'traceroute') ? 'ping' : 'trace') : dataBytes > 0 ? 'page' : 'hello';
   return {
     packetId: p.id,
     chapter,
@@ -713,8 +718,8 @@ export interface StoryOptions {
 
 export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
   const asked = new Map<string, number>();
-  const start = r.events.find((e) => e.type === 'app' && e.action === 'start');
-  const client = start?.type === 'app' ? start.deviceId : r.scenario.startDevice;
+  const client = r.scenario.startDevice;
+  const start = r.events.find((e) => e.type === 'app' && e.action === 'start' && e.deviceId === client);
   const clients = [client, ...(r.scenario.companion ? [r.scenario.companion.device] : [])];
   const { packets, hellos } = chosen(r, !!opts.arp);
   const trips = packets
@@ -730,8 +735,12 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
   addLookups(trips, title);
   const voice = voiceOf(r, client);
   const probe = probeOf(r, client);
-  const gathered = gatherProbes(probe ? quickLookup(trips) : trips);
-  const shown = voice ? gatherCall(gathered) : streams(r) ? gatherStream(gathered, client) : smallAcks(gathered);
+  const joinProbe = clients[1] ? probeOf(r, clients[1]) : undefined;
+  // A job that joined in goes after the first job's own story: dropping a card must not change what was told before it.
+  const own = trips.filter((t) => t.client === client);
+  const gathered = gatherProbes(probe ? quickLookup(own) : own);
+  const told = voice ? gatherCall(gathered) : streams(r) ? gatherStream(gathered, client) : smallAcks(gathered);
+  const shown = [...told, ...trips.filter((t) => t.client !== client)];
   const url = start?.type === 'app' ? String(start.info?.url ?? '') : '';
   const wifiIfaces = new Set(r.scenario.devices.flatMap((d) => d.ifaces.filter((i) => i.wifi).map((i) => i.id)));
   const ifaceDevice = new Map(r.scenario.devices.flatMap((d) => d.ifaces.map((i) => [i.id, d.id] as const)));
@@ -749,6 +758,7 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
     site: url ? new URL(url).hostname : start?.type === 'app' ? String(start.info?.to ?? '') : '',
     client,
     clients,
+    fetched: clients.filter((c) => r.events.some((e) => e.type === 'app' && e.action === 'http-response-received' && e.deviceId === c)),
     vpn: r.scenario.devices.some((d) => d.tunnel),
     cold: r.scenario.devices.some((d) => d.apps.some((a) => a.kind === 'dns-server' && !!a.upstream)),
     dhcp: r.scenario.devices.some((d) => d.id === client && d.apps.some((a) => a.kind === 'dhcp-client')),
@@ -764,7 +774,8 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
     ])),
     trips: shown,
     pageTitle: title,
-    image: imageOf(r),
+    // A photo dropped in by the other device is that device's, not what this run is about.
+    image: streams(r) ? imageOf(r) : null,
     dnsAnswer: dnsAnswer(r, client),
     dnsTtl: (() => {
       const e = r.events.find((x) => x.type === 'app' && x.action === 'dns-answer' && x.deviceId === client);
@@ -773,6 +784,7 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
     })(),
     remembered: dnsAnswer(r, client, 'dns-cache-hit'),
     ...(probe ? { probe } : {}),
+    ...(joinProbe ? { joinProbe } : {}),
   };
 }
 

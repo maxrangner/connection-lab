@@ -1,20 +1,21 @@
 import './app.css';
-import { fetchWebPage, runScenario, ulawDecodeAll, type Cut, type ManualFault } from '../sim';
+import { fetchWebPage, runScenario, ulawDecodeAll, type Cut, type Job, type ManualFault } from '../sim';
 import { el } from './svg';
 import { clamp01, easeInOut, easeOutBack, iso, ISO_X, ISO_Y, lerp, U } from './project';
 import { HexCard } from './hexCard';
-import { drawHandset, drawHush, drawPadlock, drawPage, drawPair, drawPing, drawPipe, drawQuestion, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawTag, drawTrace } from './icons';
+import { drawHandset, drawHush, drawPadlock, drawPage, drawPing, drawPipe, drawQuestion, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawTag, drawTrace } from './icons';
 import { Menu } from './menus';
 import { NetworkScene, type Camera } from './NetworkScene';
 import { Sound } from './sound';
 import { SpyCard } from './spyCard';
 import { buildStory, type Chapter, type PartKey, type Story } from './story';
-import { buildTimeline, chapterAt, formatWait, MAX_STRETCH, pduAt, realAt, ridingOn, seenSoFar, segAt, spyLog, stepTarget, wanDelayFor, type Timeline } from './timeline';
+import { buildTimeline, chapterAt, formatWait, joinAt, MAX_STRETCH, pduAt, realAt, ridingOn, seenSoFar, segAt, spyLog, stepTarget, wanDelayFor, type Timeline } from './timeline';
 
 /**
  * "Get example.com". Drag the site card onto the laptop or the phone. The bar below holds the playback buttons, and
  * popups for the speed, the tools you click lines with, and the setup of the next run.
- * Tap a packet to pop it open. When a run ends the card comes back.
+ * Tap a packet to pop it open. When a run ends the card comes back. During a run the cards wait down the side of the
+ * screen: drag one onto the other device and it joins in.
  */
 
 /** Seconds the finished picture stays before the card comes back. */
@@ -23,10 +24,10 @@ const LINGER = 1.4;
 const BACK_GRACE = 1;
 
 /** What the next run is like, set from the Setup menu between runs: changing it mid-run would rewrite what happened. */
-type Setting = 'https' | 'big' | 'slow' | 'vpn' | 'arp' | 'together' | 'dhcp' | 'cold' | 'thin' | 'quiet';
+type Setting = 'https' | 'big' | 'slow' | 'vpn' | 'arp' | 'dhcp' | 'cold' | 'thin' | 'quiet';
 type Features = Record<Setting, boolean>;
-const SETTINGS: Setting[] = ['https', 'big', 'slow', 'vpn', 'arp', 'together', 'dhcp', 'cold', 'thin', 'quiet'];
-const features: Features = { https: false, big: false, slow: false, vpn: false, arp: false, together: false, dhcp: false, cold: false, thin: false, quiet: false };
+const SETTINGS: Setting[] = ['https', 'big', 'slow', 'vpn', 'arp', 'dhcp', 'cold', 'thin', 'quiet'];
+const features: Features = { https: false, big: false, slow: false, vpn: false, arp: false, dhcp: false, cold: false, thin: false, quiet: false };
 /** The line the spyglass is on, if any. */
 let spyLine: string | null = null;
 /** The visual time it was put there: it can only read what passes from then on. */
@@ -68,7 +69,7 @@ const known = new Map<string, { site: string; ip: string; until: number }>();
 /** This run is a second visit: the address is remembered, so there is nothing to look up. */
 let revisit = false;
 /** What a card on the table asks for: the page, or the photo. */
-type Wanted = 'page' | 'photo' | 'call' | 'ping' | 'trace';
+type Wanted = Job;
 const WANTED: Wanted[] = ['page', 'photo', 'call', 'ping', 'trace'];
 const isProbe = (w: Wanted): boolean => w === 'ping' || w === 'trace';
 /** The card picked up last. */
@@ -86,6 +87,8 @@ let stretch = 0;
 /** The Wi-Fi has been shaken: this share of its frames is lost to interference, and the radio sends them again. */
 let noise = 0;
 const NOISY = 0.4;
+/** A card dropped in during this run: what it asks for, and when in sim time and in visual time. */
+let joined: { job: Wanted; at: number; v: number } | null = null;
 function simulate(): void {
   const scenario = fetchWebPage({
     // A ping or a trace goes to example.com's server, whatever page the Setup would fetch.
@@ -97,7 +100,7 @@ function simulate(): void {
     https: features.https,
     from: client,
     warmArp,
-    together: features.together,
+    ...(joined ? { join: { job: joined.job, at: joined.at } } : {}),
     dhcp: features.dhcp,
     cold: features.cold,
     thin: features.thin,
@@ -108,7 +111,7 @@ function simulate(): void {
   const plan = { randomLoss: 0, decided, cuts, manual: faults };
   // Long enough for TCP to give up on a dead line (15 resends, backing off to a minute apart).
   story = buildStory(runScenario(scenario, { seed: runSeed, faults: plan, maxTime: 1000 }), { arp: features.arp });
-  tl = buildTimeline(story, knocks, stretch);
+  tl = buildTimeline(story, knocks, stretch, joined?.v);
 }
 simulate();
 
@@ -183,6 +186,7 @@ scene.setOnTable([home, { sx: home.sx - 110, sy: home.sy + 50 }, { sx: home.sx +
 /** A setting changed before a run: show the network it will use, with a clean screen. */
 function preview(): void {
   remember();
+  joined = null;
   idleV = -1;
   revisit = remembers();
   simulate();
@@ -303,7 +307,6 @@ const SETUP: { id: Setting; label: string; hint: string; draw: (g: SVGGElement) 
   { id: 'slow', label: 'Satellite internet', hint: 'To space and back: long waits', draw: drawSatellite, span: 56 },
   { id: 'vpn', label: 'VPN', hint: 'Sealed tunnel past your ISP', draw: drawShield, span: 34 },
   { id: 'arp', label: 'Find the router first', hint: 'Shouts for its hardware address', draw: drawQuestion, span: 34 },
-  { id: 'together', label: 'Two devices at once', hint: 'Laptop and phone share one address', draw: drawPair, span: 34 },
   { id: 'dhcp', label: 'New on the network', hint: 'Asks for an address first', draw: drawTag, span: 34 },
   { id: 'cold', label: "DNS doesn't know it yet", hint: 'Must ask around for the name', draw: drawSnowflake, span: 34 },
   { id: 'thin', label: 'Slow home line', hint: 'Big downloads lose packets', draw: drawPipe, span: 34 },
@@ -329,7 +332,7 @@ function showSetup(): void {
   scene.setQuiet(features.quiet);
 }
 
-const CHAPTERS: Record<Chapter, string> = { address: 'Get an address', arp: 'Find the router', dns: 'Find the address', hello: 'Say hello', secret: 'Check and agree', page: 'Get the page', call: 'Make a call', ping: 'Ping the server', trace: 'Trace the path' };
+const CHAPTERS: Record<Chapter, string> = { address: 'Get an address', arp: 'Find the router', dns: 'Find the address', hello: 'Say hello', secret: 'Check and agree', page: 'Get the page', call: 'Make a call', ping: 'Ping the server', trace: 'Trace the path', traffic: 'All at once' };
 /** Chapter number in this run (a second visit skips the address, HTTPS adds the secret). */
 const chapterName = (ch: Chapter): string => (ch === 'page' && story.image ? 'Get the photo' : CHAPTERS[ch]);
 
@@ -446,6 +449,98 @@ button('↺', 'Reset', reset);
 // On a narrow screen the bar breaks into two rows here (see app.css).
 controls.appendChild(Object.assign(document.createElement('span'), { className: 'bar-break' }));
 root.appendChild(controls);
+
+/** How close to a device, in screen pixels, a card from the dock has to come. */
+const DOCK_REACH = 70;
+const DOCK_ICONS: Record<Wanted, { name: string; draw: (g: SVGGElement) => void }> = {
+  page: {
+    name: 'the page',
+    draw: (g) => {
+      el('circle', { r: 9 }, g);
+      el('ellipse', { rx: 4, ry: 9 }, g);
+    },
+  },
+  photo: {
+    name: 'the photo',
+    draw: (g) => {
+      el('rect', { x: -12, y: -10, width: 24, height: 20, rx: 2 }, g);
+      el('path', { d: 'M-10 7l7-8 5 5 3-3 5 6' }, g);
+    },
+  },
+  call: { name: 'a call', draw: (g) => drawHandset(el('g', { transform: 'scale(0.42)' }, g)) },
+  ping: { name: 'a ping', draw: (g) => drawPing(el('g', { transform: 'scale(0.42)' }, g)) },
+  trace: { name: 'a trace', draw: (g) => drawTrace(el('g', { transform: 'scale(0.42)' }, g)) },
+};
+const dockIcon = (w: Wanted): SVGSVGElement => {
+  const icon = el('svg', { viewBox: '-16 -16 32 32', width: 30, height: 30, 'aria-hidden': 'true' });
+  DOCK_ICONS[w].draw(el('g', { class: 'site-card-globe' }, icon));
+  return icon;
+};
+/** A card from the dock, in hand. */
+let holding: { wanted: Wanted; x: number; y: number } | null = null;
+const dock = document.createElement('div');
+dock.className = 'dock';
+dock.hidden = true;
+dock.appendChild(Object.assign(document.createElement('span'), { className: 'dock-label', textContent: 'drag one in' }));
+/** The card under the finger, and the ring on the device it can go to. */
+const dockGhost = document.createElement('div');
+dockGhost.className = 'dock-ghost';
+const dockRing = document.createElement('div');
+dockRing.className = 'dock-ring';
+dockGhost.hidden = dockRing.hidden = true;
+root.append(dock, dockRing, dockGhost);
+
+/** Where the device that has nothing to do is on screen. */
+function freeSpot(): { x: number; y: number } | null {
+  const free = scene.dropPoints().find((d) => d.id !== client);
+  const m = svg.getScreenCTM();
+  if (!free || !m) return null;
+  const p = new DOMPoint(free.sx, free.sy).matrixTransform(m);
+  return { x: p.x, y: p.y };
+}
+const overFree = (): boolean => {
+  const spot = freeSpot();
+  return !!holding && !!spot && Math.hypot(holding.x - spot.x, holding.y - spot.y) < DOCK_REACH;
+};
+
+/** The other device starts on this job now: what has been shown stays, and from the next step on everything runs at once. */
+function joinIn(job: Wanted): void {
+  const seen = seenSoFar(tl, v);
+  decided = { ...decided, ...seen.decided };
+  joined = { job, at: joinAt(tl, v), v };
+  // A device joining in looks everything up afresh: it remembers nothing from before.
+  known.delete(client === 'laptop' ? 'phone' : 'laptop');
+  seek = null;
+  simulate();
+  scene.setStory(story, tl);
+  sound.play('pop');
+}
+
+for (const w of WANTED) {
+  const b = document.createElement('button');
+  b.className = 'dock-card';
+  b.setAttribute('aria-label', `Drag ${DOCK_ICONS[w].name} onto the other device`);
+  b.appendChild(dockIcon(w));
+  const letGo = (): void => {
+    if (!holding) return;
+    const landed = overFree() && mode === 'play' && !joined;
+    holding = null;
+    if (landed) joinIn(w);
+  };
+  b.addEventListener('pointerdown', (e) => {
+    holding = { wanted: w, x: e.clientX, y: e.clientY };
+    b.setPointerCapture(e.pointerId);
+    dockGhost.replaceChildren(dockIcon(w));
+  });
+  b.addEventListener('pointermove', (e) => {
+    if (holding) holding = { ...holding, x: e.clientX, y: e.clientY };
+  });
+  b.addEventListener('pointerup', letGo);
+  b.addEventListener('pointercancel', letGo);
+  b.addEventListener('lostpointercapture', letGo);
+  dock.appendChild(b);
+}
+
 // Outside the bar, so the bar never moves.
 const followBtn = document.createElement('button');
 followBtn.className = 'follow';
@@ -771,6 +866,7 @@ function reset(): void {
   doneFor = 0;
   camFree = false;
   showAll = false;
+  holding = null;
   faults.length = 0;
   knocks.clear();
   decided = {};
@@ -823,8 +919,7 @@ function beginRun(): void {
   cuts = [...cutLines].map((link) => ({ link, from: 0 }));
   warmArp = cutLines.size > 0;
   revisit = remembers();
-  // A device joining in looks everything up afresh: it remembers nothing from before.
-  if (features.together) known.delete(client === 'laptop' ? 'phone' : 'laptop');
+  joined = null;
   simulate();
   scene.setStory(story, tl);
   showFeatures();
@@ -920,11 +1015,20 @@ function frame(now: number): void {
     resting.setAttribute('opacity', '1');
   }
   hint.style.display = mode === 'idle' ? '' : 'none';
+  dock.hidden = mode !== 'play' || !!joined || v >= tl.total;
+  dockGhost.hidden = dockRing.hidden = !holding;
+  if (holding) {
+    const spot = freeSpot();
+    dockGhost.style.transform = `translate(${holding.x}px, ${holding.y}px)`;
+    dockGhost.classList.toggle('over', overFree());
+    if (spot) dockRing.style.transform = `translate(${spot.x}px, ${spot.y}px)`;
+  }
 
   // The camera eases between the whole network (between runs) and a close follow of the packet,
-  // unless the viewer has taken it over.
-  if (!camFree) {
-    const target = mode === 'play' ? scene.followCamera(v) : showAll ? scene.wholeCamera() : scene.overviewCamera();
+  // unless the viewer has taken it over. A card in hand needs the whole network, and so does more than one job at a time.
+  if (!camFree || holding) {
+    const wide = !!holding || (!!joined && !segAt(tl, v)?.seg.flow);
+    const target = mode === 'play' && !wide ? scene.followCamera(v) : showAll || wide ? scene.wholeCamera() : scene.overviewCamera();
     const ease = snapCamera ? 1 : Math.min(1, dt * (seek ? 6 : 3.5));
     cam = { cx: lerp(cam.cx, target.cx, ease), cy: lerp(cam.cy, target.cy, ease), scale: lerp(cam.scale, target.scale, ease) };
   }
@@ -996,6 +1100,10 @@ if (import.meta.env.DEV) {
         peek = peekTarget = open;
         snapCamera = true;
         camFree = false;
+      },
+      /** Drop a card in on the other device, as a hand would. */
+      join(job: Wanted): void {
+        joinIn(job);
       },
       /** Cut a cable or mend it, as the scissors do. */
       cut(line: string): void {

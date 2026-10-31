@@ -27,11 +27,12 @@ const packetsOf = (trips: Trip[]): Trip[] =>
     return flow?.kind === 'flow' ? flow.packets : [t];
   });
 
-export function buildReadout(story: Story, timing: Timing, total: number): Readout {
-  const probe = story.probe;
+export function buildReadout(story: Story, timing: Timing, total: number, joined = false): Readout {
+  const probe = joined ? story.joinProbe : story.probe;
+  const client = joined ? story.clients[1] : story.client;
   if (!probe) return { screens: [], flags: [] };
   const title = `${probe.kind} ${probe.to}`;
-  const trips = packetsOf(story.trips);
+  const trips = packetsOf(story.trips).filter((t) => t.client === client);
   const readout = probe.kind === 'ping' ? pingReadout(probe, title, trips, timing, total) : traceReadout(probe, title, trips, timing, total);
   // The name never turned into an address, so nothing went out.
   if (!readout.screens.length) readout.screens.push({ t: total, lines: [title, `can't find ${probe.to}`] });

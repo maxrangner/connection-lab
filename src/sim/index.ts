@@ -3,7 +3,7 @@ export type { PacketInfo, PacketKind, PduSnapshot } from './core/Simulator';
 export type * from './events/SimEvent';
 export { NO_FAULTS, type Cut, type FaultPlan, type ManualFault } from './faults';
 export type * from './model';
-export { fetchWebPage, ADDR } from './scenarios/fetchWebPage';
+export { fetchWebPage, ADDR, type Job } from './scenarios/fetchWebPage';
 export { CAPTURED_AT } from './scenarios/exampleComCapture';
 export { PROTOCOL_LAYER, type Field, type LayerNum, type LayerPdu, type Protocol } from './proto/types';
 export { hexBytes, preview } from './bytes/bytes';

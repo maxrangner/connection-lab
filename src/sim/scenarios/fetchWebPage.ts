@@ -1,5 +1,5 @@
 import { ascii, fromBase64 } from '../bytes/bytes';
-import type { DeviceSpec, LinkSpec, RouteSpec, Scenario } from '../model';
+import type { AppSpec, DeviceSpec, LinkSpec, RouteSpec, Scenario } from '../model';
 import { dnsAddresses, parseDns } from '../proto/dns';
 import { DNS_TRACES } from './dnsTraceCapture';
 import {
@@ -89,10 +89,10 @@ export interface FetchWebPageOptions {
   /** Which device opens the page: the laptop on its Ethernet cable, or the phone over Wi-Fi. */
   from?: 'laptop' | 'phone';
   /**
-   * The other device opens a page too, a few milliseconds later: plain http://example.com/, with no VPN and nothing
-   * remembered, so the home router has two conversations to tell apart at once.
+   * A job on the other device as well, from `at` seconds on (a card dropped in during the run): with no VPN and nothing
+   * remembered, so the home router has two conversations to tell apart at once. A plain page a moment later by default.
    */
-  together?: boolean;
+  join?: { job?: Job; at?: number };
   /**
    * The device starts with no address at all (0.0.0.0, no routes, no resolver) and gets everything from the home
    * router by DHCP first: DISCOVER, OFFER, REQUEST, ACK. The lease hands out the same addresses the scenario uses.
@@ -109,7 +109,7 @@ export interface FetchWebPageOptions {
   /**
    * A voice call instead of a page: the device looks up the friend's name (sam.example) and streams one second of
    * voice to the friend's phone as RTP over UDP, a 20 ms packet at a time; the friend talks back the same way. Nothing
-   * lost is ever sent again. No page is fetched; `together` still fetches the other device's page.
+   * lost is ever sent again. No page is fetched; `join` still runs the other device's job.
    */
   call?: boolean;
   /**
@@ -129,7 +129,7 @@ export interface FetchWebPageOptions {
    * Noisy Wi-Fi: the chance (0..1) that any one frame on the air between the phone and the home router is lost to
    * interference, data frames and Acks alike. With it the Wi-Fi is a real 802.11 radio: every unicast frame is answered by
    * a 14-byte Ack after SIFS, and a frame with no Ack within the Ack timeout goes again with the Retry bit, up to 7 times,
-   * without TCP or DNS ever knowing. Only the phone is on Wi-Fi, so it only shows with `from: 'phone'` (or `together`).
+   * without TCP or DNS ever knowing. Only the phone is on Wi-Fi, so it only shows with `from: 'phone'` (or a `join` on the phone).
    * Off (0, the default) the Wi-Fi is a perfect cable through the air and no Acks are sent.
    */
   noise?: number;
@@ -147,7 +147,10 @@ export const THIN_QUEUE = 8;
 /** The DSL line's rate in bits per second. */
 export const THIN_BPS = 20e6;
 
-/** How long after the first device the other one starts, in seconds: close enough that their packets interleave. */
+/** What a card asks a device to do. */
+export type Job = 'page' | 'photo' | 'call' | 'ping' | 'trace';
+
+/** How long after the first device the other one starts unless told, in seconds: close enough that their packets interleave. */
 export const COMPANION_DELAY = 0.004;
 
 /** What the scenario needs to know about each real site. */
@@ -238,16 +241,24 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           },
     ],
   });
-  // The other device, asking for the plain page on its own. When the server is another site's, it holds example.com's
-  // address too and serves it by the Host header, as one server hosting several sites does.
+  // The other device's job, on its own. The one server holds the addresses of the sites a card can ask for and serves
+  // each by the Host header, as one server hosting several sites does.
   const other = from === 'phone' ? 'laptop' : 'phone';
-  const alias = opts.together && site.ip !== CAPTURED_FROM_IP ? CAPTURED_FROM_IP : undefined;
-  const companion = (gateway: { ip: string; mac: string }) => ({
+  const aliases = opts.join ? [CAPTURED_FROM_IP, PHOTO_IP].filter((ip) => ip !== server.ip) : [];
+  const resolver = ADDR.resolver.ip;
+  const jobs: Record<Job, () => AppSpec> = {
+    page: () => ({ kind: 'browser', url: SITES['example.com'].url, resolver, request: ascii(HTTP_REQUEST) }),
+    photo: () => ({ kind: 'browser', url: SITES['httpbin.org'].url, resolver, request: ascii(PHOTO_HTTP_REQUEST) }),
+    call: () => ({ kind: 'voice-call', to: ADDR.friend.name, resolver, clip: fromBase64(VOICE_CLIP_CALLER_BASE64) }),
+    ping: () => ({ kind: 'ping', to: 'example.com', resolver, count: 4 }),
+    trace: () => ({ kind: 'traceroute', to: 'example.com', resolver, maxHops: 8 }),
+  };
+  const joined = (gateway: { ip: string; mac: string }) => ({
     ...(warm ? { arp: { [gateway.ip]: gateway.mac } } : {}),
-    apps: [{ kind: 'browser' as const, url: SITES['example.com'].url, resolver: ADDR.resolver.ip, request: ascii(HTTP_REQUEST) }],
+    apps: [jobs[opts.join?.job ?? 'page']()],
   });
   const appsOf = (device: 'laptop' | 'phone', gateway: { ip: string; mac: string }) =>
-    device === from ? browser(gateway) : opts.together ? companion(gateway) : { apps: [] };
+    device === from ? browser(gateway) : opts.join ? joined(gateway) : { apps: [] };
   // The device that gets its address by DHCP starts with none: no address, no routes.
   const addressed = (device: 'laptop' | 'phone', iface: string, ip: string, gateway: string) =>
     dhcp && from === device
@@ -268,7 +279,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
     id: 'fetch-web-page',
     title: opts.call ? `Call ${ADDR.friend.name}` : opts.probe === 'ping' ? `Ping ${host}` : opts.probe === 'traceroute' ? `Trace the path to ${host}` : `Fetch ${url}`,
     startDevice: from,
-    ...(opts.together ? { companion: { device: other, at: COMPANION_DELAY } } : {}),
+    ...(opts.join ? { companion: { device: other, at: opts.join.at ?? COMPANION_DELAY } } : {}),
     tcp: { clientMss: opts.vpn ? Math.min(mss, 1380) : mss, serverMss: 1460 },
     devices: [
       {
@@ -313,7 +324,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
         arp: {
           [ADDR.ispCustomer.ip]: ADDR.ispCustomer.mac,
           ...(warm ? { [remembered.ip]: remembered.mac } : {}),
-          ...(warm && opts.together ? { [ADDR[other].ip]: ADDR[other].mac } : {}),
+          ...(warm && opts.join ? { [ADDR[other].ip]: ADDR[other].mac } : {}),
         },
         nat: { inside: ['home.lan', 'home.wlan'], outside: 'home.wan' },
         // The router's DHCP server is always there; a device only asks it when it starts without an address. Each
@@ -363,7 +374,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           [ADDR.vpn.ip]: ADDR.vpn.mac,
           [ADDR.friend.ip]: ADDR.friend.mac,
           [server.ip]: server.mac,
-          ...(alias ? { [alias]: server.mac } : {}),
+          ...Object.fromEntries(aliases.map((ip) => [ip, server.mac])),
         },
         apps: [],
       },
@@ -430,7 +441,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
         kind: 'web-server',
         layout: { x: 1480, y: 735 },
         ifaces: [
-          { id: 'server.eth0', name: 'eth0', mac: server.mac, ip: server.ip, prefixLen: 32, ...(alias ? { aliases: [alias] } : {}) },
+          { id: 'server.eth0', name: 'eth0', mac: server.mac, ip: server.ip, prefixLen: 32, ...(aliases.length ? { aliases } : {}) },
           { id: 'server.eth1', name: 'eth1', mac: ADDR.serverFromVpn.mac, ip: server.ip, prefixLen: 32 },
         ],
         routes: [
@@ -444,7 +455,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
             processing: 0.0005,
             response: fromBase64(site.response),
             ...(tls ? { tls } : {}),
-            ...(alias ? { responses: { 'example.com': fromBase64(HTTP_RESPONSE_BASE64) } } : {}),
+            ...(opts.join ? { responses: { 'example.com': fromBase64(HTTP_RESPONSE_BASE64), [PHOTO_HOST]: fromBase64(PHOTO_HTTP_RESPONSE_BASE64) } } : {}),
           },
         ],
       },
