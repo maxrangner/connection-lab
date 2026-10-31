@@ -382,7 +382,8 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .chapter.enter,
   .tunnel-flow,
-  .menu-panel {
+  .menu-panel,
+  .link.noisy .airwave {
     animation: none;
   }
 }
@@ -747,6 +748,40 @@ body {
 /* Between runs the ISP router can be dragged further away */
 .net-stage.between .device[data-grab] {
   cursor: grab;
+}
+
+/* The Wi-Fi arc can be tapped between runs to make it noisy; noisy, it wobbles */
+.airwave-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 24;
+  pointer-events: stroke;
+}
+
+.net-stage.between .airwave-hit {
+  cursor: pointer;
+}
+
+.link.noisy .airwave {
+  animation: wobble 0.35s infinite;
+}
+
+@keyframes wobble {
+  0% {
+    transform: translate(0, 0);
+  }
+  25% {
+    transform: translate(1.5px, -1px);
+  }
+  50% {
+    transform: translate(-1px, 1.5px);
+  }
+  75% {
+    transform: translate(1px, 1px);
+  }
+  100% {
+    transform: translate(0, 0);
+  }
 }
 
 .link.absent {

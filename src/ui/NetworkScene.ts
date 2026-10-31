@@ -337,8 +337,12 @@ export class NetworkScene {
       if (!path.length) continue;
       const g = el('g', { class: 'link' }, this.cables);
       if (this.tl.air.has(l.id)) {
+        // Shaken (tapped between runs), the radio is noisy: the arc wobbles and frames get lost and sent again.
+        g.classList.toggle('noisy', this.story.noise > 0);
         const pts = path.map((p) => iso(p.x, p.y, p.z));
-        el('polyline', { points: pts.map((p) => `${p.sx.toFixed(1)},${p.sy.toFixed(1)}`).join(' '), class: 'airwave' }, g);
+        const points = pts.map((p) => `${p.sx.toFixed(1)},${p.sy.toFixed(1)}`).join(' ');
+        el('polyline', { points, class: 'airwave-hit', 'data-air': l.id }, g);
+        el('polyline', { points, class: 'airwave' }, g);
         // Radio ripples at both ends.
         for (const p of [path[0]!, path[path.length - 1]!]) {
           const c = iso(p.x, p.y, p.z + 0.3);
@@ -346,7 +350,7 @@ export class NetworkScene {
         }
         // Home Wi-Fi with a password seals its frames; this one is not, so the spyglass can read it.
         const note = this.linkSpot(l.id, 0.3, 16);
-        el('text', { x: note.sx, y: note.sy, 'text-anchor': 'middle', class: 'link-note' }, g).textContent = 'open Wi-Fi';
+        el('text', { x: note.sx, y: note.sy, 'text-anchor': 'middle', class: 'link-note' }, g).textContent = this.story.noise > 0 ? 'open Wi-Fi · noisy' : 'open Wi-Fi';
       } else if (path.length === 5) {
         // A cable from each device to its dish, then the radio beams up to the satellite.
         const [a, footA, top, footB, b] = path as [Vec3, Vec3, Vec3, Vec3, Vec3];

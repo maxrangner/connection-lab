@@ -83,6 +83,9 @@ function remembers(): boolean {
 }
 /** How far the ISP router has been dragged away, in tiles: the fibre gets longer and so does its delay. */
 let stretch = 0;
+/** The Wi-Fi has been shaken: this share of its frames is lost to interference, and the radio sends them again. */
+let noise = 0;
+const NOISY = 0.4;
 function simulate(): void {
   const scenario = fetchWebPage({
     // A ping or a trace goes to example.com's server, whatever page the Setup would fetch.
@@ -100,6 +103,7 @@ function simulate(): void {
     thin: features.thin,
     call: carried === 'call',
     ...(stretch > 0 ? { wanDelay: wanDelayFor(stretch) } : {}),
+    ...(noise > 0 ? { noise } : {}),
   });
   const plan = { randomLoss: 0, decided, cuts, manual: faults };
   // Long enough for TCP to give up on a dead line (15 resends, backing off to a minute apart).
@@ -603,6 +607,13 @@ svg.addEventListener('pointerdown', (e) => {
     return;
   }
   if (target.closest('.site-card') || (!tool && target.closest('.packet'))) return;
+  // A tap on the Wi-Fi arc between runs shakes it: noisy, or calm again.
+  if (!tool && canSetUp() && target.closest('[data-air]')) {
+    noise = noise > 0 ? 0 : NOISY;
+    preview();
+    sound.play(noise > 0 ? 'bonk' : 'snap');
+    return;
+  }
   // The ISP router can be dragged further away between runs: the fibre to it gets longer.
   if (!tool && canSetUp() && target.closest('[data-grab]')) {
     stretchPress = { x: e.clientX, from: stretch };
@@ -745,6 +756,7 @@ function reset(): void {
   cuts = [];
   warmArp = false;
   stretch = 0;
+  noise = 0;
   for (const menu of menus) menu.setOpen(false);
   showChapterMenu(false);
   for (const k of SETTINGS) features[k] = false;
@@ -959,6 +971,11 @@ if (import.meta.env.DEV) {
       /** Drag the ISP router this many tiles away, as a hand would. */
       stretch(tiles: number): void {
         stretch = Math.max(0, Math.min(MAX_STRETCH, tiles));
+        preview();
+      },
+      /** Shake the Wi-Fi, or calm it. */
+      shake(on = true): void {
+        noise = on ? NOISY : 0;
         preview();
       },
       get tool() {
