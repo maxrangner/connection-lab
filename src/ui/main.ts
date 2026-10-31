@@ -882,7 +882,7 @@ function frame(now: number): void {
       if (k >= 1) seek = null;
     } else if (!paused && !peekTarget) {
       const next = Math.min(tl.total, v + dt * speed);
-      for (const c of tl.cues) if (c.t > v && c.t <= next) sound.play(c.sound);
+      for (const c of tl.cues) if (c.t > v && c.t <= next) sound.play(c.sound, c.hz);
       v = next;
     }
     // A step can land where there is no packet to hold open (a lookup, a timer): carry on.

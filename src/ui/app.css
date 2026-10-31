@@ -400,13 +400,6 @@ body {
   fill: #f1eadf;
 }
 
-.paper-voice {
-  fill: none;
-  stroke: #2a9d8f;
-  stroke-width: 0.8;
-  stroke-linejoin: round;
-}
-
 .paper-num {
   font-size: 16px;
   font-weight: 800;
@@ -439,6 +432,32 @@ body {
 .mood-face {
   font-size: 24px;
   font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
+}
+
+/* A call's notes: one colour for what each phone hears */
+.note-caller {
+  --note: #1f9a8c; /* Sam's voice, as the caller hears it */
+}
+
+.note-friend {
+  --note: #8b6fd0; /* The caller's voice, as Sam hears it */
+}
+
+.note-solid {
+  fill: var(--note);
+}
+
+.note-line {
+  fill: none;
+  stroke: var(--note);
+  stroke-width: 2.6;
+  stroke-linecap: round;
+}
+
+.note-crack {
+  stroke: var(--back);
+  stroke-width: 2;
+  stroke-linecap: round;
 }
 
 /* Devices and cables a run doesn't use step back */

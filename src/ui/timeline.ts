@@ -1,4 +1,5 @@
 import type { PduSnapshot } from '../sim';
+import { toneOf } from './notes';
 import { clamp01, easeIn, easeInOut, easeOutBack, easeOutBounce, lerpV, v3, type Vec3 } from './project';
 import type { Details, Frame, Seen, Step, Story, Trip, Wrap } from './story';
 
@@ -85,12 +86,34 @@ export interface Seg {
 
 export interface Cue {
   t: number;
-  sound: 'snap' | 'sleeve' | 'thud' | 'swap' | 'bonk' | 'surprise' | 'pop' | 'chime' | 'lock' | 'unlock' | 'key' | 'snip' | 'flip' | 'found';
+  sound: 'snap' | 'sleeve' | 'thud' | 'swap' | 'bonk' | 'surprise' | 'pop' | 'chime' | 'lock' | 'unlock' | 'key' | 'snip' | 'flip' | 'found' | 'note' | 'break';
+  /** For a note: the pitch it plays at. */
+  hz?: number;
 }
+
+/** A sound of a call as its listener gets it: a note bubbling up from the phone, or one breaking for a packet that never came. */
+export interface Note {
+  t: number;
+  device: string;
+  pitch: number;
+  loud: number;
+  broken: boolean;
+  /** Whose voice: heard by the caller, or by the friend. */
+  heardBy: 'caller' | 'friend';
+}
+
+/** Seconds a note stays up. */
+export const NOTE_LIFE = 2.4;
+/** Packets of one gap that break: a long gap is silence, not a row of pops. */
+const BROKEN_SHOWN = 2;
+/** The tone of a lost packet that was itself a pause: the phone only knows something is missing. */
+const UNKNOWN_TONE = { hz: 300, pitch: 0.5, loud: 0.3 };
 
 export interface Timeline {
   segs: Seg[];
   reactions: Reaction[];
+  /** A call's notes, in order. */
+  notes: Note[];
   /** HTTPS: when each end has worked out the session key (it can lock and open cards from then on). */
   keys: Map<string, number>;
   /** HTTPS: when each end has made the half of its key that it keeps to itself. */
@@ -197,6 +220,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   const segs: Seg[] = [];
   const cues: Cue[] = [];
   const reactions: Reaction[] = [];
+  const notes: Note[] = [];
   /** What has already arrived where (to spot duplicates) and which page parts are in. */
   const arrived = new Set<string>();
   const filled = new Set<number>();
@@ -262,8 +286,9 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
           d *= linkPace(step.link);
           break;
         case 'flow':
-          ({ packets: seg.flow, waits: seg.waits } = planFlow(step.packets, t, story, knocks, linkPace, cues, reactions, step.packets.length > 1 ? FLOW_HOP : ACK_HOP, trip.kind === 'call'));
-          d = Math.max(t, ...seg.flow.map((p) => p.t1), ...seg.waits.map((w) => w.t1)) - t + (step.packets.length > 1 ? 0.5 : 0);
+          ({ packets: seg.flow, waits: seg.waits } = planFlow(step.packets, t, story, knocks, linkPace, cues, reactions, step.packets.length > 1 ? FLOW_HOP : ACK_HOP, trip.kind === 'call' ? notes : null));
+          // A call stays until its last notes have gone.
+          d = Math.max(t, ...seg.flow.map((p) => p.t1), ...seg.waits.map((w) => w.t1)) - t + (trip.kind === 'call' ? NOTE_LIFE : step.packets.length > 1 ? 0.5 : 0);
           break;
         case 'lost': {
           const travel = DUR.travel * pace({ ...step, kind: 'travel' }, trip) * linkPace(step.link);
@@ -317,7 +342,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   // Each end makes its private half when it first has a hello to answer or to send.
   const halves = new Map<string, number>();
   for (const s of segs) if (s.trip.keyShare && (s.step.kind === 'appear' || s.step.kind === 'read') && !halves.has(s.step.device)) halves.set(s.step.device, s.t0);
-  return { segs, reactions, keys, halves, real: realClock(segs, story), cues, total: t, pos, kind, trayZ, isRouter, sky, air, client: story.client, stretch };
+  return { segs, reactions, notes, keys, halves, real: realClock(segs, story), cues, total: t, pos, kind, trayZ, isRouter, sky, air, client: story.client, stretch };
 }
 
 /** The real clock along the visual time, from when each frame really left and arrived. */
@@ -360,8 +385,8 @@ function planFlow(
   cues: Cue[],
   reactions: Reaction[],
   hop: number,
-  /** A call: each side talks on its own clock, nothing is a reply to anything, so nothing waits for what was heard. */
-  independent = false,
+  /** A call: each side talks on its own clock, nothing is a reply to anything, so nothing waits for what was heard. Its notes go here. */
+  notes: Note[] | null = null,
 ): { packets: FlowPacket[]; waits: FlowWait[] } {
   const delay = new Map(story.links.map((l) => [l.id, l.delay]));
   const heard: { sim: number; v: number }[] = [];
@@ -379,11 +404,13 @@ function planFlow(
   /** When the last packet so far came off the cables. */
   let settled = from;
   let puzzled = false;
+  /** In a call: the part each listener expects next from each sender. */
+  const expected = new Map<string, number>();
   const planned = packets.map((trip): FlowPacket => {
     let t = Math.max(from, (lastSent.get(trip.origin) ?? -Infinity) + FLOW_GAP);
     // In a call each side's first word still waits for what it answers (the friend speaks only once called); after that
     // a side talks on its own clock.
-    if (!independent || !lastSent.has(trip.origin)) for (const h of heard) if (h.sim <= trip.start) t = Math.max(t, h.v);
+    if (!notes || !lastSent.has(trip.origin)) for (const h of heard) if (h.sim <= trip.start) t = Math.max(t, h.v);
     const key = `${trip.origin}|${trip.part?.n ?? trip.l4Label}`;
     const before = sent.get(key);
     sent.set(key, trip);
@@ -410,6 +437,25 @@ function planFlow(
     if (trip.lost || !last) return { trip, hops, t0, t1: t + FLOW_FALL, landed: null };
     heard.push({ sim: last.at + (delay.get(last.link) ?? 0), v: t });
     if (!trip.part) return { trip, hops, t0, t1: t, landed: null };
+    if (notes) {
+      const heardBy = last.to === story.client ? 'caller' : 'friend';
+      // The listener only finds out about a lost packet now, from the number on this one. Nothing comes back for it.
+      const first = expected.get(trip.origin) ?? 1;
+      for (let m = first; m < Math.min(trip.part.n, first + BROKEN_SHOWN); m++) {
+        const lost = sent.get(`${trip.origin}|${m}`)?.audio;
+        const at = t + (m - first) * 0.12;
+        notes.push({ t: at, device: last.to, ...((lost && toneOf(lost)) ?? UNKNOWN_TONE), broken: true, heardBy });
+        cues.push({ t: at, sound: 'break' });
+      }
+      expected.set(trip.origin, trip.part.n + 1);
+      // A pause makes no note.
+      const tone = trip.audio && toneOf(trip.audio);
+      if (tone) {
+        notes.push({ t, device: last.to, ...tone, broken: false, heardBy });
+        cues.push({ t, sound: 'note', hz: tone.hz });
+      }
+      return { trip, hops, t0, t1: t, landed: null };
+    }
 
     const landed = t + FLOW_FLY;
     const n = trip.part.n;
@@ -430,7 +476,7 @@ function planFlow(
   });
   const last = planned[planned.length - 1];
   const part = last?.trip.part;
-  if (last?.trip.lost && part && filled.size < part.of) wait({ kind: 'wait', device: last.trip.origin, seconds: 0, giveUp: true, mood: 'cry' }, last.t1);
+  if (!notes && last?.trip.lost && part && filled.size < part.of) wait({ kind: 'wait', device: last.trip.origin, seconds: 0, giveUp: true, mood: 'cry' }, last.t1);
   return { packets: planned, waits };
 }
 
