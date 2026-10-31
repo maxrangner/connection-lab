@@ -945,7 +945,8 @@ export class NetworkScene {
     return [
       { readout: this.tl.readout, device: this.tl.client },
       { readout: this.tl.joinReadout, device: this.story.joiner ?? this.tl.client },
-      ...this.tl.attackReadouts.map((x) => ({ ...x, red: true })),
+      // What the stranger hears has to stay readable while the camera follows the packet away, so it goes above the bar.
+      ...this.tl.attackReadouts.filter((x) => x.device !== this.story.listener).map((x) => ({ ...x, red: true })),
     ];
   }
 

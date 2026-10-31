@@ -170,7 +170,7 @@ const POS: Record<string, { x: number; y: number }> = {
   peer: { x: 24, y: 8 },
   // Red, once dragged in. The stranger sits within reach of the Wi-Fi, the others out on the internet by the ISP router.
   stranger: { x: 13, y: 7 },
-  scanner: { x: 18, y: 8 },
+  scanner: { x: 20, y: 8 },
   bot1: { x: 1, y: -7 },
   bot2: { x: 5, y: -9 },
   bot3: { x: 9, y: -7 },
@@ -381,6 +381,8 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
     if (trip.lost && !story.pageTitle && trip.l4Label !== 'ACK' && !resent.has(trip.packetId) && !askedAgain) {
       ring({ kind: 'wait', device: dns ? trip.client : trip.origin, seconds: 0, giveUp: true, mood: 'cry' });
     }
+    // The server has forgotten the connection, and says so: that is the end of it.
+    if (trip.l4Label.includes('RST') && !trip.outward && !story.pageTitle) ring({ kind: 'wait', device: trip.client, seconds: 0, giveUp: true, mood: 'cry' });
     // Arrived: the receiver reacts, and the picture lingers a moment so you can see it.
     const last = segs[segs.length - 1];
     if (!trip.lost && last && last.trip === trip && 'device' in last.step) {
@@ -403,13 +405,13 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
     const trip: Trip = { ...traffic[0]!, chapter: 'traffic', part: undefined, retry: false, timedOut: false, lost: false, steps: [step] };
     const p = at(story.client, LEVEL.eth);
     // A page in parts carries on from what has landed so far, whether those parts came as a stream or one by one.
-    const { packets, waits } = planFlow(traffic, t, story, knocks, linkPace, cues, reactions, TRAFFIC_HOP, notes, { ...(cutShort ?? { ...newFlow(), filled }), queued: true });
+    const { packets, waits } = planFlow(traffic, t, story, knocks, linkPace, cues, reactions, TRAFFIC_HOP, notes, { ...(cutShort ?? { ...newFlow(), filled }), queued: true, dropped: Number.isFinite(mix) ? mix : 0 });
     const end = Math.max(t, ...packets.map((x) => x.t1), ...waits.map((w) => w.t1));
     segs.push({ step, trip, t0: t, t1: end, p0: p, p1: p, flow: packets, waits });
     t = end + (notes.length ? NOTE_LIFE : 0.5);
     // A page in parts has its own moment on the sheet. Any other is in when its last packet is.
     for (const client of story.fetched) {
-      const done = packets.filter((x) => x.trip.client === client && x.trip.chapter === 'page' && !x.trip.outward && !x.trip.lost).at(-1);
+      const done = packets.filter((x) => x.trip.client === client && x.trip.chapter === 'page' && !x.trip.outward && !x.trip.lost && x.trip.dataBytes > 0).at(-1);
       if (!done || done.trip.part) continue;
       pages.set(client, done.t1);
       reactions.push({ t: done.t1, device: client, face: 'love' });
@@ -435,7 +437,8 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   const readout = buildReadout(story, times, t);
   const joinReadout = buildReadout(story, times, t, true);
   // The stranger reads a frame as it goes by, a quarter of the way along, like a spyglass.
-  const heardAt = new Map(crossings({ segs }).filter((c) => c.link === 'wlan').map((c) => [c.trip.packetId, c.t0 + (c.t1 - c.t0) * 0.25]));
+  const heardAt = new Map<string, number>();
+  for (const c of crossings({ segs })) if (c.link === 'wlan' && !heardAt.has(c.trip.packetId)) heardAt.set(c.trip.packetId, c.t0 + (c.t1 - c.t0) * 0.25);
   const attackReadouts = [
     ...(story.listener ? [{ device: story.listener, readout: listenReadout(story, heardAt, t) }] : []),
     ...(story.scan ? [{ device: story.scan.device, readout: scanReadout(story.scan, times, t) }] : []),
@@ -518,8 +521,10 @@ interface FlowState {
   onCable: Map<string, number[]>;
   /** Blocks of different jobs take turns on a cable. One job's already keep their distance. */
   queued: boolean;
+  /** The visual second a card was dropped in: nothing of its job goes before that, also when the traffic began earlier. */
+  dropped: number;
 }
-const newFlow = (): FlowState => ({ heard: [], lastSent: new Map(), filled: new Set(), sent: new Map(), expected: new Map(), puzzled: false, onCable: new Map(), queued: false });
+const newFlow = (): FlowState => ({ heard: [], lastSent: new Map(), filled: new Set(), sent: new Map(), expected: new Map(), puzzled: false, onCable: new Map(), queued: false, dropped: 0 });
 
 /**
  * The first moment from `wanted` on with a free place on this cable. A block takes any gap rather than going to the back of
@@ -643,7 +648,7 @@ function planFlow(
   for (const trip of packets) {
     const sender = `${trip.client}|${trip.origin}`;
     const chain = trip.chapter === 'call' ? sender : trip.client;
-    let t = Math.max(from, (lastSent.get(sender) ?? -Infinity) + FLOW_GAP);
+    let t = Math.max(from, (lastSent.get(sender) ?? -Infinity) + FLOW_GAP, trip.client === story.joiner ? state.dropped : -Infinity);
     // In a call each side's first word still waits for what it answers (the friend speaks only once called); after that
     // a side talks on its own clock. An attacker's junk and knocks answer nothing either, and go at their own pace.
     const ownClock = trip.chapter === 'call' ? trip.part?.n !== 1 : trip.chapter === 'attack' && trip.outward && !trip.l4Label.includes('RST');
@@ -666,6 +671,7 @@ function planFlow(
  */
 function arrivalFace(trip: Trip, device: string, arrived: Set<string>, filled: Set<number>): Face | null {
   if (trip.quiet) return null;
+  if (trip.l4Label.includes('RST')) return 'confused';
   // The same words from someone else are news: each router says "TTL ran out".
   const key = `${device}|${trip.chapter}|${trip.from}|${trip.card ?? trip.l4Label}|${trip.part?.n ?? 0}`;
   if (arrived.has(key)) return 'confused';

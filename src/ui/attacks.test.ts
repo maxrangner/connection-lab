@@ -51,8 +51,33 @@ describe('the scanner', () => {
 
   it('finds the open doors: a real SYN-ACK from those, a real reset from the rest', () => {
     const { s } = run(scan);
-    const found = Object.fromEntries(s.scan!.ports.map((p) => [p.port, p.open]));
-    expect(found).toEqual({ 21: false, 22: true, 23: false, 25: false, 80: true, 443: true, 3306: false, 8080: false });
+    const found = Object.fromEntries(s.scan!.ports.map((p) => [p.port, p.answer]));
+    expect(found).toEqual({ 21: 'closed', 22: 'open', 23: 'closed', 25: 'closed', 80: 'open', 443: 'open', 3306: 'closed', 8080: 'closed' });
+  });
+
+  it('counts a door once, and owns up to the ports that never answered', () => {
+    for (const seed of [1, 2, 3]) {
+      for (const https of [false, true]) {
+        const s = buildStory(runScenario(fetchWebPage({ attacks: ['flood', 'scan'], https }), { seed, faults: CLEAN, maxTime: 1000 }));
+        const tl = buildTimeline(s);
+        const lines = tl.attackReadouts.find((x) => x.device === 'scanner')!.readout.screens.at(-1)!.lines;
+        const rows = lines.slice(1, -1);
+        expect(rows).toHaveLength(8);
+        expect(new Set(rows.map((l) => l.split(' ')[0])).size).toBe(8);
+        expect(lines.at(-1)).toBe(`${rows.filter((l) => l.endsWith('open')).length} doors open`);
+      }
+    }
+    const silent = run({ attacks: ['flood', 'scan'] });
+    expect(silent.s.scan!.ports.some((p) => p.answer === null)).toBe(true);
+    expect(printed({ ...silent.tl, attackReadouts: silent.tl.attackReadouts.filter((x) => x.device === 'scanner') })).toContain('25    no answer');
+  });
+
+  it('with its cable cut it heard nothing, and says so', () => {
+    const r = runScenario(fetchWebPage({ attacks: ['scan'] }), { seed: 1, faults: { ...CLEAN, cuts: [{ link: 'scanner-link', from: 0 }] }, maxTime: 1000 });
+    const s = buildStory(r);
+    const lines = buildTimeline(s).attackReadouts[0]!.readout.screens.at(-1)!.lines;
+    expect(lines.filter((l) => l.endsWith('no answer'))).toHaveLength(8);
+    expect(lines.at(-1)).toBe('0 doors open');
   });
 
   it('prints each port and sums up', () => {
@@ -118,6 +143,29 @@ describe('the botnet', () => {
   });
 });
 
+describe('a connection the other side has forgotten', () => {
+  /** The cable to the ISP dies after the hello's first two packets, stays dead until the server has given up, and is mended. */
+  const forgotten = (): SimResult => {
+    const clear = sim({});
+    const synAck = [...clear.packets.values()].find((p) => p.label.includes('SYN-ACK') || (p.tcp && (p.tcp.flags & 0x12) === 0x12))!;
+    const back = clear.events.find((e) => e.type === 'rx' && e.packetId === synAck.id && e.deviceId === 'laptop')!;
+    return runScenario(fetchWebPage({}), { seed: 1, faults: { ...CLEAN, cuts: [{ link: 'wan', from: back.t, to: 100 }] }, maxTime: 1000 });
+  };
+
+  it('resets the client when it speaks up again, and the browser hears why', () => {
+    const r = forgotten();
+    expect(r.events.some((e) => e.type === 'app' && e.action === 'error' && e.deviceId === 'laptop' && e.info?.reason === 'connection reset')).toBe(true);
+  });
+
+  it('the run ends with a reason: the reset is told, and the device gives up', () => {
+    const s = buildStory(forgotten());
+    const tl = buildTimeline(s);
+    expect(s.trips.some((t) => t.l4Label.includes('RST') && t.origin === 'server')).toBe(true);
+    expect(tl.segs.some((x) => x.step.kind === 'wait' && x.step.giveUp && x.step.device === 'laptop')).toBe(true);
+    expect(s.pageTitle).toBeNull();
+  });
+});
+
 describe('attackers together', () => {
   it('any mix of them, with any job, runs without losing a packet', () => {
     const sets: Attack[][] = [['listen'], ['flood'], ['scan'], ['listen', 'flood'], ['listen', 'scan'], ['flood', 'scan'], ['listen', 'flood', 'scan']];
@@ -141,6 +189,34 @@ describe('attackers together', () => {
     expect(s.clients).toEqual(['laptop', 'scanner', 'phone']);
     expect(s.joinProbe?.kind).toBe('ping');
     expect(s.trips.flatMap(everyPacket).filter((t) => t.chapter === 'ping').every((t) => t.client === 'phone')).toBe(true);
+  });
+
+  it('a card dropped in during an attack starts then, and what was on screen stays', () => {
+    const shown = (tl: Timeline, v: number): string[] => crossings(tl).filter((c) => c.t0 < v).map((c) => `${c.trip.packetId}@${c.link} ${c.t0.toFixed(6)} ${c.t1.toFixed(6)}`);
+    for (const attacks of [['flood'], ['scan'], ['flood', 'scan']] as Attack[][]) {
+      for (const job of Object.keys(JOBS) as Job[]) {
+        for (const share of [0.1, 0.4, 0.8]) {
+          const before = run({ attacks }).tl;
+          const v = before.total * share;
+          const s = buildStory(sim({ attacks, join: { job, at: joinAt(before, v) } }));
+          const after = buildTimeline(s, new Map(), 0, v);
+          const blocks = after.segs.find((x) => x.trip.chapter === 'traffic')!.flow!;
+          const what = `${job} into ${attacks} at ${share}`;
+          expect(Math.min(...blocks.filter((p) => p.trip.client === 'phone').map((p) => p.t0)), what).toBeGreaterThanOrEqual(v);
+          expect(shown(after, v), what).toEqual(shown(before, v));
+        }
+      }
+    }
+  }, 120_000);
+
+  it('a stranger with noisy Wi-Fi hears a frame the first time it goes by', () => {
+    const { s, tl } = run({ from: 'phone', noise: 0.4, attacks: ['listen'] });
+    const first = new Map<string, number>();
+    for (const c of crossings(tl)) if (c.link === 'wlan' && !first.has(c.trip.packetId)) first.set(c.trip.packetId, c.t0);
+    const times = tl.attackReadouts[0]!.readout.screens.slice(1).map((x) => x.t);
+    expect(times).toEqual([...times].sort((a, b) => a - b));
+    const earliest = Math.min(...s.heard.filter((h) => h.seen.kind !== 'empty' && first.has(h.packetId)).map((h) => first.get(h.packetId)!));
+    expect(times[0]! - earliest).toBeLessThan(2);
   });
 
   it('nothing changes without them', () => {

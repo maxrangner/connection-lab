@@ -105,17 +105,17 @@ export function listenReadout(story: Story, heardAt: ReadonlyMap<string, number>
   return { screens, flags: [] };
 }
 
-/** A port scan's report: each port as its answer comes in, and a last line on what is open. */
+/** A port scan's report: each port as its answer comes in, those that never answered at the end, and what is open. */
 export function scanReadout(scan: Scan, timing: Timing, total: number): Readout {
   const title = `port scan of ${scan.to}`;
   const rows: string[] = [];
   const screens: Readout['screens'] = [{ t: 0, lines: [title] }];
   const answers = scan.ports.map((p) => ({ ...p, t: timing.get(p.packetId)?.t1 ?? total }));
   for (const p of answers.sort((a, b) => a.t - b.t)) {
-    rows.push(`${String(p.port).padEnd(6)}${p.open ? 'open' : 'closed'}`);
+    rows.push(`${String(p.port).padEnd(6)}${p.answer ?? 'no answer'}`);
     screens.push({ t: p.t, lines: [title, ...rows] });
   }
-  if (rows.length) screens[screens.length - 1]!.lines.push(`${answers.filter((p) => p.open).length} doors open`);
+  screens[screens.length - 1]!.lines.push(`${answers.filter((p) => p.answer === 'open').length} doors open`);
   return { screens, flags: [] };
 }
 

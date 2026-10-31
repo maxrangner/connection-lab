@@ -6,6 +6,7 @@ import { HexCard } from './hexCard';
 import { drawDoor, drawEar, drawHandset, drawHush, drawPadlock, drawPage, drawPing, drawPipe, drawQuestion, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawSwarm, drawTag, drawTrace } from './icons';
 import { Menu } from './menus';
 import { NetworkScene, type Camera } from './NetworkScene';
+import { screenAt } from './readout';
 import { Sound } from './sound';
 import { SpyCard } from './spyCard';
 import { buildStory, type Chapter, type PartKey, type Story } from './story';
@@ -439,6 +440,7 @@ for (const menu of menus) {
 }
 const placeMenus = (): void => {
   for (const menu of menus) menu.place();
+  heardCard.style.bottom = `${window.innerHeight - controls.getBoundingClientRect().top + 8}px`;
   spyCard.place(controls);
 };
 const soundBtn = button('♪', 'Mute', () => {
@@ -520,32 +522,44 @@ function joinIn(job: Wanted): void {
   sound.play('pop');
 }
 
+/** A card that is dragged from a button: however the drag ends, the card is let go. */
+function dragFrom(b: HTMLButtonElement, press: (e: PointerEvent) => void, move: (e: PointerEvent) => void, letGo: () => void): void {
+  b.addEventListener('pointerdown', (e) => {
+    b.setPointerCapture(e.pointerId);
+    press(e);
+  });
+  b.addEventListener('pointermove', move);
+  b.addEventListener('pointerup', letGo);
+  b.addEventListener('pointercancel', letGo);
+  b.addEventListener('lostpointercapture', letGo);
+}
+
 for (const w of WANTED) {
   const b = document.createElement('button');
   b.className = 'dock-card';
   b.setAttribute('aria-label', `Drag ${DOCK_ICONS[w].name} onto the other device`);
   b.appendChild(dockIcon(w));
-  const letGo = (): void => {
-    if (!holding) return;
-    const landed = overFree() && mode === 'play' && !joined;
-    holding = null;
-    if (landed) joinIn(w);
-  };
-  b.addEventListener('pointerdown', (e) => {
-    holding = { x: e.clientX, y: e.clientY };
-    b.setPointerCapture(e.pointerId);
-    dockGhost.replaceChildren(dockIcon(w));
-  });
-  b.addEventListener('pointermove', (e) => {
-    if (holding) holding = { x: e.clientX, y: e.clientY };
-  });
-  b.addEventListener('pointerup', letGo);
-  b.addEventListener('pointercancel', letGo);
-  b.addEventListener('lostpointercapture', letGo);
+  dragFrom(
+    b,
+    (e) => {
+      holding = { x: e.clientX, y: e.clientY };
+      dockGhost.replaceChildren(dockIcon(w));
+    },
+    (e) => {
+      if (holding) holding = { x: e.clientX, y: e.clientY };
+    },
+    () => {
+      if (!holding) return;
+      const landed = overFree() && mode === 'play' && !joined;
+      holding = null;
+      if (landed) joinIn(w);
+    },
+  );
   dock.appendChild(b);
 }
 
 /** The red cards: each puts an attacker on the table. */
+const ATTACK_LINKS: Record<Attack, string[]> = { listen: [], flood: ['bot1-link', 'bot2-link', 'bot3-link'], scan: ['scanner-link'] };
 const ATTACKS: { id: Attack; name: string; draw: (g: SVGGElement) => void }[] = [
   { id: 'listen', name: 'Stranger', draw: drawEar },
   { id: 'flood', name: 'Botnet', draw: drawSwarm },
@@ -556,6 +570,11 @@ const attackIcon = (draw: (g: SVGGElement) => void): SVGSVGElement => {
   draw(el('g', { transform: 'scale(0.42)' }, icon));
   return icon;
 };
+/** What the stranger has read off the air so far, just above the bar wherever the camera goes. */
+const heardCard = document.createElement('div');
+heardCard.className = 'heard-card';
+heardCard.hidden = true;
+root.appendChild(heardCard);
 /** A red card in hand, and how far it has come: a press that goes nowhere is a tap. */
 let redHeld: { x: number; y: number; moved: boolean } | null = null;
 const attackDock = document.createElement('div');
@@ -564,36 +583,44 @@ root.appendChild(attackDock);
 function setAttack(id: Attack, on: boolean): void {
   if (on) attacks.add(id);
   else attacks.delete(id);
+  // Its cables go with it.
+  if (!on) {
+    for (const l of ATTACK_LINKS[id]) clearLine(l);
+    if (spyLine && ATTACK_LINKS[id].includes(spyLine)) setSpyLine(null);
+  }
   preview();
   sound.play(on ? 'pop' : 'thud');
 }
 const attackCards = ATTACKS.map(({ id, name, draw }) => {
   const b = document.createElement('button');
   b.className = 'attack-card';
-  b.setAttribute('aria-label', `${name}: drag into the field, tap to take it away`);
+  b.setAttribute('aria-label', `${name}: drag into the field or press Enter, and tap or press it again to take it away`);
   b.append(attackIcon(draw), Object.assign(document.createElement('span'), { textContent: name }));
   let from = { x: 0, y: 0 };
-  const letGo = (): void => {
-    const held = redHeld;
-    redHeld = null;
-    if (!held || !canSetUp()) return;
-    const bar = controls.getBoundingClientRect().top;
-    const dock = attackDock.getBoundingClientRect();
-    const onField = held.y < bar && held.x < dock.left;
-    if (held.moved ? onField && !attacks.has(id) : attacks.has(id)) setAttack(id, !attacks.has(id));
-  };
-  b.addEventListener('pointerdown', (e) => {
-    from = { x: e.clientX, y: e.clientY };
-    redHeld = { ...from, moved: false };
-    b.setPointerCapture(e.pointerId);
-    dockGhost.replaceChildren(attackIcon(draw));
+  dragFrom(
+    b,
+    (e) => {
+      from = { x: e.clientX, y: e.clientY };
+      redHeld = { ...from, moved: false };
+      dockGhost.replaceChildren(attackIcon(draw));
+    },
+    (e) => {
+      if (redHeld) redHeld = { x: e.clientX, y: e.clientY, moved: redHeld.moved || Math.hypot(e.clientX - from.x, e.clientY - from.y) > 12 };
+    },
+    () => {
+      const held = redHeld;
+      redHeld = null;
+      if (!held || !canSetUp()) return;
+      const bar = controls.getBoundingClientRect().top;
+      const dock = attackDock.getBoundingClientRect();
+      const onField = held.y < bar && held.x < dock.left;
+      if (held.moved ? onField && !attacks.has(id) : attacks.has(id)) setAttack(id, !attacks.has(id));
+    },
+  );
+  // Enter or Space, which no finger pressed: the card goes on the table or comes off it.
+  b.addEventListener('click', (e) => {
+    if (e.detail === 0 && canSetUp()) setAttack(id, !attacks.has(id));
   });
-  b.addEventListener('pointermove', (e) => {
-    if (redHeld) redHeld = { x: e.clientX, y: e.clientY, moved: redHeld.moved || Math.hypot(e.clientX - from.x, e.clientY - from.y) > 12 };
-  });
-  b.addEventListener('pointerup', letGo);
-  b.addEventListener('pointercancel', letGo);
-  b.addEventListener('lostpointercapture', letGo);
   attackDock.appendChild(b);
   return { id, b };
 });
@@ -1090,7 +1117,7 @@ function frame(now: number): void {
   // The camera eases between the whole network (between runs) and a close follow of the packet,
   // unless the viewer has taken it over. A card in hand needs the whole network, and so does more than one job at a time.
   if (!camFree || holding) {
-    const wide = !!holding || (mode === 'play' && (!!joined || attacks.size > 0) && !segAt(tl, v)?.seg.flow);
+    const wide = !!holding || (mode === 'play' && (!!joined || story.attackers.length > 0) && !segAt(tl, v)?.seg.flow);
     const target = mode === 'play' && !wide ? scene.followCamera(v) : showAll || wide || attacks.size ? scene.wholeCamera() : scene.overviewCamera();
     const ease = snapCamera ? 1 : Math.min(1, dt * (seek ? 6 : 3.5));
     cam = { cx: lerp(cam.cx, target.cx, ease), cy: lerp(cam.cy, target.cy, ease), scale: lerp(cam.scale, target.scale, ease) };
@@ -1099,6 +1126,10 @@ function frame(now: number): void {
   scene.applyCamera(cam);
 
   const shown = mode === 'play' ? v : idleV;
+  const heard = tl.attackReadouts.find((x) => x.device === story.listener);
+  const heardLines = heard && shown >= 0 ? screenAt(heard.readout, shown) : null;
+  heardCard.hidden = !heardLines;
+  if (heardLines) setText(heardCard, heardLines.join('\n'));
   scene.render(shown);
   scene.drawPacket(shown, peek, pill && pillOpen > 0.02 ? { key: pill, k: pillOpen } : null);
   spyCard.update(spyLine ? spyLog(tl, spyLine, shown, spyFrom) : []);

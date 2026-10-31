@@ -148,8 +148,6 @@ export interface Trip {
   audio?: Uint8Array;
   /** A traceroute probe: the TTL it set out with, which is how many hops it may go. */
   probeTtl?: number;
-  /** A port scan's knock: the port it tries. */
-  port?: number;
 }
 
 /** A frame the stranger picked out of the air, and what it could read of it. */
@@ -163,7 +161,8 @@ export interface Scan {
   device: string;
   /** The address it scanned. */
   to: string;
-  ports: { port: number; open: boolean; packetId: string }[];
+  /** Every port it tried. No answer may mean anything: the door is walled up, or the knock or the answer was lost. */
+  ports: { port: number; answer: 'open' | 'closed' | null; packetId: string }[];
 }
 
 /** What ping or traceroute found out, from the app's own events: the replies with their round trips, or the hops. */
@@ -409,7 +408,7 @@ function messageOf(app: LayerPdu | undefined): Message | undefined {
  * Which packets the story follows, and which of them end a hello. ARP only when asked for: it is the first thing on the
  * cable, and the dullest. Pings, probes and the ICMP answers to them are the whole point of a probe run.
  */
-function chosen(r: SimResult, arp: boolean, attacking: number): { packets: PacketInfo[]; hellos: Set<string> } {
+function chosen(r: SimResult, arp: boolean): { packets: PacketInfo[]; hellos: Set<string> } {
   const packets: PacketInfo[] = [];
   const hellos = new Set<string>();
   const helloAckFrom = new Set<string>();
@@ -423,9 +422,8 @@ function chosen(r: SimResult, arp: boolean, attacking: number): { packets: Packe
     if (p.kind !== 'tcp' || !p.tcp) continue;
     const { flags, len } = p.tcp;
     if (flags & TCP_FIN) continue;
-    // A reset is the whole answer a port scan gets. Anywhere else it is a late straggler.
-    const scanned = (flags & TCP_RST) !== 0 && p.job >= 1 && p.job <= attacking;
-    if (flags & TCP_SYN || len > 0 || scanned) {
+    // A reset is the whole answer a port scan gets, and what ends a connection the other side has forgotten.
+    if (flags & TCP_SYN || flags & TCP_RST || len > 0) {
       packets.push(p);
       continue;
     }
@@ -620,12 +618,11 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
   const client = clients[p.job]!;
   const tracing = r.scenario.devices.find((d) => d.id === client)?.apps.some((a) => a.kind === 'traceroute');
   // Echoes are ping's; probes, and the errors they provoke, traceroute's (an error in a ping run is ping's too).
-  const chapter: Chapter = attackers.includes(client) ? 'attack' : arp ? 'arp' : p.kind === 'dhcp' ? 'address' : p.kind === 'dns' ? 'dns' : p.kind === 'rtp' ? 'call' : p.kind === 'probe' ? 'trace' : icmp ? (icmp.summary.startsWith('ICMP echo') || !tracing ? 'ping' : 'trace') : dataBytes > 0 ? 'page' : 'hello';
+  const chapter: Chapter = attackers.includes(client) ? 'attack' : arp ? 'arp' : p.kind === 'dhcp' ? 'address' : p.kind === 'dns' ? 'dns' : p.kind === 'rtp' ? 'call' : p.kind === 'probe' ? 'trace' : icmp ? (icmp.summary.startsWith('ICMP echo') || !tracing ? 'ping' : 'trace') : dataBytes > 0 || flags & TCP_RST ? 'page' : 'hello';
   return {
     packetId: p.id,
     chapter,
     ...(probeTtl !== undefined ? { probeTtl } : {}),
-    ...(chapter === 'attack' && isTcp ? { port: parseInt(field(l4, 'tcp.dstport'), 10) } : {}),
     start: p.createdAt,
     sent: firstTx?.at ?? p.createdAt,
     origin,
@@ -772,7 +769,12 @@ function heardOf(r: SimResult): Heard[] {
 function scanOf(r: SimResult): Scan | undefined {
   const start = r.events.find((e) => e.type === 'app' && e.action === 'scan-start');
   if (start?.type !== 'app') return undefined;
-  const ports = r.events.flatMap((e) => (e.type === 'app' && e.action === 'scan-port' ? [{ port: Number(e.info?.port), open: e.info?.open === 1, packetId: r.pdus.get(e.pduId ?? '')?.packetId ?? '' }] : []));
+  const answers = new Map(r.events.flatMap((e) => (e.type === 'app' && e.action === 'scan-port' ? [[Number(e.info?.port), e] as const] : [])));
+  const tried = Array.isArray(start.info?.ports) ? start.info.ports.map(Number) : [];
+  const ports = tried.map((port) => {
+    const e = answers.get(port);
+    return { port, answer: e ? (e.info?.open === 1 ? ('open' as const) : ('closed' as const)) : null, packetId: r.pdus.get(e?.pduId ?? '')?.packetId ?? '' };
+  });
   return { device: start.deviceId, to: String(start.info?.to ?? ''), ports };
 }
 
@@ -789,7 +791,7 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
   const clients = [client, ...attackers, ...(joiner ? [joiner] : [])];
   const listener = r.scenario.links.find((l) => l.overheardBy)?.overheardBy;
   const scan = scanOf(r);
-  const { packets, hellos } = chosen(r, !!opts.arp, attackers.length);
+  const { packets, hellos } = chosen(r, !!opts.arp);
   const trips = packets
     .map((p) => trip(r, p, asked, clients, attackers))
     .filter((t): t is Trip => !!t)
@@ -963,7 +965,7 @@ function addLookups(trips: Trip[], title: string | null): void {
  * fetching alongside gets the plain one-packet page.
  */
 function numberParts(trips: Trip[], r: SimResult, client: string): void {
-  const parts = trips.filter((t) => t.chapter === 'page' && !t.outward && t.client === client);
+  const parts = trips.filter((t) => t.chapter === 'page' && !t.outward && t.client === client && t.dataBytes > 0);
   const seqOf = (t: Trip): number => r.packets.get(t.packetId)?.tcp?.relSeq ?? 0;
   const seqs = [...new Set(parts.map(seqOf))].sort((a, b) => a - b);
   if (streams(r) && seqs.length) {

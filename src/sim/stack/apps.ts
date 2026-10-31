@@ -623,8 +623,11 @@ export function startPortScan(host: Host, spec: Extract<AppSpec, { kind: 'port-s
   const sim = host.sim;
   sim.emit({ type: 'app', deviceId: host.id, app: 'port-scan', action: 'scan-start', info: { to: spec.to, ports: spec.ports.map(String) } });
   const port = host.ephemeralPort();
+  const heard = new Set<number>();
   host.tcpWatcher = (from, seg, pduId) => {
-    if (from !== spec.to || seg.dstPort !== port) return;
+    // A door that was reset late says the same thing again: it is only news once.
+    if (from !== spec.to || seg.dstPort !== port || heard.has(seg.srcPort)) return;
+    heard.add(seg.srcPort);
     sim.emit({ type: 'app', deviceId: host.id, app: 'port-scan', action: 'scan-port', pduId, info: { port: seg.srcPort, open: seg.flags & TCP_SYN ? 1 : 0 } });
   };
   spec.ports.forEach((dst, i) => {
