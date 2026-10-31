@@ -20,6 +20,9 @@ export type DropReason =
   | 'fault' // lost in transit (user or random fault injection)
   | 'cut' // the cable it was sent on has been cut
   | 'queue-full' // the port's transmit buffer had no room left (tail drop); it never reached the cable
+  | 'interference' // a Wi-Fi frame (data or Ack) arrived damaged by noise on the air: the receiver throws it away
+  | 'duplicate-frame' // a Wi-Fi frame sent again after its Ack was lost: the receiver already has this sequence number
+  | 'retry-limit' // the Wi-Fi sender tried the frame dot11ShortRetryLimit times with no Ack and gives up; upper layers never hear of it
   | 'not-for-me' // destination MAC/IP does not match
   | 'bad-checksum'
   | 'ttl-expired'
@@ -88,6 +91,14 @@ export type SimEventPayload =
    */
   | { type: 'queue'; deviceId: string; iface: string; linkId: string; packetId: string; frameId: string; depth: number; wait: number }
   | { type: 'tx'; linkId: string; fromDevice: string; fromIface: string; toDevice: string; toIface: string; packetId: string; frameId: string; start: number; txEnd: number; arrive: number; wireBytes: number }
+  /**
+   * Wi-Fi on a noisy link: no Ack came within the Ack timeout, so the sender sends the same frame again (`frameId` is the
+   * new copy, with the Retry bit set) after `backoff` seconds (slot × a random count up to the contention window); `attempt`
+   * counts the retries, 1 first.
+   */
+  | { type: 'wifi:retry'; deviceId: string; linkId: string; packetId: string; frameId: string; attempt: number; backoff: number }
+  /** Wi-Fi on a noisy link: the sender heard the Ack for its frame (`frameId`: the copy that was acknowledged). */
+  | { type: 'wifi:ack'; deviceId: string; linkId: string; packetId: string; frameId: string }
   | { type: 'rx'; deviceId: string; iface: string; linkId: string; packetId: string; frameId: string }
   | { type: 'drop'; packetId: string; reason: DropReason; deviceId?: string; linkId?: string; frameId?: string }
   | { type: 'timer:set'; deviceId: string; timerId: string; kind: TimerKind; fireAt: number; connId?: string }

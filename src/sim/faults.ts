@@ -46,3 +46,17 @@ export function shouldDrop(plan: FaultPlan, seed: number, linkId: string, packet
   if (plan.lossyLinks && !plan.lossyLinks.includes(linkId)) return false;
   return hash32(`${linkId}|${packetId}`, seed ^ 0x5eed) / 4294967296 < plan.randomLoss;
 }
+
+/**
+ * Lost to interference on a noisy radio (`LinkSpec.noise`): keyed by (seed, link, packet, attempt), so every try of the
+ * same frame rolls its own dice and turning noise on never changes what happened before the first loss.
+ */
+export function lostToNoise(seed: number, linkId: string, packetId: string, attempt: number, noise: number): boolean {
+  if (noise <= 0) return false;
+  return hash32(`${linkId}|${packetId}|${attempt}|noise`, seed ^ 0x5eed) / 4294967296 < noise;
+}
+
+/** How many slots a Wi-Fi sender backs off before retry `attempt` of a frame: a hash-keyed draw from 0..cw, for the same reason. */
+export function backoffSlots(seed: number, linkId: string, packetId: string, attempt: number, cw: number): number {
+  return hash32(`${linkId}|${packetId}|${attempt}|backoff`, seed ^ 0x5eed) % (cw + 1);
+}
