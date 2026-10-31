@@ -116,6 +116,8 @@ export class Link {
         arrive,
         wireBytes,
       });
+      const ear = this.spec.overheardBy && this.world.devices.get(this.spec.overheardBy);
+      if (ear) sim.at(arrive, () => ear.overhear(frame, frameId));
       if (shouldDrop(this.world.faults, this.world.seed, this.spec.id, packetId, start)) {
         sim.at(start + (arrive - start) / 2, () =>
           sim.emit({ type: 'drop', packetId, reason: isCut(this.world.faults, this.spec.id, start) ? 'cut' : 'fault', linkId: this.spec.id, frameId }),

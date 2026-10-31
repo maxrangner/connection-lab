@@ -5,6 +5,7 @@ import {
   sessionStream,
   TCP_ACK,
   TCP_FIN,
+  TCP_RST,
   TCP_SYN,
   TLS_ALERT,
   TLS_APPLICATION_DATA,
@@ -55,7 +56,7 @@ export interface Frame {
   head: number;
   tail: number;
 }
-export type Chapter = 'address' | 'arp' | 'dns' | 'hello' | 'secret' | 'page' | 'call' | 'ping' | 'trace' | 'traffic';
+export type Chapter = 'address' | 'arp' | 'dns' | 'hello' | 'secret' | 'page' | 'call' | 'ping' | 'trace' | 'traffic' | 'attack';
 
 /** One piece of a packet, by where it sits. */
 export type PartKey = 'ethH' | 'vpn' | 'ip' | 'l4' | 'card' | 'ethT';
@@ -147,6 +148,22 @@ export interface Trip {
   audio?: Uint8Array;
   /** A traceroute probe: the TTL it set out with, which is how many hops it may go. */
   probeTtl?: number;
+  /** A port scan's knock: the port it tries. */
+  port?: number;
+}
+
+/** A frame the stranger picked out of the air, and what it could read of it. */
+export interface Heard {
+  packetId: string;
+  seen: Seen;
+}
+
+/** What a port scan found, from its own events. */
+export interface Scan {
+  device: string;
+  /** The address it scanned. */
+  to: string;
+  ports: { port: number; open: boolean; packetId: string }[];
 }
 
 /** What ping or traceroute found out, from the app's own events: the replies with their round trips, or the hops. */
@@ -180,8 +197,16 @@ export interface Story {
   site: string;
   /** The device the page is opened on (laptop or phone). */
   client: string;
-  /** Every device fetching something this run: the client first, then the one that joined in. */
+  /** Every device with a job this run, in the order of their job numbers: the client, the attackers, the one that joined in. */
   clients: string[];
+  /** The device whose card was dropped in during the run, if one was. */
+  joiner?: string;
+  /** The attackers sending packets this run. Whatever they send runs alongside the rest from the start. */
+  attackers: string[];
+  /** The stranger by the Wi-Fi, who only hears, and what it heard. */
+  listener?: string;
+  heard: Heard[];
+  scan?: Scan;
   /** The devices whose browser got what it asked for. */
   fetched: string[];
   /** What each of those devices shows. */
@@ -321,6 +346,7 @@ function seenOn(pdu: PduSnapshot | undefined, p: PacketInfo): Seen | undefined {
   // Plain RTP: anyone on the line could listen in.
   const rtp = layer(pdu, 'rtp');
   if (rtp) return { ...base, lines: [`voice, ${field(rtp, 'rtp.payload')}`], kind: 'open' };
+  if (p.kind === 'flood') return { ...base, lines: ['junk'], kind: 'open' };
   const icmp = layer(pdu, 'icmp');
   if (icmp) return { ...base, lines: [icmpCardLabel(icmp.summary)], kind: 'open' };
   const tls = layer(pdu, 'tls');
@@ -383,21 +409,23 @@ function messageOf(app: LayerPdu | undefined): Message | undefined {
  * Which packets the story follows, and which of them end a hello. ARP only when asked for: it is the first thing on the
  * cable, and the dullest. Pings, probes and the ICMP answers to them are the whole point of a probe run.
  */
-function chosen(r: SimResult, arp: boolean): { packets: PacketInfo[]; hellos: Set<string> } {
+function chosen(r: SimResult, arp: boolean, attacking: number): { packets: PacketInfo[]; hellos: Set<string> } {
   const packets: PacketInfo[] = [];
   const hellos = new Set<string>();
   const helloAckFrom = new Set<string>();
   for (const p of r.packets.values()) {
     // A Wi-Fi Ack is the radio's own business: the frame it answers gets `acked` on its travel step instead.
     if (p.kind === 'wifi-ack') continue;
-    if (p.kind === 'dns' || p.kind === 'dhcp' || p.kind === 'rtp' || p.kind === 'icmp' || p.kind === 'probe' || (p.kind === 'arp' && arp)) {
+    if (p.kind === 'dns' || p.kind === 'dhcp' || p.kind === 'rtp' || p.kind === 'icmp' || p.kind === 'probe' || p.kind === 'flood' || (p.kind === 'arp' && arp)) {
       packets.push(p);
       continue;
     }
     if (p.kind !== 'tcp' || !p.tcp) continue;
     const { flags, len } = p.tcp;
     if (flags & TCP_FIN) continue;
-    if (flags & TCP_SYN || len > 0) {
+    // A reset is the whole answer a port scan gets. Anywhere else it is a late straggler.
+    const scanned = (flags & TCP_RST) !== 0 && p.job >= 1 && p.job <= attacking;
+    if (flags & TCP_SYN || len > 0 || scanned) {
       packets.push(p);
       continue;
     }
@@ -426,7 +454,7 @@ function answersFin(r: SimResult, ack: PacketInfo): boolean {
   return (ack.tcp?.relAck ?? 0) > Math.max(...other.map((q) => (q.tcp?.relSeq ?? 0) + (q.tcp?.len ?? 0)));
 }
 
-function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: string[]): Trip | null {
+function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: string[], attackers: string[]): Trip | null {
   const steps: Step[] = [];
   let frame: PduSnapshot | undefined;
   /** The packet as the sender first made it, before any VPN sealed it. */
@@ -569,7 +597,7 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
   const apps = r.scenario.devices.flatMap((d) => d.apps);
   const probeApp = apps.find((a) => a.kind === 'ping');
   const probeTtl = p.kind === 'probe' ? parseInt(field(ip, 'ipv4.ttl'), 10) : undefined;
-  const card = arp ? arpCardLabel(arp.summary) : icmp ? icmpCardLabel(icmp.summary, probeApp?.count) : probeTtl !== undefined ? `TTL ${probeTtl}` : dataBytes > 0 ? (app ? appCard(app) : 'data') : null;
+  const card = arp ? arpCardLabel(arp.summary) : icmp ? icmpCardLabel(icmp.summary, probeApp?.count) : probeTtl !== undefined ? `TTL ${probeTtl}` : p.kind === 'flood' ? 'junk' : dataBytes > 0 ? (app ? appCard(app) : 'data') : null;
   const isTcp = l4?.protocol === 'tcp';
   const origin = steps[0]!.kind === 'travel' || steps[0]!.kind === 'lost' ? (steps[0] as { from: string }).from : (steps[0] as { device: string }).device;
 
@@ -592,11 +620,12 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
   const client = clients[p.job]!;
   const tracing = r.scenario.devices.find((d) => d.id === client)?.apps.some((a) => a.kind === 'traceroute');
   // Echoes are ping's; probes, and the errors they provoke, traceroute's (an error in a ping run is ping's too).
-  const chapter: Chapter = arp ? 'arp' : p.kind === 'dhcp' ? 'address' : p.kind === 'dns' ? 'dns' : p.kind === 'rtp' ? 'call' : p.kind === 'probe' ? 'trace' : icmp ? (icmp.summary.startsWith('ICMP echo') || !tracing ? 'ping' : 'trace') : dataBytes > 0 ? 'page' : 'hello';
+  const chapter: Chapter = attackers.includes(client) ? 'attack' : arp ? 'arp' : p.kind === 'dhcp' ? 'address' : p.kind === 'dns' ? 'dns' : p.kind === 'rtp' ? 'call' : p.kind === 'probe' ? 'trace' : icmp ? (icmp.summary.startsWith('ICMP echo') || !tracing ? 'ping' : 'trace') : dataBytes > 0 ? 'page' : 'hello';
   return {
     packetId: p.id,
     chapter,
     ...(probeTtl !== undefined ? { probeTtl } : {}),
+    ...(chapter === 'attack' && isTcp ? { port: parseInt(field(l4, 'tcp.dstport'), 10) } : {}),
     start: p.createdAt,
     sent: firstTx?.at ?? p.createdAt,
     origin,
@@ -726,6 +755,27 @@ function screenOf(r: SimResult, device: string, job: number): Screenful {
   };
 }
 
+/** What the stranger heard: every frame on the air, read from its bytes as anyone without the keys would. */
+function heardOf(r: SimResult): Heard[] {
+  const heard = new Map<string, Heard>();
+  for (const e of r.events) {
+    if (e.type !== 'app' || e.action !== 'overheard' || !e.pduId) continue;
+    const pdu = r.pdus.get(e.pduId);
+    const p = pdu && r.packets.get(pdu.packetId);
+    const seen = p && seenOn(pdu, p);
+    if (seen && !heard.has(p.id)) heard.set(p.id, { packetId: p.id, seen });
+  }
+  return [...heard.values()];
+}
+
+/** What a port scan reported. */
+function scanOf(r: SimResult): Scan | undefined {
+  const start = r.events.find((e) => e.type === 'app' && e.action === 'scan-start');
+  if (start?.type !== 'app') return undefined;
+  const ports = r.events.flatMap((e) => (e.type === 'app' && e.action === 'scan-port' ? [{ port: Number(e.info?.port), open: e.info?.open === 1, packetId: r.pdus.get(e.pduId ?? '')?.packetId ?? '' }] : []));
+  return { device: start.deviceId, to: String(start.info?.to ?? ''), ports };
+}
+
 export interface StoryOptions {
   /** Follow the ARP exchange too (who has the router's address?), before the DNS question. */
   arp?: boolean;
@@ -734,10 +784,14 @@ export interface StoryOptions {
 export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
   const asked = new Map<string, number>();
   const client = r.scenario.startDevice;
-  const clients = [client, ...(r.scenario.companion ? [r.scenario.companion.device] : [])];
-  const { packets, hellos } = chosen(r, !!opts.arp);
+  const attackers = (r.scenario.attackers ?? []).map((a) => a.device);
+  const joiner = r.scenario.companion?.device;
+  const clients = [client, ...attackers, ...(joiner ? [joiner] : [])];
+  const listener = r.scenario.links.find((l) => l.overheardBy)?.overheardBy;
+  const scan = scanOf(r);
+  const { packets, hellos } = chosen(r, !!opts.arp, attackers.length);
   const trips = packets
-    .map((p) => trip(r, p, asked, clients))
+    .map((p) => trip(r, p, asked, clients, attackers))
     .filter((t): t is Trip => !!t)
     .sort((a, b) => a.sent - b.sent || a.start - b.start);
   for (const t of trips) if (hellos.has(t.packetId)) t.hello = true;
@@ -748,7 +802,7 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
   addLookups(trips, title);
   const voice = voiceOf(r, client);
   const probe = probeOf(r, client);
-  const joinProbe = clients[1] ? probeOf(r, clients[1]) : undefined;
+  const joinProbe = joiner ? probeOf(r, joiner) : undefined;
   // A job that joined in goes after the first job's own story: dropping a card must not change what was told before it.
   const own = trips.filter((t) => t.client === client);
   const gathered = gatherProbes(probe ? quickLookup(own) : own);
@@ -770,6 +824,11 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
     site: screens[client]!.site,
     client,
     clients,
+    ...(joiner ? { joiner } : {}),
+    attackers,
+    ...(listener ? { listener } : {}),
+    heard: heardOf(r),
+    ...(scan ? { scan } : {}),
     fetched: clients.filter((c) => r.events.some((e) => e.type === 'app' && e.action === 'http-response-received' && e.deviceId === c)),
     screens,
     vpn: r.scenario.devices.some((d) => d.tunnel),

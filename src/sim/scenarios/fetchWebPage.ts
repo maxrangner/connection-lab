@@ -1,5 +1,5 @@
 import { ascii, fromBase64 } from '../bytes/bytes';
-import type { AppSpec, DeviceSpec, LinkSpec, RouteSpec, Scenario } from '../model';
+import type { AppSpec, DeviceSpec, IfaceSpec, LinkSpec, RouteSpec, Scenario } from '../model';
 import { dnsAddresses, parseDns } from '../proto/dns';
 import { DNS_TRACES } from './dnsTraceCapture';
 import {
@@ -133,6 +133,8 @@ export interface FetchWebPageOptions {
    * Off (0, the default) the Wi-Fi is a perfect cable through the air and no Acks are sent.
    */
   noise?: number;
+  /** Attackers on the table. See `Attack`. */
+  attacks?: Attack[];
 }
 
 /**
@@ -146,6 +148,29 @@ export interface FetchWebPageOptions {
 export const THIN_QUEUE = 8;
 /** The DSL line's rate in bits per second. */
 export const THIN_BPS = 20e6;
+
+/**
+ * What a red card puts on the table.
+ * - `listen`: a stranger with a radio by the open Wi-Fi. It only hears; nothing it does can be noticed.
+ * - `flood`: a botnet sending junk at the web server until the port onto the server's line is full.
+ * - `scan`: a scanner trying the server's ports one after another.
+ */
+export type Attack = 'listen' | 'flood' | 'scan';
+
+/**
+ * The bots, and the junk each one sends: 36 packets of 1400 bytes, 60 ms apart, one bot just after the other. A flood is
+ * in full swing by the time anyone notices, so each opens with a burst that fills the port before the page gets there.
+ */
+const BOTS = 3;
+const FLOOD = { packets: 36, burst: 4, gap: 0.06, bytes: 1400, stagger: 0.02 };
+/**
+ * The server's line while it is under attack. An honest knob, like `THIN_QUEUE`: a real server's line is far faster and a
+ * real flood far bigger, by thousands of times in both, and only the ratio matters: the bots send twice what the line
+ * can carry. At this scale every packet is one that can be drawn.
+ */
+const FLOODED_LINE_BPS = 280e3;
+/** Ports a scan tries, and those the server has open besides its web server: the usual doors anyone knocks on. */
+const SCAN = { ports: [21, 22, 23, 25, 80, 443, 3306, 8080], open: [22, 443], gap: 0.01 };
 
 /** What a card asks a device to do. */
 export type Job = 'page' | 'photo' | 'call' | 'ping' | 'trace';
@@ -199,6 +224,31 @@ function nameServers(host: string): { devices: DeviceSpec[]; links: LinkSpec[]; 
   return { devices, links, routes, arp, answer: last && dnsAddresses(parseDns(fromBase64(last.response), 0))[0] };
 }
 
+/** A device on the far side of the internet, on its own cable into the ISP router, and what the ISP needs to reach it. */
+function outsider(n: number, id: string, label: string, kind: 'bot' | 'scanner', apps: AppSpec[]): { device: DeviceSpec; link: LinkSpec; port: IfaceSpec; route: RouteSpec; arp: [string, string] } {
+  // Public addresses from the documentation block the ISP's own links use.
+  const ip = `198.51.100.${100 + n}`;
+  const mac = `02:66:00:00:00:${n.toString(16).padStart(2, '0')}`;
+  const gateway = { ip: `198.51.100.${200 + n}`, mac: `00:1b:21:3a:4d:${n.toString(16).padStart(2, '0')}` };
+  return {
+    device: {
+      id,
+      label,
+      sublabel: ip,
+      kind,
+      layout: { x: 1040, y: 100 + n * 40 },
+      ifaces: [{ id: `${id}.eth0`, name: 'eth0', mac, ip, prefixLen: 32 }],
+      routes: [{ network: '0.0.0.0', prefixLen: 0, via: gateway.ip, iface: `${id}.eth0` }],
+      arp: { [gateway.ip]: gateway.mac },
+      apps,
+    },
+    link: { id: `${id}-link`, a: `isp.${id}`, b: `${id}.eth0`, bitsPerSecond: 1e9, delay: 0.005, label: 'Backbone · 1 Gbit/s · 5 ms', name: 'a backbone link' },
+    port: { id: `isp.${id}`, name: id, mac: gateway.mac, ip: gateway.ip, prefixLen: 30 },
+    route: { network: ip, prefixLen: 32, iface: `isp.${id}` },
+    arp: [ip, mac],
+  };
+}
+
 export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
   const mss = opts.mss ?? 1460;
   const site = SITES[opts.site ?? 'example.com'];
@@ -244,6 +294,12 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
   // The other device's job, on its own. The one server holds the addresses of the sites a card can ask for and serves
   // each by the Host header, as one server hosting several sites does.
   const other = from === 'phone' ? 'laptop' : 'phone';
+  const attacks = new Set(opts.attacks);
+  const bots = attacks.has('flood')
+    ? Array.from({ length: BOTS }, (_, i) => outsider(i + 1, `bot${i + 1}`, `Bot ${i + 1}`, 'bot', [{ kind: 'flood', to: server.ip, port: 80, packets: FLOOD.packets, burst: FLOOD.burst, gap: FLOOD.gap, bytes: FLOOD.bytes }]))
+    : [];
+  const scanner = attacks.has('scan') ? [outsider(BOTS + 1, 'scanner', 'Scanner', 'scanner', [{ kind: 'port-scan', to: server.ip, ports: SCAN.ports, gap: SCAN.gap }])] : [];
+  const outsiders = [...bots, ...scanner];
   const aliases = opts.join ? [CAPTURED_FROM_IP, PHOTO_IP].filter((ip) => ip !== server.ip) : [];
   const resolver = ADDR.resolver.ip;
   const jobs: Record<Job, () => AppSpec> = {
@@ -280,6 +336,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
     title: opts.call ? `Call ${ADDR.friend.name}` : opts.probe === 'ping' ? `Ping ${host}` : opts.probe === 'traceroute' ? `Trace the path to ${host}` : `Fetch ${url}`,
     startDevice: from,
     ...(opts.join ? { companion: { device: other, at: opts.join.at ?? COMPANION_DELAY } } : {}),
+    ...(outsiders.length ? { attackers: [...bots.map((b, i) => ({ device: b.device.id, at: i * FLOOD.stagger })), ...scanner.map((s) => ({ device: s.device.id, at: 0 }))] } : {}),
     tcp: { clientMss: opts.vpn ? Math.min(mss, 1380) : mss, serverMss: 1460 },
     devices: [
       {
@@ -352,12 +409,14 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           { id: 'isp.p2', name: 'peer2', mac: ADDR.ispToServer.mac, ip: ADDR.ispToServer.ip, prefixLen: 30 },
           { id: 'isp.p3', name: 'peer3', mac: ADDR.ispToVpn.mac, ip: ADDR.ispToVpn.ip, prefixLen: 30 },
           { id: 'isp.p4', name: 'peer4', mac: ADDR.ispToFriend.mac, ip: ADDR.ispToFriend.ip, prefixLen: 30 },
+          ...outsiders.map((o) => o.port),
         ],
         routes: [
           { network: '203.0.113.0', prefixLen: 24, iface: 'isp.cust' },
           { network: '1.1.1.0', prefixLen: 24, iface: 'isp.p1' },
           { network: ADDR.vpn.ip, prefixLen: 32, iface: 'isp.p3' },
           { network: ADDR.friend.ip, prefixLen: 32, iface: 'isp.p4' },
+          ...outsiders.map((o) => o.route),
           // Real Cloudflare prefixes containing example.com's addresses.
           { network: '104.16.0.0', prefixLen: 13, iface: 'isp.p2' },
           { network: '172.64.0.0', prefixLen: 13, iface: 'isp.p2' },
@@ -375,6 +434,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           [ADDR.friend.ip]: ADDR.friend.mac,
           [server.ip]: server.mac,
           ...Object.fromEntries(aliases.map((ip) => [ip, server.mac])),
+          ...Object.fromEntries(outsiders.map((o) => o.arp)),
         },
         apps: [],
       },
@@ -449,7 +509,9 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           { network: ADDR.vpn.ip, prefixLen: 32, iface: 'server.eth1' },
         ],
         arp: { [ADDR.ispToServer.ip]: ADDR.ispToServer.mac, [ADDR.vpn.ip]: ADDR.vpnToServer.mac },
+        ...(bots.length ? { icmpLimit: true } : {}),
         apps: [
+          ...(scanner.length ? SCAN.open.filter((port) => !(tls && port === 443)).map((port) => ({ kind: 'tcp-service' as const, port })) : []),
           {
             kind: 'http-server',
             processing: 0.0005,
@@ -472,10 +534,26 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
         arp: { [ADDR.ispToFriend.ip]: ADDR.ispToFriend.mac },
         apps: [{ kind: 'voice-peer', clip: fromBase64(VOICE_CLIP_FRIEND_BASE64), port: RTP_PORT }],
       },
+      ...outsiders.map((o) => o.device),
+      ...(attacks.has('listen')
+        ? [
+            {
+              // A radio with no connection to anything: it joins no network and sends nothing, it only hears.
+              id: 'stranger',
+              label: 'Stranger',
+              sublabel: 'listening',
+              kind: 'stranger' as const,
+              layout: { x: 800, y: 700 },
+              ifaces: [{ id: 'stranger.wlan0', name: 'wlan0', mac: '02:66:00:00:01:00', ip: '192.168.1.66', prefixLen: 24 }],
+              routes: [],
+              apps: [],
+            },
+          ]
+        : []),
     ],
     links: [
       { id: 'lan', a: 'laptop.eth0', b: 'home.lan', bitsPerSecond: 1e9, delay: 5e-8, label: 'Ethernet cable · 1 Gbit/s', name: 'the Ethernet cable' },
-      { id: 'wlan', a: 'phone.wlan0', b: 'home.wlan', bitsPerSecond: 300e6, delay: 3e-8, label: 'Wi-Fi · 300 Mbit/s', name: 'the Wi-Fi', ...(opts.noise ? { noise: opts.noise } : {}) },
+      { id: 'wlan', a: 'phone.wlan0', b: 'home.wlan', bitsPerSecond: 300e6, delay: 3e-8, label: 'Wi-Fi · 300 Mbit/s', name: 'the Wi-Fi', ...(opts.noise ? { noise: opts.noise } : {}), ...(attacks.has('listen') ? { overheardBy: 'stranger' } : {}) },
       opts.slow
         ? { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: 25e6, delay: 0.28, label: 'Satellite to ISP · 25 Mbit/s · 280 ms', name: 'the satellite link' }
         : opts.thin
@@ -483,11 +561,14 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           : { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: 1e9, delay: opts.wanDelay ?? 0.002, label: `Fiber to ISP · 1 Gbit/s · ${Math.round((opts.wanDelay ?? 0.002) * 1000)} ms`, name: 'the fiber line to the ISP' },
       { id: 'bb1', a: 'isp.p1', b: 'resolver.eth0', bitsPerSecond: 1e10, delay: 0.003, label: 'Backbone · 10 Gbit/s · 3 ms', name: 'a backbone link' },
       { id: 'bb3', a: 'isp.p3', b: 'vpn.eth0', bitsPerSecond: 1e10, delay: 0.005, label: 'Backbone · 10 Gbit/s · 5 ms', name: 'a backbone link' },
-      { id: 'bb2', a: 'isp.p2', b: 'server.eth0', bitsPerSecond: 1e10, delay: 0.004, label: 'Backbone · 10 Gbit/s · 4 ms', name: 'a backbone link' },
+      bots.length
+        ? { id: 'bb2', a: 'isp.p2', b: 'server.eth0', bitsPerSecond: FLOODED_LINE_BPS, delay: 0.004, label: "The server's line, under attack", name: "the server's line", queue: THIN_QUEUE }
+        : { id: 'bb2', a: 'isp.p2', b: 'server.eth0', bitsPerSecond: 1e10, delay: 0.004, label: 'Backbone · 10 Gbit/s · 4 ms', name: 'a backbone link' },
       { id: 'bb4', a: 'vpn.eth1', b: 'server.eth1', bitsPerSecond: 1e10, delay: 0.004, label: 'Backbone · 10 Gbit/s · 4 ms', name: 'a backbone link' },
       { id: 'bb5', a: 'vpn.eth2', b: 'resolver.eth1', bitsPerSecond: 1e10, delay: 0.003, label: 'Backbone · 10 Gbit/s · 3 ms', name: 'a backbone link' },
       { id: 'bb6', a: 'isp.p4', b: 'friend.eth0', bitsPerSecond: 1e10, delay: 0.006, label: 'Backbone · 10 Gbit/s · 6 ms', name: 'a backbone link' },
       ...upstream.links,
+      ...outsiders.map((o) => o.link),
     ],
   };
 }

@@ -1,9 +1,9 @@
 import './app.css';
-import { fetchWebPage, runScenario, ulawDecodeAll, type Cut, type Job, type ManualFault } from '../sim';
+import { fetchWebPage, runScenario, ulawDecodeAll, type Attack, type Cut, type Job, type ManualFault } from '../sim';
 import { el } from './svg';
 import { clamp01, easeInOut, easeOutBack, iso, ISO_X, ISO_Y, lerp, U } from './project';
 import { HexCard } from './hexCard';
-import { drawHandset, drawHush, drawPadlock, drawPage, drawPing, drawPipe, drawQuestion, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawTag, drawTrace } from './icons';
+import { drawDoor, drawEar, drawHandset, drawHush, drawPadlock, drawPage, drawPing, drawPipe, drawQuestion, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawSwarm, drawTag, drawTrace } from './icons';
 import { Menu } from './menus';
 import { NetworkScene, type Camera } from './NetworkScene';
 import { Sound } from './sound';
@@ -15,7 +15,8 @@ import { buildTimeline, chapterAt, formatWait, joinAt, MAX_STRETCH, pduAt, realA
  * "Get example.com". Drag the site card onto the laptop or the phone. The bar below holds the playback buttons, and
  * popups for the speed, the tools you click lines with, and the setup of the next run.
  * Tap a packet to pop it open. When a run ends the card comes back. During a run the cards wait down the side of the
- * screen: drag one onto the other device and it joins in.
+ * screen: drag one onto the other device and it joins in. Between runs the red cards wait down the other side: drag one
+ * into the field and its attacker stands there, ready for the next run, until its card is tapped.
  */
 
 /** Seconds the finished picture stays before the card comes back. */
@@ -89,6 +90,8 @@ let noise = 0;
 const NOISY = 0.4;
 /** A card dropped in during this run: what it asks for, and when in sim time and in visual time. */
 let joined: { job: Wanted; at: number; v: number } | null = null;
+/** The attackers on the table. They stay from run to run, until their card is tapped. */
+const attacks = new Set<Attack>();
 function simulate(): void {
   const scenario = fetchWebPage({
     // A ping or a trace goes to example.com's server, whatever page the Setup would fetch.
@@ -101,6 +104,7 @@ function simulate(): void {
     from: client,
     warmArp,
     ...(joined ? { join: { job: joined.job, at: joined.at } } : {}),
+    ...(attacks.size ? { attacks: [...attacks] } : {}),
     dhcp: features.dhcp,
     cold: features.cold,
     thin: features.thin,
@@ -332,7 +336,7 @@ function showSetup(): void {
   scene.setQuiet(features.quiet);
 }
 
-const CHAPTERS: Record<Chapter, string> = { address: 'Get an address', arp: 'Find the router', dns: 'Find the address', hello: 'Say hello', secret: 'Check and agree', page: 'Get the page', call: 'Make a call', ping: 'Ping the server', trace: 'Trace the path', traffic: 'All at once' };
+const CHAPTERS: Record<Chapter, string> = { address: 'Get an address', arp: 'Find the router', dns: 'Find the address', hello: 'Say hello', secret: 'Check and agree', page: 'Get the page', call: 'Make a call', ping: 'Ping the server', trace: 'Trace the path', traffic: 'All at once', attack: 'Attack' };
 /** Chapter number in this run (a second visit skips the address, HTTPS adds the secret). */
 const chapterName = (ch: Chapter): string => (ch === 'page' && story.image ? 'Get the photo' : CHAPTERS[ch]);
 
@@ -540,6 +544,59 @@ for (const w of WANTED) {
   b.addEventListener('lostpointercapture', letGo);
   dock.appendChild(b);
 }
+
+/** The red cards: each puts an attacker on the table. */
+const ATTACKS: { id: Attack; name: string; draw: (g: SVGGElement) => void }[] = [
+  { id: 'listen', name: 'Stranger', draw: drawEar },
+  { id: 'flood', name: 'Botnet', draw: drawSwarm },
+  { id: 'scan', name: 'Scanner', draw: drawDoor },
+];
+const attackIcon = (draw: (g: SVGGElement) => void): SVGSVGElement => {
+  const icon = el('svg', { viewBox: '-16 -16 32 32', width: 30, height: 30, 'aria-hidden': 'true' });
+  draw(el('g', { transform: 'scale(0.42)' }, icon));
+  return icon;
+};
+/** A red card in hand, and how far it has come: a press that goes nowhere is a tap. */
+let redHeld: { x: number; y: number; moved: boolean } | null = null;
+const attackDock = document.createElement('div');
+attackDock.className = 'attack-dock';
+root.appendChild(attackDock);
+function setAttack(id: Attack, on: boolean): void {
+  if (on) attacks.add(id);
+  else attacks.delete(id);
+  preview();
+  sound.play(on ? 'pop' : 'thud');
+}
+const attackCards = ATTACKS.map(({ id, name, draw }) => {
+  const b = document.createElement('button');
+  b.className = 'attack-card';
+  b.setAttribute('aria-label', `${name}: drag into the field, tap to take it away`);
+  b.append(attackIcon(draw), Object.assign(document.createElement('span'), { textContent: name }));
+  let from = { x: 0, y: 0 };
+  const letGo = (): void => {
+    const held = redHeld;
+    redHeld = null;
+    if (!held || !canSetUp()) return;
+    const bar = controls.getBoundingClientRect().top;
+    const dock = attackDock.getBoundingClientRect();
+    const onField = held.y < bar && held.x < dock.left;
+    if (held.moved ? onField && !attacks.has(id) : attacks.has(id)) setAttack(id, !attacks.has(id));
+  };
+  b.addEventListener('pointerdown', (e) => {
+    from = { x: e.clientX, y: e.clientY };
+    redHeld = { ...from, moved: false };
+    b.setPointerCapture(e.pointerId);
+    dockGhost.replaceChildren(attackIcon(draw));
+  });
+  b.addEventListener('pointermove', (e) => {
+    if (redHeld) redHeld = { x: e.clientX, y: e.clientY, moved: redHeld.moved || Math.hypot(e.clientX - from.x, e.clientY - from.y) > 12 };
+  });
+  b.addEventListener('pointerup', letGo);
+  b.addEventListener('pointercancel', letGo);
+  b.addEventListener('lostpointercapture', letGo);
+  attackDock.appendChild(b);
+  return { id, b };
+});
 
 // Outside the bar, so the bar never moves.
 const followBtn = document.createElement('button');
@@ -886,6 +943,7 @@ function reset(): void {
   warmArp = false;
   stretch = 0;
   noise = 0;
+  attacks.clear();
   for (const menu of menus) menu.setOpen(false);
   showChapterMenu(false);
   for (const k of SETTINGS) features[k] = false;
@@ -1016,7 +1074,12 @@ function frame(now: number): void {
   }
   hint.style.display = mode === 'idle' ? '' : 'none';
   dock.hidden = mode !== 'play' || !!joined || v >= tl.total;
-  dockGhost.hidden = dockRing.hidden = !holding;
+  attackDock.hidden = !canSetUp();
+  for (const { id, b } of attackCards) b.classList.toggle('placed', attacks.has(id));
+  dockRing.hidden = !holding;
+  dockGhost.hidden = !holding && !redHeld?.moved;
+  dockGhost.classList.toggle('attack', !!redHeld);
+  if (redHeld) dockGhost.style.transform = `translate(${redHeld.x}px, ${redHeld.y}px)`;
   if (holding) {
     const spot = freeSpot();
     dockGhost.style.transform = `translate(${holding.x}px, ${holding.y}px)`;
@@ -1027,8 +1090,8 @@ function frame(now: number): void {
   // The camera eases between the whole network (between runs) and a close follow of the packet,
   // unless the viewer has taken it over. A card in hand needs the whole network, and so does more than one job at a time.
   if (!camFree || holding) {
-    const wide = !!holding || (mode === 'play' && !!joined && !segAt(tl, v)?.seg.flow);
-    const target = mode === 'play' && !wide ? scene.followCamera(v) : showAll || wide ? scene.wholeCamera() : scene.overviewCamera();
+    const wide = !!holding || (mode === 'play' && (!!joined || attacks.size > 0) && !segAt(tl, v)?.seg.flow);
+    const target = mode === 'play' && !wide ? scene.followCamera(v) : showAll || wide || attacks.size ? scene.wholeCamera() : scene.overviewCamera();
     const ease = snapCamera ? 1 : Math.min(1, dt * (seek ? 6 : 3.5));
     cam = { cx: lerp(cam.cx, target.cx, ease), cy: lerp(cam.cy, target.cy, ease), scale: lerp(cam.scale, target.scale, ease) };
   }
@@ -1063,7 +1126,7 @@ function frame(now: number): void {
   soundBtn.classList.toggle('off', sound.muted);
   soundBtn.setAttribute('aria-pressed', String(sound.muted));
   // A tall screen starts close on the laptop, so the rest of the network has to be a press away.
-  const closeUp = mode !== 'play' && !showAll && scene.overviewCamera().scale > scene.wholeCamera().scale;
+  const closeUp = mode !== 'play' && !showAll && !attacks.size && scene.overviewCamera().scale > scene.wholeCamera().scale;
   followBtn.hidden = !camFree && !closeUp;
   setText(followBtn, mode === 'play' ? '◎ Follow packet' : '◎ Show all');
   backBtn.disabled = pauseBtn.disabled = nextBtn.disabled = mode !== 'play';
@@ -1100,6 +1163,10 @@ if (import.meta.env.DEV) {
         peek = peekTarget = open;
         snapCamera = true;
         camFree = false;
+      },
+      /** Put an attacker on the table or take it off, as a red card does. */
+      attack(id: Attack, on = true): void {
+        setAttack(id, on);
       },
       /** Drop a card in on the other device, as a hand would. */
       join(job: Wanted): void {

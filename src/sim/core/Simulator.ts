@@ -16,7 +16,7 @@ export interface PduSnapshot {
  * 'icmp' = an echo request or reply, or an error a router or host sends back; 'probe' = traceroute's UDP probe.
  * 'wifi-ack' = the 14-byte 802.11 Ack a Wi-Fi receiver sends back for a data frame, on a noisy link only.
  */
-export type PacketKind = 'arp' | 'dhcp' | 'dns' | 'tcp' | 'rtp' | 'icmp' | 'probe' | 'stream' | 'wifi-ack';
+export type PacketKind = 'arp' | 'dhcp' | 'dns' | 'tcp' | 'rtp' | 'icmp' | 'probe' | 'flood' | 'stream' | 'wifi-ack';
 
 /** A logical packet. It keeps its id across hops even as MACs, TTL or NAT change its bytes. */
 export interface PacketInfo {

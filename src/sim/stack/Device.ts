@@ -201,6 +201,12 @@ export abstract class Device {
 
   protected abstract onIpv4(iface: IfaceSpec, ipBytes: Uint8Array, packetId: string): void;
 
+  /** A frame picked out of the air by a radio it was not sent to. It changes nothing: nobody knows it was heard. */
+  overhear(frame: Uint8Array, frameId: string): void {
+    if (wifiFrameKind(frame) === 'ack' || !parseWifi(frame).fcsValid) return;
+    this.sim.emit({ type: 'app', deviceId: this.id, app: 'wifi-listener', action: 'overheard', pduId: frameId });
+  }
+
   private onArp(iface: IfaceSpec, bytes: Uint8Array, packetId: string): void {
     const a = parseArp(bytes, 0);
     const forMe = a.tpa === iface.ip;

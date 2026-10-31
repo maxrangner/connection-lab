@@ -1,7 +1,7 @@
 import type { Ip4, Mac } from './bytes/addr';
 import type { TlsSession } from './proto/tls';
 
-export type DeviceKind = 'laptop' | 'phone' | 'home-router' | 'router' | 'dns-resolver' | 'web-server' | 'vpn-server' | 'root-server' | 'tld-server' | 'auth-server' | 'peer';
+export type DeviceKind = 'laptop' | 'phone' | 'home-router' | 'router' | 'dns-resolver' | 'web-server' | 'vpn-server' | 'root-server' | 'tld-server' | 'auth-server' | 'peer' | 'stranger' | 'bot' | 'scanner';
 
 export interface IfaceSpec {
   /** Globally unique, e.g. "laptop.eth0". */
@@ -48,6 +48,8 @@ export interface LinkSpec {
    * as a perfect cable through the air and no Acks are sent (today's simplification). Only meaningful on a Wi-Fi link.
    */
   noise?: number;
+  /** A device with a radio in earshot of this Wi-Fi: on an open network it picks up every frame on the air, and nobody can tell. */
+  overheardBy?: string;
 }
 
 export type AppSpec =
@@ -85,6 +87,12 @@ export type AppSpec =
   | { kind: 'ping'; to: string; /** The DNS resolver to ask for a name. Left out when DHCP hands one out. */ resolver?: Ip4; count: number }
   /** `traceroute -m maxHops to`: UDP probes with TTL 1, 2, 3 …, three per hop, like Linux traceroute. */
   | { kind: 'traceroute'; to: string; resolver?: Ip4; maxHops: number }
+  /** A bot: junk UDP datagrams at a server, at a set pace, answered or not. */
+  | { kind: 'flood'; to: Ip4; port: number; packets: number; burst: number; gap: number; bytes: number }
+  /** A port scan: a SYN to each port in turn. A SYN-ACK says open, a reset says closed; it never finishes the hello. */
+  | { kind: 'port-scan'; to: Ip4; ports: number[]; gap: number }
+  /** Something else the server runs, which accepts a connection on this port. */
+  | { kind: 'tcp-service'; port: number }
   | {
       kind: 'dns-server';
       /** What the resolver already has in its cache. */
@@ -144,6 +152,8 @@ export interface DeviceSpec {
   tunnel?: { ip: Ip4; server: Ip4 };
   /** Linux defaults to 64. */
   initialTtl?: number;
+  /** Sends one ICMP error a second to any one address, as Linux does (`icmp_ratelimit`), so a flood gets almost no answers. */
+  icmpLimit?: boolean;
 }
 
 export interface TcpSettings {
@@ -162,4 +172,6 @@ export interface Scenario {
   startDevice: string;
   /** A second device whose job starts at this time, so both share the home router at once. */
   companion?: { device: string; at: number };
+  /** Attackers and when each starts. Each is a job of its own, numbered after the first and before the companion. */
+  attackers?: { device: string; at: number }[];
 }
