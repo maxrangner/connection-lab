@@ -260,9 +260,16 @@ body {
   cursor: default;
 }
 
+/* These two are thin marks: at text size they read smaller than the rest of the bar */
+.net-controls button.glyph {
+  font-size: 22px;
+  line-height: 1;
+}
+
 .net-controls button.off {
-  text-decoration: line-through;
-  opacity: 0.55;
+  color: #fffaf2;
+  background: var(--back);
+  border-color: var(--back);
 }
 
 /* Chapter name, top left */
@@ -436,9 +443,9 @@ body {
 
 /* What the devices say */
 .speech-bg {
-  fill: #fffdf8;
+  fill: #ffd84a; /* The same yellow as an impact: a voice has to stand out from the labels around it */
   stroke: #3d352c;
-  stroke-width: 1.5;
+  stroke-width: 2;
   stroke-linejoin: round;
   filter: drop-shadow(0 2px 3px rgba(61, 53, 44, 0.25));
 }
