@@ -434,6 +434,21 @@ body {
   font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
 }
 
+/* What the devices say */
+.speech-bg {
+  fill: #fffdf8;
+  stroke: #3d352c;
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 2px 3px rgba(61, 53, 44, 0.25));
+}
+
+.speech-text {
+  font-size: 14px;
+  font-weight: 650;
+  fill: var(--ink);
+}
+
 /* What ping and traceroute print, and the hops they find */
 .term-bg {
   fill: #3b4049;
@@ -1018,6 +1033,39 @@ body {
 
 .menu-item:hover {
   background: var(--paper-2);
+}
+
+/* A menu whose items need saying: one row each, the icon beside the name and what it does. */
+.menu-list {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  gap: 2px;
+  width: 300px;
+  max-height: calc(100dvh - 96px);
+  overflow-y: auto;
+}
+
+.menu-list .menu-item {
+  display: grid;
+  grid-template-columns: 36px 1fr;
+  column-gap: 10px;
+  flex: none;
+  padding: 4px 10px;
+  font-size: 14px;
+  text-align: left;
+}
+
+.menu-list .menu-item svg {
+  grid-row: 1 / 3;
+  width: 36px;
+  height: 36px;
+}
+
+.menu-hint {
+  grid-column: 2;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-soft);
 }
 
 .menu-item.on {

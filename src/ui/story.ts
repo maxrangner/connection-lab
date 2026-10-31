@@ -729,7 +729,8 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
   const title = pageTitle(r, client);
   addLookups(trips, title);
   const voice = voiceOf(r, client);
-  const gathered = gatherProbes(trips);
+  const probe = probeOf(r, client);
+  const gathered = gatherProbes(probe ? quickLookup(trips) : trips);
   const shown = voice ? gatherCall(gathered) : streams(r) ? gatherStream(gathered, client) : smallAcks(gathered);
   const url = start?.type === 'app' ? String(start.info?.url ?? '') : '';
   const wifiIfaces = new Set(r.scenario.devices.flatMap((d) => d.ifaces.filter((i) => i.wifi).map((i) => i.id)));
@@ -771,7 +772,7 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
       return Number.isFinite(ttl) ? ttl : null;
     })(),
     remembered: dnsAnswer(r, client, 'dns-cache-hit'),
-    ...((probe) => (probe ? { probe } : {}))(probeOf(r, client)),
+    ...(probe ? { probe } : {}),
   };
 }
 
@@ -817,8 +818,21 @@ function gatherCall(trips: Trip[]): Trip[] {
 }
 
 /**
- * Traceroute's three probes of a TTL differ only in their port and their timing. The first and its answer go in full; the
- * others and their answers run as small blocks, so all of them are there but each hop is only watched once.
+ * Ping and traceroute are not about the name, so its lookup runs as small blocks, every packet of it still there.
+ */
+function quickLookup(trips: Trip[]): Trip[] {
+  const first = trips.findIndex((t) => t.chapter === 'dns');
+  if (first < 0) return trips;
+  let end = first;
+  while (trips[end]?.chapter === 'dns') end++;
+  const packets = trips.slice(first, end);
+  return [...trips.slice(0, first), { ...packets[0]!, retry: false, timedOut: false, lost: false, steps: [{ kind: 'flow', packets }] }, ...trips.slice(end)];
+}
+
+/**
+ * Traceroute's three probes of a TTL differ only in their port and their timing, and ping's echoes hardly at all. The first
+ * and its answer go in full; the others and their answers run as small blocks, so all of them are there but each is only
+ * watched once.
  */
 function gatherProbes(trips: Trip[]): Trip[] {
   const shown: Trip[] = [];
@@ -829,9 +843,10 @@ function gatherProbes(trips: Trip[]): Trip[] {
     quick = [];
   };
   for (const t of trips) {
-    const again = t.probeTtl !== undefined && seen.has(t.probeTtl);
+    const again = (t.probeTtl !== undefined && seen.has(t.probeTtl)) || (t.card?.startsWith('ping ') && !t.card.startsWith('ping 1/'));
     if (t.probeTtl !== undefined) seen.add(t.probeTtl);
-    if (again || (quick.length && t.chapter === 'trace' && t.probeTtl === undefined)) quick.push(t);
+    const answer = (t.chapter === 'trace' && t.probeTtl === undefined) || t.chapter === 'ping';
+    if (again || (quick.length && answer)) quick.push(t);
     else {
       flush();
       shown.push(t);

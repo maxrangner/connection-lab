@@ -57,6 +57,10 @@ const NOTE_SIDE = 70;
 const TERM_CHAR = 7.3;
 const TERM_LINE = 17;
 const TERM_PAD = 12;
+/** A speech bubble's tip below the spot a device's name hangs from, or below a hop's flag there, and the width of a character. */
+const SPEECH_UNDER_NAME = 34;
+const SPEECH_UNDER_FLAG = 70;
+const SPEECH_CHAR = 7.1;
 /** The colours of a voice: its packets on the cables and its notes at the far end. */
 const VOICE_OF_CALLER = '#8b6fd0';
 const VOICE_OF_FRIEND = '#1f9a8c';
@@ -157,6 +161,7 @@ export class NetworkScene {
   private notesUp = false;
   /** What ping or traceroute printed, and the hops flagged; behind the packet, which still has to get past them. */
   private readonly readoutLayer: SVGGElement;
+  private readonly speechLayer: SVGGElement;
   /** What that layer was last drawn as, so it is not drawn again every frame. */
   private readoutDrawn = '';
   private readonly fx: SVGGElement;
@@ -203,6 +208,10 @@ export class NetworkScene {
   private spyDrawn = '';
   /** Whether any emoji is up, so an empty frame costs nothing. */
   private moodsUp = false;
+  /** The devices keep their lines to themselves. */
+  private quiet = false;
+  /** The bubbles as last drawn, so they are not drawn again every frame. */
+  private speechDrawn = '';
 
   constructor(
     host: HTMLElement,
@@ -226,6 +235,7 @@ export class NetworkScene {
     this.keys = el('g', { class: 'keys' }, world);
     this.moods = el('g', { class: 'moods' }, world);
     this.noteLayer = el('g', { class: 'moods' }, world);
+    this.speechLayer = el('g', { class: 'moods' }, world);
     this.spyGlass = el('g', { class: 'spy' }, world);
 
     this.buildDevices();
@@ -333,6 +343,10 @@ export class NetworkScene {
   /** The line the spyglass is on, if any. */
   setSpy(line: string | null): void {
     this.spy = line;
+  }
+
+  setQuiet(quiet: boolean): void {
+    this.quiet = quiet;
   }
 
   /** The top of a device, in tiles. */
@@ -829,6 +843,7 @@ export class NetworkScene {
     this.renderMoods(v);
     this.renderNotes(v);
     this.renderReadout(v);
+    this.renderSpeech(v);
     this.renderSpy();
     for (const [id, screen] of this.screens) {
       if (this.story.clients.includes(id) && v >= 0) continue;
@@ -939,6 +954,31 @@ export class NetworkScene {
     lines.forEach((line, i) => {
       el('text', { x: TERM_PAD, y: TERM_PAD + (i + 0.75) * TERM_LINE, class: i ? 'term-text' : 'term-text term-title' }, g).textContent = line;
     });
+  }
+
+  /**
+   * What the devices say: each line pops up under its speaker's name. Over a device it would land on the terminal, or on the
+   * device behind: the web server's stack of trays reaches up to the DNS resolver.
+   */
+  private renderSpeech(v: number): void {
+    const live = this.quiet ? [] : this.tl.speech.filter((b) => v >= b.t0 && v < b.t1);
+    const looks = live.map((b) => ({ b, size: easeOutBack(clamp01((v - b.t0) / 0.25)), op: clamp01((b.t1 - v) / 0.25) }));
+    const drawn = looks.map(({ b, size, op }) => `${b.device} ${b.text} ${size.toFixed(2)} ${op.toFixed(2)}`).join('|');
+    if (drawn === this.speechDrawn) return;
+    this.speechDrawn = drawn;
+    this.speechLayer.replaceChildren();
+    // The camera sits further back on a phone.
+    const big = (this.svg.clientWidth || 1) < 520 ? 1.3 : 1;
+    for (const { b, size, op } of looks) {
+      const d = this.tl.pos.get(b.device) ?? { x: 0, y: 0 };
+      const s = iso(d.x, d.y + 1.9, 0);
+      const flagged = this.tl.readout.flags.some((f) => f.device === b.device && v >= f.t);
+      const y = s.sy + (flagged ? SPEECH_UNDER_FLAG : SPEECH_UNDER_NAME);
+      const g = el('g', { class: 'mood', opacity: op.toFixed(3), transform: `translate(${s.sx.toFixed(1)} ${y.toFixed(1)}) scale(${(size * big).toFixed(3)})` }, this.speechLayer);
+      const w = b.text.length * SPEECH_CHAR + 28;
+      el('path', { d: `M${-w / 2 + 16} 8 H-9 L0 -2 L9 8 H${w / 2 - 16} a16 16 0 0 1 0 32 H${-w / 2 + 16} a16 16 0 0 1 0 -32 Z`, class: 'speech-bg' }, g);
+      el('text', { y: 24, 'text-anchor': 'middle', dy: '0.36em', class: 'speech-text' }, g).textContent = b.text;
+    }
   }
 
   private wholeNote(g: SVGGElement): void {
@@ -1296,9 +1336,17 @@ export class NetworkScene {
       const label = p.key === 'card' ? this.cardText(trip) : p.key === 'ip' ? 'IP' : p.key === 'l4' ? trip.l4Label : p.key === 'vpn' ? 'VPN' : '';
       const font = p.key === 'card' ? cardFont(label) : 10;
       const onSide = label && p.f > 0.6 ? faceText(dir, v3(centre.x + side.x * (d / 2), centre.y + side.y * (d / 2), z + h / 2)) : null;
-      if (label && onSide && along * U * onSide.ex > label.length * font * 0.62 + 4) {
-        const t = el('text', { class: p.key === 'card' ? 'face-label card-label' : 'face-label', 'text-anchor': 'middle', 'font-size': font, dy: '0.35em', transform: onSide.tf }, g);
-        t.textContent = label;
+      if (label && onSide) {
+        const fits = (s: string): boolean => along * U * onSide.ex > s.length * font * 0.62 + 4;
+        // A name too long for its block stands in lines: SYN over ACK.
+        const lines = fits(label) ? [label] : label.split('-');
+        if (lines.every(fits)) {
+          lines.forEach((line, i) => {
+            const dy = 0.35 + (i - (lines.length - 1) / 2) * 1.05;
+            const t = el('text', { class: p.key === 'card' ? 'face-label card-label' : 'face-label', 'text-anchor': 'middle', 'font-size': font, dy: `${dy.toFixed(2)}em`, transform: onSide.tf }, g);
+            t.textContent = line;
+          });
+        }
       }
       // "Ethernet" on the end cap whose end face looks at the viewer.
       const endCap = (p.key === 'ethH' && frontFaces) || (p.key === 'ethT' && backFaces);

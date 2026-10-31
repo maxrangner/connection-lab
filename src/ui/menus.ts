@@ -4,6 +4,8 @@ import { el } from './svg';
 export interface MenuItem<T extends string> {
   id: T;
   label: string;
+  /** What it does, in a few words. Items with one make the popup a list. */
+  hint?: string;
   /** Icon; drawn around the origin. */
   draw?: (g: SVGGElement) => void;
   /** How much of the drawing's space shows, around the origin. */
@@ -45,6 +47,13 @@ export class Menu<T extends string> {
       const name = document.createElement('span');
       name.textContent = item.label;
       b.appendChild(name);
+      if (item.hint) {
+        this.panel.classList.add('menu-list');
+        const hint = document.createElement('span');
+        hint.className = 'menu-hint';
+        hint.textContent = item.hint;
+        b.appendChild(hint);
+      }
       b.addEventListener('click', () => this.onPick(item.id));
       this.items.set(item.id, b);
       this.panel.appendChild(b);

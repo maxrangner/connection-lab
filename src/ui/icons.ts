@@ -90,6 +90,12 @@ export function drawPipe(g: SVGGElement): void {
   el('rect', { x: 22, y: -10, width: 6, height: 20, rx: 2, class: 'pipe-end' }, g);
 }
 
+/** A speech bubble struck through: the devices keep quiet. */
+export function drawHush(g: SVGGElement): void {
+  el('path', { d: 'M-16 -22 H16 a10 10 0 0 1 10 10 V4 a10 10 0 0 1 -10 10 H-2 L-12 26 V14 H-16 a10 10 0 0 1 -10 -10 V-12 a10 10 0 0 1 10 -10 Z', class: 'page-sheet' }, g);
+  el('line', { x1: -24, y1: 22, x2: 24, y2: -26, class: 'pipe' }, g);
+}
+
 /** A ping: a dot and the rings it sends out. */
 export function drawPing(g: SVGGElement): void {
   el('circle', { cx: -8, cy: 0, r: 5, class: 'ping-dot' }, g);
