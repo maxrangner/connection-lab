@@ -50,8 +50,8 @@ function pointAlong(path: Vec3[], t: number): { p: Vec3; ux: number; uy: number 
 const NOTE_HEAD_LEFT = 'M0 3 C-3 3 -9 5 -9 9 C-9 12 -4 13 0 12 Z';
 const NOTE_HEAD_RIGHT = 'M0 3 L0 12 C3 11 7 8 7 5 C7 3 3 3 0 3 Z';
 const NOTE_STEM = 'M7 5 V-16 C8 -10 14 -9 14 -3';
-/** How far beside a phone its notes rise, in SVG units. */
-const NOTE_SIDE = 95;
+/** How far to the side of its phone a note drifts, in SVG units. */
+const NOTE_SIDE = 70;
 /** The colours of a voice: its packets on the cables and its notes at the far end. */
 const VOICE_OF_CALLER = '#8b6fd0';
 const VOICE_OF_FRIEND = '#1f9a8c';
@@ -469,7 +469,8 @@ export class NetworkScene {
   /** The middle of a device's screen. */
   private screenPoint(device = this.tl.client): Vec3 {
     const d = this.tl.pos.get(device) ?? { x: 0, y: 0 };
-    return this.tl.kind.get(device) === 'phone' ? v3(d.x, d.y + 0.2, 1.3) : v3(d.x, d.y - 0.6, 0.95);
+    const kind = this.tl.kind.get(device);
+    return kind === 'phone' || kind === 'peer' ? v3(d.x, d.y + 0.2, 1.3) : v3(d.x, d.y - 0.6, 0.95);
   }
 
   /** The parts of what came in several packets, and when each one landed on the sheet (not there: not yet). */
@@ -845,13 +846,14 @@ export class NetworkScene {
     this.noteLayer.replaceChildren();
     for (const { n, i } of live) {
       const dt = v - n.t;
-      const d = this.tl.pos.get(n.device) ?? { x: 0, y: 0 };
-      const c = iso(d.x, d.y, this.deviceTop(n.device) + 0.6);
-      // Beside the phone, clear of its cable: each note has its own lane and its own sway, so they do not rise in a single file.
+      const c = isoV(this.screenPoint(n.device));
+      // Out of the phone's own screen, then away from its cable: each note has its own lane and its own sway, so they do
+      // not rise in a single file. Its height for its pitch grows as it leaves.
+      const out = easeOut(clamp01(dt / 0.9));
       const lane = ((i * 37) % 11) / 5 - 1;
       const side = n.heardBy === 'caller' ? -NOTE_SIDE : NOTE_SIDE;
-      const x = c.sx + side + lane * 34 + Math.sin(dt * 3 + i) * 7;
-      const y = c.sy - 18 - n.pitch * 90 - dt * 34;
+      const x = c.sx + out * (side + lane * 34) + Math.sin(dt * 3 + i) * 7 * out;
+      const y = c.sy - out * (50 + n.pitch * 90) - dt * 34;
       const scale = (0.7 + 0.7 * n.loud) * easeOutBack(clamp01(dt / 0.2));
       const op = 1 - clamp01((dt - (NOTE_LIFE - 0.8)) / 0.8);
       const g = el('g', { class: `note ${n.heardBy === 'caller' ? 'note-caller' : 'note-friend'}`, opacity: op.toFixed(3), transform: `translate(${x.toFixed(1)} ${y.toFixed(1)}) scale(${scale.toFixed(3)})` }, this.noteLayer);

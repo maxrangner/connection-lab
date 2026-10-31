@@ -496,7 +496,8 @@ body {
 
 .chapter-menu {
   position: fixed;
-  top: calc(56px + env(safe-area-inset-top, 0px));
+  /* Below the real-time pill, which sits right under the chapter name */
+  top: calc(92px + env(safe-area-inset-top, 0px));
   left: max(16px, env(safe-area-inset-left, 0px));
   display: flex;
   flex-direction: column;
@@ -1117,7 +1118,7 @@ body {
 /* The bytes of an open packet, top right */
 .hex-card {
   position: fixed;
-  top: calc(60px + env(safe-area-inset-top, 0px));
+  top: calc(92px + env(safe-area-inset-top, 0px));
   right: max(16px, env(safe-area-inset-right, 0px));
   z-index: 4;
   box-sizing: border-box;
