@@ -9,8 +9,10 @@ import { parseDhcp } from './proto/dhcp';
 import { DNS_TRACES } from './scenarios/dnsTraceCapture';
 import { dnsReferral, parseDns } from './proto/dns';
 import { parseIpv4 } from './proto/ipv4';
+import { parseRtp, RTP_HEADER_LEN, RTP_PORT, RTP_SAMPLES_PER_PACKET } from './proto/rtp';
 import type { Field } from './proto/types';
 import { parseUdp } from './proto/udp';
+import { VOICE_CLIP_CALLER_BASE64, VOICE_CLIP_FRIEND_BASE64 } from './scenarios/voiceClip';
 import { parseWifi } from './proto/wifi';
 import { openWgData } from './proto/wireguard';
 import { tunnelKeys } from './stack/vpn';
@@ -556,6 +558,149 @@ describe('a cold resolver (the real walk root → .com → authoritative)', () =
     const answer = of(x, 'app').find((e) => e.action === 'dns-answer')!;
     expect(answer.info?.rcode).toBe(2);
     expect(of(x, 'app').find((e) => e.action === 'error')?.info?.reason).toBe('the resolver could not find out');
+  });
+});
+
+describe('a voice call (RTP over UDP)', () => {
+  const r = run({ call: true });
+  const actions = (x: SimResult) => of(x, 'app').map((e) => `${e.deviceId}:${e.action}`);
+  /** The RTP packets one device sent, in order, with the bytes as they left it. */
+  const sentBy = (x: SimResult, device: string) =>
+    [...x.packets.values()]
+      .filter((p) => p.kind === 'rtp' && p.origin === device)
+      .map((p) => {
+        const made = of(x, 'encapsulate').find((e) => e.packetId === p.id && e.protocol === 'rtp')!;
+        return { p, bytes: x.pdus.get(made.pduId)!.bytes, t: made.t };
+      });
+  const walk = (fs: Field[]): Field[] => fs.flatMap((f) => [f, ...walk(f.children ?? [])]);
+
+  it('looks the friend up by name, then streams 50 packets each way, 20 ms apart, and both sides hang up', () => {
+    expect(of(r, 'app').find((e) => e.action === 'dns-answer')?.info).toMatchObject({ name: 'sam.example', addresses: [ADDR.friend.ip], ttl: 300 });
+    expect(actions(r).slice(0, 5)).toEqual(['laptop:start', 'laptop:dns-lookup', 'resolver:dns-serve', 'laptop:dns-answer', 'friend:rtp-received']);
+    for (const device of ['laptop', 'friend']) {
+      const sent = sentBy(r, device);
+      expect(sent).toHaveLength(50);
+      expect(sent.map((s) => s.p.label)).toEqual(Array.from({ length: 50 }, (_, i) => `RTP voice (part ${i + 1}/50)`));
+      for (let i = 1; i < sent.length; i++) expect(sent[i]!.t - sent[i - 1]!.t).toBeCloseTo(0.02, 9);
+    }
+    expect(actions(r).slice(-2)).toEqual(['friend:call-done', 'laptop:call-done']);
+    for (const e of of(r, 'app').filter((e) => e.action === 'call-done')) expect(e.info).toEqual({ received: 50, gaps: 0 });
+    expect(actions(r).filter((a) => a.endsWith(':rtp-received'))).toHaveLength(100);
+    expect(of(r, 'tx').filter((e) => e.linkId === 'bb6')).toHaveLength(100);
+    expect([...r.packets.values()].some((p) => p.kind === 'tcp')).toBe(false);
+  });
+
+  it('each stream has one SSRC, consecutive sequence numbers and timestamps going up by 160; the friend answers to the caller’s port', () => {
+    const caller = sentBy(r, 'laptop').map((s) => parseRtp(s.bytes, 0));
+    const friend = sentBy(r, 'friend').map((s) => parseRtp(s.bytes, 0));
+    for (const stream of [caller, friend]) {
+      expect(new Set(stream.map((h) => h.ssrc)).size).toBe(1);
+      expect(stream.map((h) => h.marker)).toEqual([true, ...Array(49).fill(false)]);
+      for (let i = 1; i < stream.length; i++) {
+        expect(stream[i]!.seq).toBe((stream[i - 1]!.seq + 1) & 0xffff);
+        expect(stream[i]!.timestamp).toBe((stream[i - 1]!.timestamp + RTP_SAMPLES_PER_PACKET) >>> 0);
+      }
+      expect(stream.every((h) => h.version === 2 && h.payloadType === 0 && h.payloadEnd - h.payloadStart === 160)).toBe(true);
+    }
+    expect(caller[0]!.ssrc).not.toBe(friend[0]!.ssrc);
+    const out = of(r, 'tx').find((e) => e.linkId === 'bb6' && e.fromDevice === 'isp')!;
+    const back = of(r, 'tx').find((e) => e.linkId === 'bb6' && e.fromDevice === 'friend')!;
+    const udpOf = (e: EventOf<'tx'>) => parseUdp(r.pdus.get(e.frameId)!.bytes, 34);
+    expect(udpOf(out).dstPort).toBe(RTP_PORT);
+    expect(udpOf(back)).toMatchObject({ srcPort: RTP_PORT, dstPort: udpOf(out).srcPort });
+    expect(udpOf(out).length).toBe(8 + RTP_HEADER_LEN + 160);
+  });
+
+  it('the bytes each side receives are the other’s clip, byte for byte', () => {
+    const heard = (device: string) =>
+      of(r, 'app')
+        .filter((e) => e.deviceId === device && e.action === 'rtp-received')
+        .map((e) => {
+          const b = r.pdus.get(e.pduId!)!.bytes;
+          return b.subarray(parseRtp(b, 0).payloadStart);
+        });
+    const join = (parts: Uint8Array[]) => parts.reduce((all, p) => new Uint8Array([...all, ...p]), new Uint8Array(0));
+    expect(join(heard('friend'))).toEqual(fromBase64(VOICE_CLIP_CALLER_BASE64));
+    expect(join(heard('laptop'))).toEqual(fromBase64(VOICE_CLIP_FRIEND_BASE64));
+  });
+
+  it('a lost packet is a gap, and nothing is ever sent again: no retransmission, no timer', () => {
+    const third = sentBy(r, 'friend')[2]!.p;
+    const x = run({ call: true }, { randomLoss: 0, manual: [{ packetId: third.id, linkId: 'bb6' }] });
+    expect(of(x, 'drop').map((d) => d.reason)).toEqual(['fault']);
+    const gaps = of(x, 'app').filter((e) => e.action === 'rtp-gap');
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0]!.deviceId).toBe('laptop');
+    const seq = third.rtp!.seq;
+    expect(gaps[0]!.info).toEqual({ expected: seq, got: (seq + 1) & 0xffff, missing: 1 });
+    expect(of(x, 'app').filter((e) => e.action === 'rtp-late')).toHaveLength(0);
+    expect(of(x, 'app').find((e) => e.deviceId === 'laptop' && e.action === 'call-done')?.info).toEqual({ received: 49, gaps: 1 });
+    expect(of(x, 'app').find((e) => e.deviceId === 'friend' && e.action === 'call-done')?.info).toEqual({ received: 50, gaps: 0 });
+    expect([...x.packets.values()].filter((p) => p.retransmitOf)).toHaveLength(0);
+    expect([...x.packets.values()].filter((p) => p.kind === 'rtp')).toHaveLength(100);
+    expect(of(x, 'timer:set').filter((e) => e.kind !== 'arp-retry' && e.kind !== 'dns-retry')).toHaveLength(0);
+    // The same number of packets go out, at the same moments, as with nothing lost.
+    expect(sentBy(x, 'friend').map((s) => s.t)).toEqual(sentBy(r, 'friend').map((s) => s.t));
+  });
+
+  it('a cable cut for 0.3 s mid-call costs about 15 packets each way, with no retry and the call still ending', () => {
+    const start = of(r, 'tx').find((e) => e.linkId === 'wan' && r.packets.get(e.packetId)!.kind === 'rtp')!.start;
+    const x = runScenario(fetchWebPage({ call: true }), { seed: 1, faults: { randomLoss: 0, manual: [], cuts: [{ link: 'wan', from: start + 0.3, to: start + 0.6 }] }, maxTime: 100 });
+    const dropped = of(x, 'drop');
+    expect(dropped.every((d) => d.reason === 'cut')).toBe(true);
+    expect(dropped.length).toBeGreaterThanOrEqual(28);
+    expect(dropped.length).toBeLessThanOrEqual(32);
+    for (const device of ['laptop', 'friend']) {
+      const done = of(x, 'app').find((e) => e.deviceId === device && e.action === 'call-done')!.info!;
+      expect(Number(done.gaps)).toBeGreaterThanOrEqual(14);
+      expect(Number(done.gaps)).toBeLessThanOrEqual(16);
+      expect(Number(done.received) + Number(done.gaps)).toBe(50);
+      const missing = of(x, 'app').filter((e) => e.deviceId === device && e.action === 'rtp-gap').reduce((n, e) => n + Number(e.info!.missing), 0);
+      expect(missing).toBe(Number(done.gaps));
+    }
+    expect([...x.packets.values()].filter((p) => p.retransmitOf)).toHaveLength(0);
+    expect(x.endTime).toBeLessThan(start + 1.1);
+  });
+
+  it('a cable cut before the call: the caller talks into the void and gives up; the friend never speaks', () => {
+    const x = runScenario(fetchWebPage({ call: true, revisit: true }), { seed: 1, faults: { randomLoss: 0, manual: [], cuts: [{ link: 'bb6', from: 0 }] }, maxTime: 100 });
+    expect(sentBy(x, 'laptop')).toHaveLength(50);
+    expect(sentBy(x, 'friend')).toHaveLength(0);
+    expect(actions(x).at(-1)).toBe('laptop:error');
+    expect(of(x, 'app').at(-1)!.info?.reason).toBe('nobody answered');
+  });
+
+  it('works with the other settings too: a second call, DHCP, the phone, the satellite', () => {
+    for (const o of [{ revisit: true }, { dhcp: true }, { from: 'phone' as const }, { slow: true }, { cold: true }]) {
+      const x = run({ call: true, ...o });
+      expect(of(x, 'app').filter((e) => e.action === 'call-done').map((e) => e.info)).toEqual([{ received: 50, gaps: 0 }, { received: 50, gaps: 0 }]);
+    }
+    expect(actions(run({ call: true, revisit: true }))).toContain('laptop:dns-cache-hit');
+    expect(actions(run({ call: true, from: 'phone' }))).toContain('phone:call-done');
+    expect(of(run({ call: true, together: true }), 'app').filter((e) => e.action === 'done' || e.action === 'call-done')).toHaveLength(3);
+  });
+
+  it('every RTP field is explained and every checksum checks out; the friend is in every run and silent otherwise', () => {
+    let seen = 0;
+    for (const e of of(r, 'tx').filter((e) => e.linkId === 'bb6')) {
+      const pdu = r.pdus.get(e.frameId)!;
+      expect(pdu.layers.map((l) => l.protocol)).toEqual(['ethernet', 'ipv4', 'udp', 'rtp']);
+      seen++;
+      for (const f of walk(pdu.layers.flatMap((l) => l.fields))) {
+        expect(f.display, f.key).not.toContain('✗');
+        expect(f.explain.length, `${f.key} needs an explanation`).toBeGreaterThan(0);
+      }
+    }
+    expect(seen).toBe(100);
+    const plain = run({});
+    expect(plain.scenario.devices.find((d) => d.id === 'friend')).toMatchObject({ kind: 'peer', label: "Friend's phone" });
+    expect(of(plain, 'tx').some((e) => e.linkId === 'bb6')).toBe(false);
+    expect([...plain.packets.values()].some((p) => p.kind === 'rtp')).toBe(false);
+  });
+
+  it('is deterministic for a given seed', () => {
+    expect(JSON.stringify(run({ call: true }).events)).toBe(JSON.stringify(r.events));
+    expect(JSON.stringify(run({ call: true }, undefined, 2).events)).not.toBe(JSON.stringify(r.events));
   });
 });
 

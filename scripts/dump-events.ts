@@ -1,13 +1,14 @@
-// Debug helper: prints the event log of a scenario run. Usage: npx vite-node scripts/dump-events.ts [mss] [dhcp] [lose:packetId@linkId]
+// Debug helper: prints the event log of a scenario run. Usage: npx vite-node scripts/dump-events.ts [mss] [dhcp] [call] [lose:packetId@linkId]
 import { fetchWebPage, runScenario } from '../src/sim';
 
 const mss = Number(process.argv[2] ?? 1460);
 const dhcp = process.argv.includes('dhcp');
+const call = process.argv.includes('call');
 const manual = process.argv.slice(3).filter((a) => a.startsWith('lose:')).map((a) => {
   const [packetId, linkId] = a.slice(5).split('@');
   return { packetId: packetId!, linkId: linkId! };
 });
-const r = runScenario(fetchWebPage({ mss, dhcp }), { seed: 1, faults: { randomLoss: 0, manual } });
+const r = runScenario(fetchWebPage({ mss, dhcp, call }), { seed: 1, faults: { randomLoss: 0, manual } });
 for (const e of r.events) {
   const { t, seq, type, ...rest } = e;
   const pdu = 'pduId' in rest && rest.pduId ? r.pdus.get(rest.pduId as string) : 'frameId' in rest ? r.pdus.get(rest.frameId as string) : undefined;

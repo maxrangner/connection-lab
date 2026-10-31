@@ -10,6 +10,7 @@ import { BOOTREPLY, BOOTREQUEST, buildDhcp, DHCP_ACK, DHCP_DISCOVER, DHCP_OFFER,
 import { buildDnsQuery, buildDnsResponse, DNS_TYPE_A, DNS_TYPE_AAAA, DNS_TYPE_CNAME, DNS_TYPE_NS, dnsAddresses, dnsReferral, parseDns } from './dns';
 import { buildEthernet, ETHERTYPE_ARP, ETHERTYPE_IPV4, parseEthernet } from './ethernet';
 import { buildIpv4, IPPROTO_TCP, IPPROTO_UDP, parseIpv4 } from './ipv4';
+import { buildRtp, describeRtp, parseRtp, RTP_PT_PCMU } from './rtp';
 import { buildTcp, encodeOptions, parseTcp, TCP_SYN } from './tcp';
 import type { Field, LayerPdu } from './types';
 import { buildUdp, parseUdp } from './udp';
@@ -104,6 +105,46 @@ describe('IPv4 + UDP + DNS', () => {
     expect(p.answers.map((a) => a.ip)).toEqual(['104.20.23.154', '172.66.147.243']);
     expect(hexBytes(resp, 29, 31, '')).toBe('c00c');
     expect(resp.length).toBe(29 + 2 * 16);
+  });
+});
+
+describe('RTP', () => {
+  const audio = Uint8Array.from({ length: 160 }, (_, i) => 0xff - (i % 16));
+  const pkt = buildRtp({ marker: false, payloadType: RTP_PT_PCMU, seq: 0x1234, timestamp: 0x89abcdef, ssrc: 0xdeadbeef }, audio);
+
+  it('lays out the 12-byte header: 0x80 0x00 for V=2 PT=0, then seq, timestamp, SSRC, then the audio', () => {
+    expect(pkt.length).toBe(172);
+    expect(hexBytes(pkt, 0, 12, '')).toBe('8000123489abcdefdeadbeef');
+    expect(pkt.subarray(12)).toEqual(audio);
+    const marked = buildRtp({ marker: true, payloadType: 8, seq: 1, timestamp: 160, ssrc: 1 }, audio);
+    expect(hexBytes(marked, 0, 4, '')).toBe('80880001');
+  });
+
+  it('parses it back, with no padding, extension or CSRCs', () => {
+    expect(parseRtp(pkt, 0)).toMatchObject({ version: 2, padding: false, extension: false, csrcCount: 0, marker: false, payloadType: 0, seq: 0x1234, timestamp: 0x89abcdef, ssrc: 0xdeadbeef, payloadStart: 12, payloadEnd: 172, padLength: 0 });
+    // Padding: P set and the last byte counts the filler.
+    const padded = Uint8Array.from([...pkt, 0, 0, 3]);
+    padded[0] = 0xa0;
+    expect(parseRtp(padded, 0)).toMatchObject({ padding: true, payloadEnd: 172, padLength: 3 });
+    const withCsrc = Uint8Array.from([0x81, 0, 0, 1, 0, 0, 0, 160, 1, 2, 3, 4, 0xaa, 0xbb, 0xcc, 0xdd, 0xff, 0xff]);
+    expect(parseRtp(withCsrc, 0)).toMatchObject({ csrcCount: 1, csrcs: [0xaabbccdd], payloadStart: 16, payloadEnd: 18 });
+  });
+
+  it('rides in UDP to port 5004 and is decoded there, every field explained', () => {
+    const udp = buildUdp(40000, 5004, pkt, '192.168.1.23', '198.51.100.42');
+    const ip = buildIpv4({ id: 9, df: true, ttl: 64, protocol: IPPROTO_UDP, src: '192.168.1.23', dst: '198.51.100.42' }, udp);
+    const layers = decodePdu(ip, 'ipv4');
+    expect(layers.map((l) => l.protocol)).toEqual(['ipv4', 'udp', 'rtp']);
+    const rtp = layers[2]!;
+    expect(rtp.summary).toBe('RTP PCMU seq 4660 · ts 2309737967 · 160 B audio (20 ms)');
+    expect(rtp.headerEnd - rtp.start).toBe(12);
+    const fields = describeRtp(pkt, 0, pkt.length).fields;
+    expect(fields.map((f) => f.key)).toEqual(['rtp.version', 'rtp.padding', 'rtp.extension', 'rtp.cc', 'rtp.marker', 'rtp.pt', 'rtp.seq', 'rtp.timestamp', 'rtp.ssrc', 'rtp.payload']);
+    for (const f of allFields([rtp])) expect(f.explain.length, f.key).toBeGreaterThan(10);
+    expect(fields.find((f) => f.key === 'rtp.version')).toMatchObject({ bits: { start: 0, count: 2 }, display: '2' });
+    expect(fields.find((f) => f.key === 'rtp.pt')).toMatchObject({ bits: { start: 1, count: 7 }, display: '0 (PCMU)' });
+    // The same bytes from the other side come back from port 5004.
+    expect(decodePdu(buildUdp(5004, 40000, pkt, '198.51.100.42', '203.0.113.7'), 'udp', { srcIp: '198.51.100.42', dstIp: '203.0.113.7' }).map((l) => l.protocol)).toEqual(['udp', 'rtp']);
   });
 });
 

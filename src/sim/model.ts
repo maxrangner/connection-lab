@@ -1,7 +1,7 @@
 import type { Ip4, Mac } from './bytes/addr';
 import type { TlsSession } from './proto/tls';
 
-export type DeviceKind = 'laptop' | 'phone' | 'home-router' | 'router' | 'dns-resolver' | 'web-server' | 'vpn-server' | 'root-server' | 'tld-server' | 'auth-server';
+export type DeviceKind = 'laptop' | 'phone' | 'home-router' | 'router' | 'dns-resolver' | 'web-server' | 'vpn-server' | 'root-server' | 'tld-server' | 'auth-server' | 'peer';
 
 export interface IfaceSpec {
   /** Globally unique, e.g. "laptop.eth0". */
@@ -51,6 +51,23 @@ export type AppSpec =
     }
   /** The device starts with no address and gets one from the router by DHCP before the browser runs. */
   | { kind: 'dhcp-client'; /** What it calls itself (option 12), e.g. "laptop". */ hostName: string }
+  /**
+   * A voice call: look the friend's name up, then stream the clip to them as RTP over UDP, a 20 ms packet at a time,
+   * and play what comes back. Nothing lost is ever sent again.
+   */
+  | {
+      kind: 'voice-call';
+      /** The name to call, e.g. "sam.example". */
+      to: string;
+      /** The DNS resolver to ask. Left out when the device gets one from DHCP. */
+      resolver?: Ip4;
+      /** What to say: one second of G.711 µ-law, 8000 bytes. */
+      clip: Uint8Array;
+      /** The address is still cached from an earlier call: skip the lookup. */
+      knownAddress?: Ip4;
+    }
+  /** The friend's phone: waits for voice on `port` and answers with its own clip to whoever calls. */
+  | { kind: 'voice-peer'; clip: Uint8Array; port: number }
   | {
       kind: 'dns-server';
       /** What the resolver already has in its cache. */
