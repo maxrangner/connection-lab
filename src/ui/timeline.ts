@@ -391,7 +391,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
     const trip: Trip = { ...traffic[0]!, chapter: 'traffic', part: undefined, retry: false, timedOut: false, lost: false, steps: [step] };
     const p = at(story.client, LEVEL.eth);
     // A page in parts carries on from what has landed so far, whether those parts came as a stream or one by one.
-    const { packets, waits } = planFlow(traffic, t, story, knocks, linkPace, cues, reactions, TRAFFIC_HOP, notes, cutShort ?? { ...newFlow(), filled });
+    const { packets, waits } = planFlow(traffic, t, story, knocks, linkPace, cues, reactions, TRAFFIC_HOP, notes, { ...(cutShort ?? { ...newFlow(), filled }), queued: true });
     const end = Math.max(t, ...packets.map((x) => x.t1), ...waits.map((w) => w.t1));
     segs.push({ step, trip, t0: t, t1: end, p0: p, p1: p, flow: packets, waits });
     t = end + (notes.length ? NOTE_LIFE : 0.5);
@@ -495,8 +495,22 @@ interface FlowState {
   /** In a call: the part each listener expects next from each sender. */
   expected: Map<string, number>;
   puzzled: boolean;
+  /** When a block goes onto each cable in each direction. */
+  onCable: Map<string, number[]>;
+  /** Blocks of different jobs take turns on a cable. One job's already keep their distance. */
+  queued: boolean;
 }
-const newFlow = (): FlowState => ({ heard: [], lastSent: new Map(), filled: new Set(), sent: new Map(), expected: new Map(), puzzled: false });
+const newFlow = (): FlowState => ({ heard: [], lastSent: new Map(), filled: new Set(), sent: new Map(), expected: new Map(), puzzled: false, onCable: new Map(), queued: false });
+
+/**
+ * The first moment from `wanted` on with a free place on this cable. A block takes any gap rather than going to the back of
+ * the line, so it is only ever held up by blocks ahead of it: whatever comes later, or never comes, cannot move it.
+ */
+function freeSlot(taken: number[], wanted: number): number {
+  let t = wanted;
+  for (const s of [...taken].sort((a, b) => a - b)) if (t > s - FLOW_GAP && t < s + FLOW_GAP) t = s + FLOW_GAP;
+  return t;
+}
 
 /**
  * When a stream's packets go. Everything keeps its real order: a packet leaves after whatever it was sent in reply to has
@@ -521,7 +535,7 @@ function planFlow(
   until = Infinity,
 ): { packets: FlowPacket[]; waits: FlowWait[]; rest: Trip[] } {
   const delay = new Map(story.links.map((l) => [l.id, l.delay]));
-  const { heard, lastSent, filled, sent, expected } = state;
+  const { heard, lastSent, filled, sent, expected, onCable } = state;
   const waits: FlowWait[] = [];
   const wait = (step: WaitStep, t0: number): number => {
     const t1 = t0 + FLOW_TIMER;
@@ -541,12 +555,16 @@ function planFlow(
       // A timer only runs out in silence: nothing is on its way any more.
       t = wait({ kind: 'wait', device: trip.origin, seconds: trip.waited ?? 0, giveUp: false, mood: before?.retry && before.lost ? 'angry' : 'surprise' }, Math.max(t, settled));
     }
-    lastSent.set(sender, t);
-    const t0 = t;
     const hops: FlowHop[] = [];
     for (const s of trip.steps) {
       if (s.kind !== 'travel' && s.kind !== 'lost') continue;
       const lost = s.kind === 'lost';
+      // Each way along a cable is one frame at a time: a block waits its turn at the device before it.
+      const way = `${s.link}|${s.from}`;
+      const taken = onCable.get(way) ?? [];
+      onCable.set(way, taken);
+      if (state.queued) t = freeSlot(taken, t);
+      taken.push(t);
       // Cut under it by the viewer: where it was. Dropped off a full port buffer: right at the router. Lost by itself: halfway along.
       const caught = knocks.get(`${trip.packetId}@${s.link}`);
       const fall = lost ? (caught ?? (trip.droppedAtQueue ? 0.08 : 0.5)) : 1;
@@ -555,6 +573,8 @@ function planFlow(
       t += d;
       if (lost) cues.push({ t, sound: 'thud' });
     }
+    const t0 = hops[0]?.t0 ?? t;
+    lastSent.set(sender, t0);
     settled = Math.max(settled, t);
     const last = hops[hops.length - 1];
     if (trip.lost || !last) return { trip, hops, t0, t1: t + FLOW_FALL, landed: null };
