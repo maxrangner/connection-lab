@@ -7,7 +7,7 @@ import type { Details, PartKey, Row, Story, Trip, Wrap } from './story';
 import { bandPoint, pageContent, Paper, PAPER_H, PAPER_W, photoContent } from './paper';
 import { screenAt, type Readout } from './readout';
 import { drawBook, drawShelf, SERVER } from './stations';
-import { addressBefore, ATTACKER_KINDS, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, LEVEL, lockPose, NO_LOCK, NOTE_LIFE, packetPos, packetPose, pageParts, segAt, swapLanding, swapMoment, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowHop, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
+import { addressBefore, ATTACKER_KINDS, detailsAt, PERSONAL_KINDS, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, LEVEL, lockPose, NO_LOCK, NOTE_LIFE, packetPos, packetPose, pageParts, segAt, swapLanding, swapMoment, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowHop, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
 
 export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', vpn: '#2e5e6e', eth: '#e08b33', wifi: '#2a9d8f' } as const;
 const DEVICE = '#d9d0c2';
@@ -57,6 +57,8 @@ const NOTE_SIDE = 70;
 /** How far to the side of its cable a small block rides, in tiles, so blocks going opposite ways pass each other; and how soon it gets there. */
 const LANE = 0.55;
 const LANE_IN = 0.14;
+/** Seconds a device or cable takes to fade in when a packet first gets to it. */
+const REVEAL = 0.4;
 /** The terminal ping and traceroute print to: the width of a character and the height of a line at its font size, and its margin. */
 const TERM_CHAR = 7.3;
 const TERM_LINE = 17;
@@ -209,6 +211,13 @@ export class NetworkScene {
   private cableViews: { g: SVGGElement; a: string; b: string }[] = [];
   /** Devices that take part in this run; the rest are greyed out once it starts. */
   private used = new Set<string>();
+  /** What the last run showed, which stays until the next one starts. */
+  private revealed = new Set<string>();
+  /** The visual time last drawn, for the tools. */
+  private now = -1;
+  /** The VPN tube and the stranger's dotted line, which only show with what they run along. */
+  private tube: SVGGElement | null = null;
+  private earBeam: SVGLineElement | null = null;
   private readonly devs: SVGGElement;
   /** The positions the devices were last built at. */
   private laidOut = '';
@@ -379,6 +388,8 @@ export class NetworkScene {
   private buildCables(): void {
     this.cables.replaceChildren();
     this.cableViews = [];
+    this.tube = null;
+    this.earBeam = null;
     for (const l of this.story.links) {
       const path = this.linkWorld(l.id);
       if (!path.length) continue;
@@ -443,7 +454,7 @@ export class NetworkScene {
     if (ear) {
       const from = iso(ear.x, ear.y, 1.6);
       const to = this.linkSpot('wlan', 0.5, 0);
-      el('line', { x1: from.sx, y1: from.sy, x2: to.sx, y2: to.sy, class: 'ear-beam' }, this.cables);
+      this.earBeam = el('line', { x1: from.sx, y1: from.sy, x2: to.sx, y2: to.sy, class: 'ear-beam' }, this.cables);
     }
   }
 
@@ -454,6 +465,7 @@ export class NetworkScene {
     const pts = [first.id, 'wan', 'bb3'].flatMap((id) => this.linkPath(id));
     const points = pts.map((p) => `${p.sx.toFixed(1)},${(p.sy - 10).toFixed(1)}`).join(' ');
     const g = el('g', { class: 'tunnel' }, this.cables);
+    this.tube = g;
     el('polyline', { points, class: 'tunnel-tube' }, g);
     el('polyline', { points, class: 'tunnel-flow' }, g);
     const c = this.linkSpot('wan', 0.5, -34);
@@ -475,10 +487,24 @@ export class NetworkScene {
     return this.shown(device);
   }
 
+  /** How far a device has come onto the table at visual time v, from 0 to 1. */
+  private present(device: string, v: number): number {
+    if (!this.shown(device)) return 0;
+    const kind = this.tl.kind.get(device) ?? '';
+    if (PERSONAL_KINDS.has(kind) || ATTACKER_KINDS.has(kind) || this.revealed.has(device)) return 1;
+    const at = this.tl.reveals.get(device);
+    return at === undefined || v < at ? 0 : Math.max(0.01, clamp01((v - at) / REVEAL));
+  }
+
+  /** What the last run showed stays on the table. An empty list clears it, and the next run shows it all again. */
+  setRevealed(devices: Iterable<string>): void {
+    this.revealed = new Set(devices);
+  }
+
   /** Is this link really on the table right now? */
   hasLink(id: string): boolean {
     const l = this.story.links.find((x) => x.id === id);
-    return !!l && this.linkShown(l.a) && this.linkShown(l.b);
+    return !!l && this.present(l.a, this.now) > 0 && this.present(l.b, this.now) > 0;
   }
 
   /** Which cables are cut. */
@@ -589,7 +615,20 @@ export class NetworkScene {
     if (ch > cw * 1.2) {
       return { cx: -20, cy: 60, scale: Math.max(this.baseScale(), cw / 560) };
     }
-    return this.wholeCamera();
+    if (this.revealed.size) return this.wholeCamera();
+    // Only your own things are on the table: no need to leave room for what has not shown up yet.
+    const pts = this.story.devices.filter((d) => PERSONAL_KINDS.has(d.kind)).flatMap((d) => {
+      const p = this.tl.pos.get(d.id) ?? { x: 0, y: 0 };
+      const c = iso(p.x, p.y);
+      return [{ sx: c.sx - 130, sy: c.sy - 130 }, { sx: c.sx + 130, sy: c.sy + 70 }];
+    });
+    const view = this.framing([...pts, ...this.onTable]);
+    return { ...view, scale: Math.min(view.scale, this.followScale()) };
+  }
+
+  /** Whether the whole network has anything to show that the view between runs leaves out. */
+  get anythingRevealed(): boolean {
+    return this.revealed.size > 0;
   }
 
   /** Close on the packet (or the device it is at) at visual time v. */
@@ -817,19 +856,28 @@ export class NetworkScene {
   render(v: number): void {
     const tl = this.tl;
     const hit = segAt(tl, v);
+    this.now = v;
     // Once a run starts, whatever it doesn't use steps back.
     const greying = v >= 0;
+    const fadeIn = (e: SVGGElement | SVGLineElement, on: number): void => {
+      e.classList.toggle('absent', on === 0);
+      const opacity = on > 0 && on < 1 ? on.toFixed(3) : '';
+      if (e.style.opacity !== opacity) e.style.opacity = opacity;
+    };
     for (const d of this.devices) {
-      // Without a VPN its server is not on the table, nor the name servers without a cold resolver.
-      const absent = !this.shown(d.id);
-      d.g.classList.toggle('absent', absent);
-      d.g.classList.toggle('unused', !absent && greying && !this.used.has(d.id));
+      // Devices come onto the table as packets reach them. Without a VPN its server never does, nor the name servers without
+      // a cold resolver.
+      const on = this.present(d.id, v);
+      fadeIn(d.g, on);
+      d.g.classList.toggle('unused', on > 0 && greying && !this.used.has(d.id));
     }
     for (const c of this.cableViews) {
-      const absent = !this.linkShown(c.a) || !this.linkShown(c.b);
-      c.g.classList.toggle('absent', absent);
+      fadeIn(c.g, Math.min(this.present(c.a, v), this.present(c.b, v)));
       c.g.classList.toggle('unused', greying && (!this.used.has(c.a) || !this.used.has(c.b)));
     }
+    const vpn = this.story.devices.find((d) => d.kind === 'vpn-server');
+    if (this.tube && vpn) fadeIn(this.tube, this.present(vpn.id, v));
+    if (this.earBeam) fadeIn(this.earBeam, this.hasLink('wlan') ? 1 : 0);
     for (const d of this.devices) {
       setAttr(d.trays, 'opacity', trayOpacity(tl, d.id, v).toFixed(3));
       setAttr(d.g, 'transform', `translate(0 ${(-this.hop(d.id, v) * U).toFixed(2)})`);
@@ -1088,7 +1136,7 @@ export class NetworkScene {
     this.fx.replaceChildren();
     this.keys.replaceChildren();
     // The spy's note makes way for the size chips.
-    this.spyGlass.style.display = peek > 0.05 ? 'none' : '';
+    this.spyGlass.style.display = peek > 0.05 || (this.spy && !this.hasLink(this.spy)) ? 'none' : '';
     this.keyhole = null;
     const hit = segAt(this.tl, v);
     if (!hit) return;

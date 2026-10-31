@@ -147,6 +147,8 @@ export interface Timeline {
   pages: Map<string, number>;
   /** The same for the answer to its DNS question. */
   answers: Map<string, number>;
+  /** When a packet first sets off to or from each device: that is when it shows up on the table. */
+  reveals: Map<string, number>;
   /** How far the cable to the ISP has been stretched, in tiles. */
   stretch: number;
 }
@@ -179,8 +181,10 @@ const POS: Record<string, { x: number; y: number }> = {
 export const DEVICE_TOP: Record<string, number> = { laptop: 1.7, phone: 2.0, 'home-router': 0.55, router: 0.8, 'web-server': 2.6, 'dns-resolver': 1.1, 'vpn-server': 1.3, 'root-server': 1.5, 'tld-server': 1.1, 'auth-server': 1.1, peer: 2.0, stranger: 1.7, scanner: 1.7, bot: 1.8 };
 /** The servers only a cold resolver talks to; off the table otherwise. */
 export const UPSTREAM_KINDS = new Set(['root-server', 'tld-server', 'auth-server']);
-/** The devices a red card puts on the table. */
+/** The attackers switched on from the Attack popup. */
 export const ATTACKER_KINDS = new Set(['stranger', 'scanner', 'bot']);
+/** What is yours, and on the table from the start. The rest of the network shows up as packets reach it. */
+export const PERSONAL_KINDS = new Set(['laptop', 'phone']);
 export const CABLE_Z = 0.55;
 /** Tray levels: 0 Ethernet, 1 IP, 2 transport, 3 app. The VPN case goes on just above Ethernet. */
 export const LEVEL: Record<Wrap | 'app', number> = { eth: 0, vpn: 0.5, ip: 1, l4: 2, app: 3 };
@@ -433,6 +437,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   // Each end makes its private half when it first has a hello to answer or to send.
   const halves = new Map<string, number>();
   for (const s of segs) if (s.trip.keyShare && (s.step.kind === 'appear' || s.step.kind === 'read') && !halves.has(s.step.device)) halves.set(s.step.device, s.t0);
+  const reveals = revealsOf(segs);
   const times = timing(segs);
   const readout = buildReadout(story, times, t);
   const joinReadout = buildReadout(story, times, t, true);
@@ -445,7 +450,21 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   ];
   for (const f of [...readout.flags, ...joinReadout.flags]) cues.push({ t: f.t, sound: 'found' });
   const speech = [...buildSpeech(story, segs), ...(story.listener ? listenerSpeech(story.listener, story.heard, heardAt) : [])];
-  return { segs, reactions, notes, readout, joinReadout, attackReadouts, speech, keys, halves, real: realClock(segs, story), cues, total: t, pos, kind, trayZ, isRouter, sky, air, client: story.client, pages, answers, stretch };
+  return { segs, reactions, notes, readout, joinReadout, attackReadouts, speech, keys, halves, real: realClock(segs, story), cues, total: t, pos, kind, trayZ, isRouter, sky, air, client: story.client, pages, answers, reveals, stretch };
+}
+
+/** The first time anything crosses to or from each device. */
+function revealsOf(segs: Seg[]): Map<string, number> {
+  const reveals = new Map<string, number>();
+  const see = (device: string, t: number): void => {
+    if (t < (reveals.get(device) ?? Infinity)) reveals.set(device, t);
+  };
+  for (const s of segs) {
+    const st = s.step;
+    for (const h of (s.flow ?? []).flatMap((p) => p.hops)) for (const d of [h.from, h.to]) see(d, h.t0);
+    if (st.kind === 'travel' || st.kind === 'lost') for (const d of [st.from, st.to]) see(d, s.t0);
+  }
+  return reveals;
 }
 
 /** When each packet set off and when it was done. */
