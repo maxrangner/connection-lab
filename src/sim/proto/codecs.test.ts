@@ -4,6 +4,7 @@ import { transportChecksum } from '../bytes/checksum';
 import { natRewrite } from '../stack/Router';
 import { buildArp, parseArp } from './arp';
 import { decodePdu } from './decode';
+import { BOOTREPLY, BOOTREQUEST, buildDhcp, DHCP_ACK, DHCP_DISCOVER, DHCP_OFFER, DHCP_REQUEST, parseDhcp, type DhcpMessage } from './dhcp';
 import { buildDnsQuery, buildDnsResponse, parseDns } from './dns';
 import { buildEthernet, ETHERTYPE_ARP, ETHERTYPE_IPV4, parseEthernet } from './ethernet';
 import { buildIpv4, IPPROTO_TCP, IPPROTO_UDP, parseIpv4 } from './ipv4';
@@ -101,6 +102,74 @@ describe('IPv4 + UDP + DNS', () => {
     expect(p.answers.map((a) => a.ip)).toEqual(['104.20.23.154', '172.66.147.243']);
     expect(hexBytes(resp, 29, 31, '')).toBe('c00c');
     expect(resp.length).toBe(29 + 2 * 16);
+  });
+});
+
+describe('DHCP', () => {
+  const zero = { ciaddr: '0.0.0.0', yiaddr: '0.0.0.0', siaddr: '0.0.0.0', giaddr: '0.0.0.0' };
+  const discover: DhcpMessage = {
+    op: BOOTREQUEST,
+    xid: 0x1a2b3c4d,
+    secs: 0,
+    broadcast: false,
+    ...zero,
+    chaddr: '3c:22:fb:5a:10:e4',
+    options: { type: DHCP_DISCOVER, clientId: '3c:22:fb:5a:10:e4', hostName: 'laptop', paramRequest: [1, 3, 6, 15, 28, 51, 54] },
+  };
+  const offer: DhcpMessage = {
+    op: BOOTREPLY,
+    xid: 0x1a2b3c4d,
+    secs: 0,
+    broadcast: false,
+    ...zero,
+    yiaddr: '192.168.1.23',
+    siaddr: '192.168.1.1',
+    chaddr: '3c:22:fb:5a:10:e4',
+    options: { type: DHCP_OFFER, serverId: '192.168.1.1', leaseTime: 86400, subnetMask: '255.255.255.0', routers: ['192.168.1.1'], dns: ['1.1.1.1'] },
+  };
+
+  it('lays out the BOOTP fixed part, the magic cookie at 236 and the message type right after it', () => {
+    const b = buildDhcp(discover);
+    expect(b.length).toBe(300); // padded to the BOOTP minimum
+    expect(hexBytes(b, 0, 8, '')).toBe('010106001a2b3c4d'); // op 1, Ethernet, 6-byte MAC, no hops, xid
+    expect(hexBytes(b, 8, 12, '')).toBe('00000000'); // secs 0, flags 0
+    expect(hexBytes(b, 28, 34, '')).toBe('3c22fb5a10e4'); // chaddr
+    expect(hexBytes(b, 34, 236, '')).toBe('00'.repeat(202)); // chaddr padding, sname, file
+    expect(hexBytes(b, 236, 240, '')).toBe('63825363');
+    expect(hexBytes(b, 240, 243, '')).toBe('350101'); // option 53, length 1, DISCOVER
+    expect(hexBytes(b, 243, 252, '')).toBe('3d07013c22fb5a10e4'); // option 61, length 7: hardware type 1 + MAC
+    expect(b.indexOf(0xff, 240)).toBeGreaterThan(252);
+  });
+
+  it('parses what it built, the server options included', () => {
+    const d = parseDhcp(buildDhcp(discover), 0);
+    expect(d).toMatchObject({ op: 1, htype: 1, hlen: 6, xid: 0x1a2b3c4d, secs: 0, broadcast: false, chaddr: '3c:22:fb:5a:10:e4', cookieValid: true });
+    expect(d.options).toEqual({ type: DHCP_DISCOVER, clientId: '3c:22:fb:5a:10:e4', hostName: 'laptop', paramRequest: [1, 3, 6, 15, 28, 51, 54] });
+    expect(d.raw.map((r) => r.code)).toEqual([53, 61, 12, 55, 255]);
+    const o = parseDhcp(buildDhcp(offer), 0);
+    expect(o).toMatchObject({ op: 2, yiaddr: '192.168.1.23', siaddr: '192.168.1.1' });
+    expect(o.options).toEqual({ type: DHCP_OFFER, serverId: '192.168.1.1', leaseTime: 86400, subnetMask: '255.255.255.0', routers: ['192.168.1.1'], dns: ['1.1.1.1'] });
+    const req = parseDhcp(buildDhcp({ ...discover, options: { ...discover.options, type: DHCP_REQUEST, requestedIp: '192.168.1.23', serverId: '192.168.1.1' } }), 0);
+    expect(req.options).toMatchObject({ type: DHCP_REQUEST, requestedIp: '192.168.1.23', serverId: '192.168.1.1' });
+    expect(parseDhcp(buildDhcp({ ...offer, broadcast: true, options: { ...offer.options, type: DHCP_ACK } }), 0)).toMatchObject({ flags: 0x8000, broadcast: true, options: { type: DHCP_ACK } });
+  });
+
+  it('decodes inside UDP from 0.0.0.0 to the broadcast address with a valid checksum, every field explained', () => {
+    const udp = buildUdp(68, 67, buildDhcp(discover), '0.0.0.0', '255.255.255.255');
+    const ip = buildIpv4({ id: 1, df: false, ttl: 64, protocol: IPPROTO_UDP, src: '0.0.0.0', dst: '255.255.255.255' }, udp);
+    const layers = decodePdu(ip, 'ipv4');
+    expect(layers.map((l) => l.protocol)).toEqual(['ipv4', 'udp', 'dhcp']);
+    expect(layers[2]!.summary).toBe('DHCP DISCOVER · xid 0x1a2b3c4d');
+    const fields = allFields(layers);
+    for (const c of fields.filter((f) => f.key.endsWith('checksum'))) expect(c.display).toContain('✓');
+    for (const f of fields) expect(f.explain.length, f.key).toBeGreaterThan(10);
+    expect(fields.find((f) => f.key === 'dhcp.cookie')?.offset).toBe(28 + 236);
+    expect(fields.find((f) => f.key === 'dhcp.opt.53')).toMatchObject({ offset: 28 + 240, length: 3, display: '1 (DISCOVER)', importance: 'key' });
+    expect(fields.find((f) => f.key === 'dhcp.pad')).toBeTruthy();
+    const reply = decodePdu(buildDhcp(offer), 'dhcp')[0]!;
+    expect(reply.summary).toBe('DHCP OFFER 192.168.1.23 · xid 0x1a2b3c4d');
+    expect(reply.fields.find((f) => f.key === 'dhcp.opt.51')?.display).toBe('86400 s (1 day)');
+    expect(reply.fields.find((f) => f.key === 'dhcp.opt.6')?.display).toBe('1.1.1.1');
   });
 });
 

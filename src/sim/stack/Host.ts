@@ -1,5 +1,6 @@
-import type { Ip4 } from '../bytes/addr';
+import { BROADCAST_IP, type Ip4 } from '../bytes/addr';
 import type { IfaceSpec } from '../model';
+import { DHCP_CLIENT_PORT } from '../proto/dhcp';
 import { buildIpv4, IPPROTO_TCP, IPPROTO_UDP, parseIpv4 } from '../proto/ipv4';
 import { parseTcp, TCP_ACK, TCP_SYN } from '../proto/tcp';
 import type { Protocol } from '../proto/types';
@@ -27,7 +28,7 @@ export class Host extends Device {
   }
 
   get realIp(): Ip4 {
-    return this.spec.ifaces[0]!.ip;
+    return this.ifaces[0]!.ip;
   }
 
   override ownsIp(ip: Ip4): boolean {
@@ -44,6 +45,12 @@ export class Host extends Device {
 
   random32(): number {
     return this.rng.u32();
+  }
+
+  /** The next IPv4 identification value: this host counts up from a random start. */
+  nextIpId(): number {
+    this.ipId = (this.ipId + 1) & 0xffff;
+    return this.ipId;
   }
 
   /** Linux picks ephemeral ports from 32768–60999 (net.ipv4.ip_local_port_range). */
@@ -107,8 +114,7 @@ export class Host extends Device {
         pduId: sim.pdu(packetId, l4, 'tcp', { srcIp: this.ip, dstIp: dst, appHint: app }),
       });
     }
-    this.ipId = (this.ipId + 1) & 0xffff;
-    const ip = buildIpv4({ id: this.ipId, df, ttl: this.spec.initialTtl ?? 64, protocol, src: this.ip, dst }, l4);
+    const ip = buildIpv4({ id: this.nextIpId(), df, ttl: this.spec.initialTtl ?? 64, protocol, src: this.ip, dst }, l4);
     sim.emit({
       type: 'encapsulate',
       deviceId: this.id,
@@ -131,7 +137,10 @@ export class Host extends Device {
         return;
       }
     }
-    if (!this.ownsIp(ip.dst)) {
+    // A DHCP client has no address yet, so it listens on a raw socket: anything to port 68 is for it, whatever the IP
+    // destination says. A broadcast is for everyone on the link.
+    const forDhcp = ip.protocol === IPPROTO_UDP && this.udpSockets.has(DHCP_CLIENT_PORT) && parseUdp(ipBytes, ip.headerLen).dstPort === DHCP_CLIENT_PORT;
+    if (!this.ownsIp(ip.dst) && ip.dst !== BROADCAST_IP && !forDhcp) {
       sim.emit({ type: 'drop', packetId, reason: 'not-for-me', deviceId: this.id });
       return;
     }

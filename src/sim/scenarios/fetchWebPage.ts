@@ -71,6 +71,11 @@ export interface FetchWebPageOptions {
   warmArp?: boolean;
   /** Which device opens the page: the laptop on its Ethernet cable, or the phone over Wi-Fi. */
   from?: 'laptop' | 'phone';
+  /**
+   * The device starts with no address at all (0.0.0.0, no routes, no resolver) and gets everything from the home
+   * router by DHCP first: DISCOVER, OFFER, REQUEST, ACK. The lease hands out the same addresses the scenario uses.
+   */
+  dhcp?: boolean;
 }
 
 /** What the scenario needs to know about each real site. */
@@ -89,20 +94,37 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
   const url = opts.https ? site.url.replace(/^http:/, 'https:') : site.url;
   const warm = revisit || !!opts.warmArp;
   const from = opts.from ?? 'laptop';
+  const dhcp = !!opts.dhcp;
   const browser = (gateway: { ip: string; mac: string }) => ({
     ...(opts.vpn ? { tunnel: { ip: ADDR.vpn.tunnelIp, server: ADDR.vpn.ip } } : {}),
     ...(warm ? { arp: { [gateway.ip]: gateway.mac } } : {}),
     apps: [
+      // With DHCP the device asks for an address first, and the browser's resolver comes from the lease.
+      ...(dhcp ? [{ kind: 'dhcp-client' as const, hostName: from }] : []),
       {
         kind: 'browser' as const,
         url,
-        resolver: ADDR.resolver.ip,
+        ...(dhcp ? {} : { resolver: ADDR.resolver.ip }),
         request: ascii(opts.https ? site.tls.TLS_REQUEST : site.request),
         ...(revisit ? { knownAddress: site.ip } : {}),
         ...(tls ? { tls } : {}),
       },
     ],
   });
+  // The device that gets its address by DHCP starts with none: no address, no routes.
+  const addressed = (device: 'laptop' | 'phone', iface: string, ip: string, gateway: string) =>
+    dhcp && from === device
+      ? { ip: '0.0.0.0', prefixLen: 0, routes: [] }
+      : {
+          ip,
+          prefixLen: 24,
+          routes: [
+            { network: '192.168.1.0', prefixLen: 24, iface },
+            { network: '0.0.0.0', prefixLen: 0, via: gateway, iface },
+          ],
+        };
+  const laptopAddr = addressed('laptop', 'laptop.eth0', ADDR.laptop.ip, ADDR.homeLan.ip);
+  const phoneAddr = addressed('phone', 'phone.wlan0', ADDR.phone.ip, ADDR.homeWlan.ip);
   // On a revisit the router still remembers whichever device asked last time.
   const remembered = from === 'phone' ? ADDR.phone : ADDR.laptop;
   return {
@@ -117,11 +139,8 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
         sublabel: ADDR.laptop.ip,
         kind: 'laptop',
         layout: { x: 160, y: 470 },
-        ifaces: [{ id: 'laptop.eth0', name: 'eth0', mac: ADDR.laptop.mac, ip: ADDR.laptop.ip, prefixLen: 24 }],
-        routes: [
-          { network: '192.168.1.0', prefixLen: 24, iface: 'laptop.eth0' },
-          { network: '0.0.0.0', prefixLen: 0, via: ADDR.homeLan.ip, iface: 'laptop.eth0' },
-        ],
+        ifaces: [{ id: 'laptop.eth0', name: 'eth0', mac: ADDR.laptop.mac, ip: laptopAddr.ip, prefixLen: laptopAddr.prefixLen }],
+        routes: laptopAddr.routes,
         ...(from === 'laptop' ? browser(ADDR.homeLan) : { apps: [] }),
       },
       {
@@ -130,11 +149,8 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
         sublabel: ADDR.phone.ip,
         kind: 'phone',
         layout: { x: 600, y: 700 },
-        ifaces: [{ id: 'phone.wlan0', name: 'wlan0', mac: ADDR.phone.mac, ip: ADDR.phone.ip, prefixLen: 24, wifi: 'station' }],
-        routes: [
-          { network: '192.168.1.0', prefixLen: 24, iface: 'phone.wlan0' },
-          { network: '0.0.0.0', prefixLen: 0, via: ADDR.homeWlan.ip, iface: 'phone.wlan0' },
-        ],
+        ifaces: [{ id: 'phone.wlan0', name: 'wlan0', mac: ADDR.phone.mac, ip: phoneAddr.ip, prefixLen: phoneAddr.prefixLen, wifi: 'station' }],
+        routes: phoneAddr.routes,
         ...(from === 'phone' ? browser(ADDR.homeWlan) : { apps: [] }),
       },
       {
@@ -158,6 +174,17 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
         ],
         arp: { [ADDR.ispCustomer.ip]: ADDR.ispCustomer.mac, ...(warm ? { [remembered.ip]: remembered.mac } : {}) },
         nat: { inside: ['home.lan', 'home.wlan'], outside: 'home.wan' },
+        // The router's DHCP server is always there; a device only asks it when it starts without an address. Each
+        // device gets the address the scenario knows it by, so "where does 192.168.1.23 come from?" has one answer.
+        dhcp: {
+          ifaces: ['home.lan', 'home.wlan'],
+          leases: { [ADDR.laptop.mac]: ADDR.laptop.ip, [ADDR.phone.mac]: ADDR.phone.ip },
+          mask: '255.255.255.0',
+          router: ADDR.homeLan.ip,
+          dns: [ADDR.resolver.ip],
+          lease: 86400,
+          processing: 0.001,
+        },
         apps: [],
       },
       {

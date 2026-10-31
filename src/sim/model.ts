@@ -39,15 +39,34 @@ export type AppSpec =
   | {
       kind: 'browser';
       url: string;
-      resolver: Ip4;
+      /** The DNS resolver to ask. Left out when the device gets one from DHCP. */
+      resolver?: Ip4;
       request: Uint8Array;
       /** The address is still in the browser's DNS cache (a second visit within the record's TTL): skip the lookup. */
       knownAddress?: Ip4;
       /** HTTPS: replay this captured TLS 1.3 session on port 443. */
       tls?: TlsSession;
     }
+  /** The device starts with no address and gets one from the router by DHCP before the browser runs. */
+  | { kind: 'dhcp-client'; /** What it calls itself (option 12), e.g. "laptop". */ hostName: string }
   | { kind: 'dns-server'; records: Record<string, { ips: Ip4[]; ttl: number }>; processing: number }
   | { kind: 'http-server'; response: Uint8Array; processing: number; /** Also serve HTTPS on 443 with this session. */ tls?: TlsSession };
+
+export interface DhcpServerSpec {
+  /** Interfaces it answers on (the home side, not the ISP side). */
+  ifaces: string[];
+  /** Fixed leases: which address each MAC gets. */
+  leases: Record<Mac, Ip4>;
+  mask: Ip4;
+  /** The default gateway to hand out (option 3). */
+  router: Ip4;
+  /** DNS servers to hand out (option 6). */
+  dns: Ip4[];
+  /** Lease time in seconds (option 51). */
+  lease: number;
+  /** Seconds the server takes to answer. */
+  processing: number;
+}
 
 export interface DeviceSpec {
   id: string;
@@ -60,6 +79,8 @@ export interface DeviceSpec {
   arp?: Record<Ip4, Mac>;
   /** Interfaces on the home side (Ethernet and Wi-Fi) and the one facing the ISP. */
   nat?: { inside: string[]; outside: string };
+  /** A DHCP server on a router: which interfaces it serves and what it hands out. */
+  dhcp?: DhcpServerSpec;
   apps: AppSpec[];
   /** Map position for the UI, in scene units. */
   layout: { x: number; y: number };

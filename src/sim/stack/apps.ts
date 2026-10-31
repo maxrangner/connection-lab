@@ -73,12 +73,15 @@ function resolve(host: Host, name: string, resolver: string, done: (ips: string[
   send();
 }
 
-export function startBrowser(host: Host, spec: BrowserSpec, mss: number): void {
+/** `leased` is the resolver DHCP handed out, used when the spec names none. */
+export function startBrowser(host: Host, spec: BrowserSpec, mss: number, leased?: string): void {
   const sim = host.sim;
   const url = new URL(spec.url);
   sim.emit({ type: 'app', deviceId: host.id, app: 'browser', action: 'start', info: { url: spec.url } });
   const lookup = (done: (ips: string[]) => void, fail: (reason: string) => void): void => {
-    if (!spec.knownAddress) return resolve(host, url.hostname, spec.resolver, done, fail);
+    const resolver = spec.resolver ?? leased;
+    if (!spec.knownAddress && !resolver) return fail('no DNS resolver configured');
+    if (!spec.knownAddress) return resolve(host, url.hostname, resolver!, done, fail);
     sim.emit({ type: 'app', deviceId: host.id, app: 'dns-client', action: 'dns-cache-hit', info: { name: url.hostname, addresses: [spec.knownAddress] } });
     done([spec.knownAddress]);
   };

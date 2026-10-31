@@ -51,7 +51,7 @@ export interface Frame {
   head: number;
   tail: number;
 }
-export type Chapter = 'dns' | 'hello' | 'secret' | 'page';
+export type Chapter = 'address' | 'dns' | 'hello' | 'secret' | 'page';
 
 /** One piece of a packet, by where it sits. */
 export type PartKey = 'ethH' | 'vpn' | 'ip' | 'l4' | 'card' | 'ethT';
@@ -178,6 +178,12 @@ export function dnsCardLabel(summary: string): string {
   return /\d+\.\d+\.\d+\.\d+/.exec(summary)?.[0] ?? 'DNS';
 }
 
+/** "DHCP DISCOVER · xid 0x1a2b3c4d" → "DISCOVER", "DHCP OFFER 192.168.1.23 · xid …" → "OFFER 192.168.1.23". */
+export function dhcpCardLabel(summary: string): string {
+  const m = /^DHCP (\w+)( \d+\.\d+\.\d+\.\d+)?/.exec(summary);
+  return m ? `${m[1]}${m[2] ?? ''}` : 'DHCP';
+}
+
 const TLS_HANDSHAKE = 22;
 const SERVER_HELLO = 2;
 
@@ -205,6 +211,8 @@ function seenOn(pdu: PduSnapshot | undefined, p: PacketInfo): Seen | undefined {
   const base = { from: field(ip, 'ipv4.src'), to: field(ip, 'ipv4.dst') };
   const dns = layer(pdu, 'dns');
   if (dns) return { ...base, lines: [dnsCardLabel(dns.summary)], kind: 'open' };
+  const dhcp = layer(pdu, 'dhcp');
+  if (dhcp) return { ...base, lines: [dhcpCardLabel(dhcp.summary)], kind: 'open' };
   const tls = layer(pdu, 'tls');
   if (tls) {
     const data = pdu.bytes.subarray(tls.start, tls.payloadEnd);
@@ -241,7 +249,7 @@ function detailsOf(pdu: PduSnapshot | undefined): Details {
   if (ip) d.ip = rowsOf(ip.fields);
   const l4 = layer(pdu, 'tcp') ?? layer(pdu, 'udp');
   if (l4) d.l4 = rowsOf(l4.fields);
-  const app = layer(pdu, 'http') ?? layer(pdu, 'dns') ?? layer(pdu, 'tls');
+  const app = layer(pdu, 'http') ?? layer(pdu, 'dns') ?? layer(pdu, 'dhcp') ?? layer(pdu, 'tls');
   if (app) d.card = rowsOf(app.fields);
   return d;
 }
@@ -264,7 +272,7 @@ function chosen(r: SimResult): PacketInfo[] {
   const out: PacketInfo[] = [];
   const helloAckFrom = new Set<string>();
   for (const p of r.packets.values()) {
-    if (p.kind === 'dns') {
+    if (p.kind === 'dns' || p.kind === 'dhcp') {
       out.push(p);
       continue;
     }
@@ -380,9 +388,9 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, client: s
   const packet = inner ?? frame;
   const ip = layer(packet, 'ipv4')!;
   const l4 = layer(packet, 'tcp') ?? layer(packet, 'udp')!;
-  const app = layer(packet, 'http') ?? layer(packet, 'dns');
+  const app = layer(packet, 'http') ?? layer(packet, 'dns') ?? layer(packet, 'dhcp');
   const dataBytes = l4.payloadEnd - l4.headerEnd;
-  const card = dataBytes > 0 ? (app ? (app.protocol === 'http' ? cardLabel(app.summary) : dnsCardLabel(app.summary)) : 'data') : null;
+  const card = dataBytes > 0 ? (app ? (app.protocol === 'http' ? cardLabel(app.summary) : app.protocol === 'dhcp' ? dhcpCardLabel(app.summary) : dnsCardLabel(app.summary)) : 'data') : null;
   const isTcp = l4.protocol === 'tcp';
   const origin = steps[0]!.kind === 'travel' || steps[0]!.kind === 'lost' ? (steps[0] as { from: string }).from : (steps[0] as { device: string }).device;
 
@@ -391,14 +399,15 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, client: s
   if (card && last?.kind === 'unwrap' && last.layer === 'l4') steps.push({ kind: 'read', device: last.device });
 
   const flags = p.tcp?.flags ?? 0;
-  // A DNS question asked again by the same device: its stub resolver's timer ran out.
-  const askedAt = p.kind === 'dns' ? asked.get(origin) : undefined;
-  if (p.kind === 'dns' && !packet.layers.some((x) => x.summary.startsWith('DNS response'))) asked.set(origin, p.createdAt);
+  // A DNS question asked again by the same device, or the same DHCP message sent again: its timer ran out.
+  const askKey = p.kind === 'dhcp' ? `${origin}|${card}` : origin;
+  const askedAt = p.kind === 'dns' || (p.kind === 'dhcp' && origin === client) ? asked.get(askKey) : undefined;
+  if ((p.kind === 'dns' && !packet.layers.some((x) => x.summary.startsWith('DNS response'))) || (p.kind === 'dhcp' && origin === client)) asked.set(askKey, p.createdAt);
   const resend = r.events.find((e) => e.type === 'tcp:retransmit' && e.packetId === p.id);
   const timer = resend?.type === 'tcp:retransmit' && resend.cause === 'rto' ? resend.rto : askedAt !== undefined ? p.createdAt - askedAt : undefined;
   return {
     packetId: p.id,
-    chapter: p.kind === 'dns' ? 'dns' : dataBytes > 0 ? 'page' : 'hello',
+    chapter: p.kind === 'dhcp' ? 'address' : p.kind === 'dns' ? 'dns' : dataBytes > 0 ? 'page' : 'hello',
     start: p.createdAt,
     origin,
     outward: origin === client,
@@ -493,7 +502,12 @@ export function buildStory(r: SimResult): Story {
     site: url ? new URL(url).hostname : '',
     client,
     vpn: r.scenario.devices.some((d) => d.tunnel),
-    names: Object.fromEntries(r.scenario.devices.flatMap((d) => [...d.ifaces.map((i) => [i.ip, d.label]), ...(d.tunnel ? [[d.tunnel.ip, d.label]] : [])])),
+    // An address a device gets by DHCP belongs to whoever has the MAC it is leased to.
+    names: Object.fromEntries(r.scenario.devices.flatMap((d) => [
+      ...d.ifaces.map((i) => [i.ip, d.label]),
+      ...(d.tunnel ? [[d.tunnel.ip, d.label]] : []),
+      ...Object.entries(d.dhcp?.leases ?? {}).flatMap(([mac, ip]) => r.scenario.devices.filter((x) => x.ifaces.some((i) => i.mac === mac)).map((x) => [ip, x.label])),
+    ])),
     trips: shown,
     pageTitle: title,
     image: imageOf(r),

@@ -12,7 +12,7 @@ export interface PduSnapshot {
 }
 
 /** 'stream' = application bytes handed to TCP (or reassembled from it); not itself a packet on the wire. */
-export type PacketKind = 'arp' | 'dns' | 'tcp' | 'stream';
+export type PacketKind = 'arp' | 'dhcp' | 'dns' | 'tcp' | 'stream';
 
 /** A logical packet. It keeps its id across hops even as MACs, TTL or NAT change its bytes. */
 export interface PacketInfo {

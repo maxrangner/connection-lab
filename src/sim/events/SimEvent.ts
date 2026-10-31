@@ -1,7 +1,7 @@
 import type { Ip4, Mac } from '../bytes/addr';
 import type { LayerNum, Protocol } from '../proto/types';
 
-export type TimerKind = 'tcp-rto' | 'tcp-timewait' | 'dns-retry' | 'arp-retry';
+export type TimerKind = 'tcp-rto' | 'tcp-timewait' | 'dns-retry' | 'arp-retry' | 'dhcp-retry';
 
 export type TcpState =
   | 'CLOSED'
@@ -40,6 +40,11 @@ export type AppAction =
   | 'dns-answer' // client got the addresses
   | 'dns-cache-hit' // client still had the address cached, no lookup needed
   | 'dns-serve' // resolver looked up its cache and answers
+  | 'dhcp-discover' // client with no address asks the whole link for one
+  | 'dhcp-offer' // server proposes an address and a lease
+  | 'dhcp-request' // client asks for the offered address
+  | 'dhcp-ack' // server grants the lease
+  | 'dhcp-configured' // client set its address, routes and resolver from the lease
   | 'http-request-sent'
   | 'http-request-received'
   | 'http-response-sent'
@@ -49,7 +54,7 @@ export type AppAction =
 
 /** Everything that can happen, in the order it happens. Narration text is derived in the UI. */
 export type SimEventPayload =
-  | { type: 'app'; deviceId: string; app: 'browser' | 'dns-client' | 'dns-server' | 'http-server'; action: AppAction; pduId?: string; info?: Record<string, string | number | string[]> }
+  | { type: 'app'; deviceId: string; app: 'browser' | 'dns-client' | 'dns-server' | 'dhcp-client' | 'dhcp-server' | 'http-server'; action: AppAction; pduId?: string; info?: Record<string, string | number | string[]> }
   | { type: 'encapsulate'; deviceId: string; packetId: string; layer: LayerNum; protocol: Protocol; pduId: string }
   | { type: 'decapsulate'; deviceId: string; packetId: string; layer: LayerNum; protocol: Protocol; pduId: string }
   | { type: 'arp:miss'; deviceId: string; ip: Ip4; packetId: string }

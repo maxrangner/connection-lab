@@ -269,7 +269,7 @@ function showSetup(): void {
   setupMenu.button.classList.toggle('on', SETTINGS.some((k) => features[k]));
 }
 
-const CHAPTERS: Record<Chapter, string> = { dns: 'Find the address', hello: 'Say hello', secret: 'Check and agree', page: 'Get the page' };
+const CHAPTERS: Record<Chapter, string> = { address: 'Get an address', dns: 'Find the address', hello: 'Say hello', secret: 'Check and agree', page: 'Get the page' };
 /** Chapter number in this run (a second visit skips the address, HTTPS adds the secret). */
 const chapterName = (ch: Chapter): string => (ch === 'page' && story.image ? 'Get the photo' : CHAPTERS[ch]);
 

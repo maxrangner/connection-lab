@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fetchWebPage, runScenario, type ManualFault } from '../sim';
-import { buildStory, cardLabel, dnsCardLabel, type Trip } from './story';
-import { addressBefore, buildTimeline, detailsAt, formatWait, lockPose, packetPose, realAt, seenSoFar, spyLog, stepTarget, swapLanding, swapMoment, trayAngle } from './timeline';
+import { buildStory, cardLabel, dhcpCardLabel, dnsCardLabel, type Trip } from './story';
+import { addressBefore, buildTimeline, chapterAt, detailsAt, formatWait, lockPose, packetPose, realAt, seenSoFar, spyLog, stepTarget, swapLanding, swapMoment, trayAngle } from './timeline';
 
 const run = (manual: ManualFault[] = []) => buildStory(runScenario(fetchWebPage(), { seed: 1, faults: { randomLoss: 0, manual } }));
 const story = run();
@@ -668,6 +668,52 @@ describe('a VPN in the story', () => {
     expect(seen('bb4')).toMatchObject({ kind: 'open', from: '198.51.100.10', lines: ['GET / HTTP/1.1', 'Host: example.com'] });
     const dns = s.trips[0]!.steps.find((y) => y.kind === 'travel' && y.link === 'wan');
     expect(dns?.kind === 'travel' && dns.seen?.kind).toBe('scrambled');
+  });
+});
+
+describe('getting an address first (DHCP)', () => {
+  const dhcp = (manual: ManualFault[] = []) => buildStory(runScenario(fetchWebPage({ dhcp: true }), { seed: 1, faults: { randomLoss: 0, manual } }));
+  const s = dhcp();
+
+  it('opens with an "address" chapter of four DHCP cards, then the story as before', () => {
+    expect(s.trips.slice(0, 6).map((t) => [t.chapter, t.card ?? t.l4Label])).toEqual([
+      ['address', 'DISCOVER'],
+      ['address', 'OFFER 192.168.1.23'],
+      ['address', 'REQUEST 192.168.1.23'],
+      ['address', 'ACK 192.168.1.23'],
+      ['dns', 'example.com?'],
+      ['dns', '104.20.23.154'],
+    ]);
+    const tl = buildTimeline(s);
+    expect([...new Set(tl.segs.map((x) => chapterAt(tl, x.t0)))]).toEqual(['address', 'dns', 'hello', 'page']);
+    expect(s.dnsAnswer).toBe('104.20.23.154');
+    expect(s.remembered).toBeNull();
+    expect(s.pageTitle).toBe('Example Domain');
+    expect(s.names['192.168.1.23']).toBe('Laptop');
+  });
+
+  it('a DHCP card is UDP, from nowhere to everyone, and a snoop reads it in plain text', () => {
+    const d = s.trips[0]!;
+    expect(d).toMatchObject({ l4: 'udp', l4Label: 'UDP', from: '0.0.0.0', to: '255.255.255.255', outward: true, origin: 'laptop' });
+    expect(d.steps.map((x) => x.kind).slice(0, 5)).toEqual(['appear', 'wrap', 'wrap', 'wrap', 'travel']);
+    const travel = d.steps.find((x) => x.kind === 'travel');
+    expect(travel?.kind === 'travel' && travel.seen).toMatchObject({ kind: 'open', lines: ['DISCOVER'], from: '0.0.0.0', to: '255.255.255.255' });
+    const offer = s.trips[1]!;
+    expect(offer).toMatchObject({ origin: 'home', outward: false, from: '192.168.1.1', to: '192.168.1.23' });
+    expect(offer.steps.at(-1)).toMatchObject({ kind: 'read', device: 'laptop' });
+    expect(dhcpCardLabel('DHCP DISCOVER · xid 0x1a2b3c4d')).toBe('DISCOVER');
+    expect(dhcpCardLabel('DHCP ACK 192.168.1.23 · xid 0x1a2b3c4d')).toBe('ACK 192.168.1.23');
+  });
+
+  it('a lost OFFER: the laptop waits 4 s at its timer and asks again', () => {
+    const k = dhcp([{ packetId: s.trips[1]!.packetId, linkId: 'lan' }]);
+    expect(k.trips[1]).toMatchObject({ card: 'OFFER 192.168.1.23', lost: true });
+    expect(k.trips[2]).toMatchObject({ card: 'DISCOVER', retry: true, timedOut: true, waited: 4, origin: 'laptop' });
+    expect(k.trips[3]).toMatchObject({ card: 'OFFER 192.168.1.23', lost: false, retry: false });
+    expect(k.trips[4]).toMatchObject({ card: 'REQUEST 192.168.1.23', retry: false, timedOut: false });
+    const waits = buildTimeline(k).segs.flatMap((x) => (x.step.kind === 'wait' ? [x.step] : []));
+    expect(waits).toMatchObject([{ device: 'laptop', seconds: 4, giveUp: false, mood: 'surprise' }]);
+    expect(k.pageTitle).toBe('Example Domain');
   });
 });
 
