@@ -270,7 +270,9 @@ describe('setup options', () => {
       const waits = buildTimeline(s).segs.flatMap((x) => (x.step.kind === 'wait' ? [x.step] : []));
       expect(waits.filter((w) => !w.giveUp)).toHaveLength(s.trips.filter((x) => x.timedOut).length);
       for (const t of s.trips.filter((x) => x.lost && x.l4Label !== 'ACK')) {
-        expect(s.trips.some((x) => x.retransmitOf === t.packetId || (x.retry && x.chapter === 'dns')) || waits.some((w) => w.giveUp)).toBe(true);
+        // A lost SYN needs nothing more once the other side's own resend has got through.
+        const answered = t.l4Label === 'SYN' && s.trips.some((x) => x.l4Label === 'SYN-ACK' && x.retry && !x.lost);
+        expect(answered || s.trips.some((x) => x.retransmitOf === t.packetId || (x.retry && x.chapter === 'dns')) || waits.some((w) => w.giveUp)).toBe(true);
       }
     }
   });

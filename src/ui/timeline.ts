@@ -1,6 +1,7 @@
 import type { PduSnapshot } from '../sim';
 import { toneOf } from './notes';
-import { clamp01, easeIn, easeInOut, easeOutBack, easeOutBounce, lerpV, v3, type Vec3 } from './project';
+import type { Parts } from './paper';
+import { clamp01, easeIn, easeInOut, easeOutBack, easeOutBounce, lerp, lerpV, v3, type Vec3 } from './project';
 import { buildReadout, type Readout } from './readout';
 import { buildSpeech, type Bubble } from './speech';
 import type { Details, Frame, Seen, Step, Story, Trip, Wrap } from './story';
@@ -142,6 +143,8 @@ export interface Timeline {
   client: string;
   /** When a device's page came in, if that happened in the traffic after a card was dropped in. */
   pages: Map<string, number>;
+  /** The same for the answer to its DNS question. */
+  answers: Map<string, number>;
   /** How far the cable to the ISP has been stretched, in tiles. */
   stretch: number;
 }
@@ -248,6 +251,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   const reactions: Reaction[] = [];
   const notes: Note[] = [];
   const pages = new Map<string, number>();
+  const answers = new Map<string, number>();
   /** What had not been shown when a card was dropped in, and the stream that cut short, if one did. */
   const left: Trip[] = [];
   let cutShort: FlowState | undefined;
@@ -386,7 +390,8 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
     const step: TStep = { kind: 'flow', packets: traffic };
     const trip: Trip = { ...traffic[0]!, chapter: 'traffic', part: undefined, retry: false, timedOut: false, lost: false, steps: [step] };
     const p = at(story.client, LEVEL.eth);
-    const { packets, waits } = planFlow(traffic, t, story, knocks, linkPace, cues, reactions, TRAFFIC_HOP, notes, cutShort);
+    // A page in parts carries on from what has landed so far, whether those parts came as a stream or one by one.
+    const { packets, waits } = planFlow(traffic, t, story, knocks, linkPace, cues, reactions, TRAFFIC_HOP, notes, cutShort ?? { ...newFlow(), filled });
     const end = Math.max(t, ...packets.map((x) => x.t1), ...waits.map((w) => w.t1));
     segs.push({ step, trip, t0: t, t1: end, p0: p, p1: p, flow: packets, waits });
     t = end + (notes.length ? NOTE_LIFE : 0.5);
@@ -397,6 +402,10 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
       pages.set(client, done.t1);
       reactions.push({ t: done.t1, device: client, face: 'love' });
       cues.push({ t: done.t1, sound: 'chime' });
+    }
+    for (const client of story.clients) {
+      const answer = packets.find((x) => x.trip.chapter === 'dns' && !x.trip.lost && x.hops.at(-1)?.to === client);
+      if (answer) answers.set(client, answer.t1);
     }
   }
 
@@ -410,10 +419,11 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   // Each end makes its private half when it first has a hello to answer or to send.
   const halves = new Map<string, number>();
   for (const s of segs) if (s.trip.keyShare && (s.step.kind === 'appear' || s.step.kind === 'read') && !halves.has(s.step.device)) halves.set(s.step.device, s.t0);
-  const readout = buildReadout(story, timing(segs), t);
-  const joinReadout = buildReadout(story, timing(segs), t, true);
+  const times = timing(segs);
+  const readout = buildReadout(story, times, t);
+  const joinReadout = buildReadout(story, times, t, true);
   for (const f of [...readout.flags, ...joinReadout.flags]) cues.push({ t: f.t, sound: 'found' });
-  return { segs, reactions, notes, readout, joinReadout, speech: buildSpeech(story, segs), keys, halves, real: realClock(segs, story), cues, total: t, pos, kind, trayZ, isRouter, sky, air, client: story.client, pages, stretch };
+  return { segs, reactions, notes, readout, joinReadout, speech: buildSpeech(story, segs), keys, halves, real: realClock(segs, story), cues, total: t, pos, kind, trayZ, isRouter, sky, air, client: story.client, pages, answers, stretch };
 }
 
 /** When each packet set off and when it was done. */
@@ -434,6 +444,30 @@ function realClock(segs: Seg[], story: Story): Timeline['real'] {
     .sort((a, b) => a.v - b.v);
   let most = 0;
   return points.map((p) => ({ v: p.v, sim: (most = Math.max(most, p.sim)) }));
+}
+
+/**
+ * The parts of a page that came in several packets, and when each landed on the sheet (not there: not yet). Only the first
+ * device has a sheet, and only a page goes on it: a call's voice is notes, though its packets are numbered too.
+ */
+export function pageParts(tl: Pick<Timeline, 'segs' | 'client'>): Parts | null {
+  let of = 0;
+  let shownFrom = Infinity;
+  const filled = new Map<number, number>();
+  for (const s of tl.segs) {
+    for (const p of s.flow ?? []) {
+      if (!p.trip.part || p.trip.chapter !== 'page' || p.trip.client !== tl.client) continue;
+      of = p.trip.part.of;
+      shownFrom = Math.min(shownFrom, s.t0);
+      if (p.landed !== null && !filled.has(p.trip.part.n)) filled.set(p.trip.part.n, p.landed);
+    }
+    const part = s.trip.part;
+    if (!part || s.trip.chapter !== 'page') continue;
+    of = part.of;
+    shownFrom = Math.min(shownFrom, s.t0);
+    if (s.step.kind === 'read' && s.step.device === tl.client && !filled.has(part.n)) filled.set(part.n, lerp(s.t0, s.t1, 0.92));
+  }
+  return of > 1 ? { of, filled, shownFrom, complete: filled.size === of ? Math.max(...filled.values()) : Infinity } : null;
 }
 
 /** Real seconds gone at visual time v. */
@@ -573,7 +607,7 @@ function planFlow(
     let t = Math.max(from, (lastSent.get(sender) ?? -Infinity) + FLOW_GAP);
     // In a call each side's first word still waits for what it answers (the friend speaks only once called); after that
     // a side talks on its own clock.
-    if (trip.chapter !== 'call' || !lastSent.has(sender)) for (const h of heard) if (h.client === trip.client && h.sim <= trip.start) t = Math.max(t, h.v);
+    if (trip.chapter !== 'call' || trip.part?.n === 1) for (const h of heard) if (h.client === trip.client && h.sim <= trip.start) t = Math.max(t, h.v);
     if (t > until || stopped.has(chain)) {
       stopped.add(chain);
       rest.push(trip);

@@ -4,10 +4,10 @@ import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, easeOutBounce, iso, i
 import { drawSatellite, drawScissors, drawShield, drawSpyglass } from './icons';
 import { shade } from './shade';
 import type { Details, PartKey, Row, Story, Trip, Wrap } from './story';
-import { bandPoint, pageContent, Paper, PAPER_H, PAPER_W, photoContent, type Parts } from './paper';
+import { bandPoint, pageContent, Paper, PAPER_H, PAPER_W, photoContent } from './paper';
 import { screenAt } from './readout';
 import { drawBook, drawShelf, SERVER } from './stations';
-import { addressBefore, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, LEVEL, lockPose, NO_LOCK, NOTE_LIFE, packetPos, packetPose, segAt, swapLanding, swapMoment, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
+import { addressBefore, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, LEVEL, lockPose, NO_LOCK, NOTE_LIFE, packetPos, packetPose, pageParts, segAt, swapLanding, swapMoment, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
 
 export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', vpn: '#2e5e6e', eth: '#e08b33', wifi: '#2a9d8f' } as const;
 const DEVICE = '#d9d0c2';
@@ -59,6 +59,8 @@ const TERM_PAD = 12;
 /** A speech bubble's tip below the spot a device's name hangs from, or below a hop's flag there, and the width of a character. */
 const SPEECH_UNDER_NAME = 34;
 const SPEECH_UNDER_FLAG = 70;
+/** How far below a hop's flag the next one on the same device hangs. */
+const FLAG_ROW = 30;
 const SPEECH_CHAR = 7.1;
 /** The colours of a voice: its packets on the cables and its notes at the far end. */
 const VOICE_OF_CALLER = '#8b6fd0';
@@ -279,18 +281,20 @@ export class NetworkScene {
     this.story = story;
     this.tl = tl;
     if (this.layoutKey() !== this.laidOut) this.buildDevices();
-    this.fit();
-    this.buildCables();
     const stops = (t: Trip): string[] => t.steps.flatMap((s) => (s.kind === 'flow' ? s.packets.flatMap(stops) : 'device' in s ? [s.device] : [s.from, s.to]));
     this.used = new Set(story.trips.flatMap(stops));
-    const image = story.image ?? '';
-    if ((this.photo.getAttribute('href') ?? '') !== image) this.photo.setAttribute('href', image);
+    this.fit();
+    this.buildCables();
+    const sheetImage = story.image ?? '';
+    if ((this.photo.getAttribute('href') ?? '') !== sheetImage) this.photo.setAttribute('href', sheetImage);
     this.sheet.setContent(story.image ? photoContent(PHOTO_ID) : pageContent(story.pageTitle ?? story.site));
-    for (const screen of this.screens.values()) {
+    for (const [id, screen] of this.screens) {
+      const shows = story.screens[id];
+      const image = shows?.image ?? '';
       if ((screen.photo.getAttribute('href') ?? '') !== image) screen.photo.setAttribute('href', image);
       screen.photo.style.display = image ? '' : 'none';
       // A long title wraps onto two lines at the space nearest the middle.
-      const t = story.pageTitle ?? '';
+      const t = shows?.pageTitle ?? '';
       const cut = t.length > 14 ? [...t.matchAll(/ /g)].map((m) => m.index).sort((a, b) => Math.abs(a - t.length / 2) - Math.abs(b - t.length / 2))[0] : undefined;
       screen.title.replaceChildren();
       const lines = cut === undefined ? [t] : [t.slice(0, cut), t.slice(cut + 1)];
@@ -298,8 +302,8 @@ export class NetworkScene {
         const span = el('tspan', { x: screen.title.getAttribute('x') ?? 0, dy: i ? '1.15em' : lines.length > 1 ? '-0.4em' : '0' }, screen.title);
         span.textContent = line;
       });
-      screen.dnsName.textContent = story.site;
-      screen.dnsAddr.textContent = story.remembered ?? story.dnsAnswer ?? '';
+      screen.dnsName.textContent = shows?.site ?? '';
+      screen.dnsAddr.textContent = shows?.address ?? '';
     }
   }
 
@@ -450,7 +454,8 @@ export class NetworkScene {
     const kind = this.tl.kind.get(device) ?? '';
     if (kind === 'vpn-server') return this.story.vpn;
     if (UPSTREAM_KINDS.has(kind)) return this.story.cold;
-    if (kind === 'peer') return this.story.call;
+    // The friend's phone stands there for a call, also one dropped in partway.
+    if (kind === 'peer') return this.story.call || this.used.has(device);
     return true;
   }
 
@@ -496,27 +501,6 @@ export class NetworkScene {
     const d = this.tl.pos.get(device) ?? { x: 0, y: 0 };
     const kind = this.tl.kind.get(device);
     return kind === 'phone' || kind === 'peer' ? v3(d.x, d.y + 0.2, 1.3) : v3(d.x, d.y - 0.6, 0.95);
-  }
-
-  /** The parts of what came in several packets, and when each one landed on the sheet (not there: not yet). */
-  private partArrivals(): Parts | null {
-    let of = 0;
-    let shownFrom = Infinity;
-    const filled = new Map<number, number>();
-    for (const s of this.tl.segs) {
-      for (const p of s.flow ?? []) {
-        if (!p.trip.part) continue;
-        of = p.trip.part.of;
-        shownFrom = Math.min(shownFrom, s.t0);
-        if (p.landed !== null && !filled.has(p.trip.part.n)) filled.set(p.trip.part.n, p.landed);
-      }
-      const part = s.trip.part;
-      if (!part) continue;
-      of = part.of;
-      shownFrom = Math.min(shownFrom, s.t0);
-      if (s.step.kind === 'read' && s.step.device === this.tl.client && !filled.has(part.n)) filled.set(part.n, lerp(s.t0, s.t1, 0.92));
-    }
-    return of > 1 ? { of, filled, shownFrom, complete: filled.size === of ? Math.max(...filled.values()) : Infinity } : null;
   }
 
   private depthOf(id: string): number {
@@ -629,16 +613,18 @@ export class NetworkScene {
     const paper = this.paperAt();
     // Room above the sheet for the chapter name; a call has no sheet, but needs room for the notes above each device.
     // Probes have no sheet either, only what they print.
-    const pts = this.story.call
-      ? []
-      : this.story.probe
-        ? this.terminalCorners()
+    const pts = [
+      ...(this.story.call || this.story.probe
+        ? []
         : [
             { sx: paper.sx - 100, sy: paper.sy - 170 },
             { sx: paper.sx + 100, sy: paper.sy + 110 },
-          ];
-    const above = this.story.call ? 300 : 90;
-    const beside = this.story.call ? 70 + NOTE_SIDE + 34 : this.story.probe ? 110 : 70;
+          ]),
+      ...this.terminalCorners(),
+    ];
+    const voice = flow.some((p) => p.trip.chapter === 'call');
+    const above = voice ? 300 : 90;
+    const beside = voice ? 70 + NOTE_SIDE + 34 : this.story.probe ? 110 : 70;
     for (const id of new Set(flow.flatMap((p) => p.hops.flatMap((h) => [h.from, h.to])))) {
       const d = this.tl.pos.get(id) ?? { x: 0, y: 0 };
       const c = iso(d.x, d.y);
@@ -648,8 +634,7 @@ export class NetworkScene {
   }
 
   private terminalCorners(): { sx: number; sy: number }[] {
-    const b = this.terminalBox();
-    return b ? [{ sx: b.x - 20, sy: b.y - 80 }, { sx: b.x + b.w + 20, sy: b.y + b.h + 20 }] : [];
+    return [this.terminalBox(), this.terminalBox(this.tl.joinReadout, this.story.clients[1])].flatMap((b) => (b ? [{ sx: b.x - 20, sy: b.y - 80 }, { sx: b.x + b.w + 20, sy: b.y + b.h + 20 }] : []));
   }
 
   /** A probe has run: what it printed and the path it found. On a tall phone screen the printout alone is big enough to read. */
@@ -839,8 +824,7 @@ export class NetworkScene {
         setAttr(d.l2Tray, 'stroke', color);
       }
     }
-    // A call has no sheet: its voice is notes, not a file being put together.
-    const parts = this.story.call ? null : this.partArrivals();
+    const parts = pageParts(tl);
     this.sheet.draw(this.paperAt(), isoV(this.screenPoint()), parts, v);
     this.renderMoods(v);
     this.renderNotes(v);
@@ -862,17 +846,18 @@ export class NetworkScene {
       const screen = this.screens.get(id);
       if (!screen) continue;
       const own = id === tl.client;
+      const shows = this.story.screens[id];
       screen.face.classList.toggle('remembers', this.remembered.has(id));
-      // A page in several parts shows once the finished sheet has slid into the screen. A device fetching alongside gets the plain page.
+      // A page in several parts shows once the finished sheet has slid into the screen. A device dropped in has no sheet.
       const pageAt = own && parts ? clamp01((v - parts.complete - 0.7) / 0.25) : this.screenAfterRead(v, 'page', id);
-      const page = own && !this.story.pageTitle ? 0 : pageAt;
+      const page = shows?.pageTitle ? pageAt : 0;
       screen.page.setAttribute('opacity', page.toFixed(3));
       // On a second visit the laptop already knows the address from the start.
       const known = own && this.story.remembered ? 1 : this.screenAfterRead(v, 'dns', id);
       screen.dns.setAttribute('opacity', (known * (1 - page)).toFixed(3));
       const last = tl.segs[tl.segs.length - 1];
       // A call has no page to show: it is not a failure when none comes.
-      const failed = own && !this.story.pageTitle && !this.story.call && !this.story.probe && !!last && v >= last.t1;
+      const failed = !!shows?.browsing && !shows.pageTitle && !!last && v >= last.t1;
       screen.fail.setAttribute('opacity', failed ? '1' : '0');
     }
   }
@@ -947,7 +932,9 @@ export class NetworkScene {
     flags.forEach((f, i) => {
       const d = this.tl.pos.get(f.device) ?? { x: 0, y: 0 };
       const s = iso(d.x, d.y + 1.9, 0);
-      const g = el('g', { class: 'mood', transform: `translate(${s.sx.toFixed(1)} ${(s.sy + 50).toFixed(1)}) scale(${sizes[i]!.toFixed(3)})` }, this.readoutLayer);
+      // Two traces find the same hops: the second flag hangs under the first.
+      const row = flags.slice(0, i).filter((x) => x.device === f.device).length;
+      const g = el('g', { class: 'mood', transform: `translate(${s.sx.toFixed(1)} ${(s.sy + 50 + row * FLAG_ROW).toFixed(1)}) scale(${sizes[i]!.toFixed(3)})` }, this.readoutLayer);
       const w = f.text.length * 7.4 + 22;
       el('rect', { x: -w / 2, y: -13, width: w, height: 26, rx: 13, class: 'hop-bg' }, g);
       el('text', { 'text-anchor': 'middle', dy: '0.36em', class: 'hop-text' }, g).textContent = f.text;
@@ -979,8 +966,8 @@ export class NetworkScene {
     for (const { b, size, op } of looks) {
       const d = this.tl.pos.get(b.device) ?? { x: 0, y: 0 };
       const s = iso(d.x, d.y + 1.9, 0);
-      const flagged = this.tl.readout.flags.some((f) => f.device === b.device && v >= f.t);
-      const y = s.sy + (flagged ? SPEECH_UNDER_FLAG : SPEECH_UNDER_NAME);
+      const flagged = [...this.tl.readout.flags, ...this.tl.joinReadout.flags].filter((f) => f.device === b.device && v >= f.t).length;
+      const y = s.sy + (flagged ? SPEECH_UNDER_FLAG + (flagged - 1) * FLAG_ROW : SPEECH_UNDER_NAME);
       const g = el('g', { class: 'mood', opacity: op.toFixed(3), transform: `translate(${s.sx.toFixed(1)} ${y.toFixed(1)}) scale(${(size * big).toFixed(3)})` }, this.speechLayer);
       const w = b.text.length * SPEECH_CHAR + 28;
       el('path', { d: `M${-w / 2 + 16} 8 H-9 L0 -2 L9 8 H${w / 2 - 16} a16 16 0 0 1 0 32 H${-w / 2 + 16} a16 16 0 0 1 0 -32 Z`, class: 'speech-bg' }, g);
@@ -1037,7 +1024,7 @@ export class NetworkScene {
       if (s.step.kind !== 'read' || s.trip.chapter !== chapter || s.step.device !== device) continue;
       o = Math.max(o, clamp01((v - lerp(s.t0, s.t1, 0.8)) / 0.4));
     }
-    const landed = chapter === 'page' ? this.tl.pages.get(device) : undefined;
+    const landed = (chapter === 'page' ? this.tl.pages : this.tl.answers).get(device);
     return landed === undefined ? o : Math.max(o, clamp01((v - landed) / 0.4));
   }
 

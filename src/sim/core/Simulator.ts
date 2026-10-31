@@ -25,6 +25,8 @@ export interface PacketInfo {
   kind: PacketKind;
   label: string;
   createdAt: number;
+  /** The job that set it off: 0 for the run's own, 1 for one dropped in on the other device. Replies count too. */
+  job: number;
   retransmitOf?: string;
   /** For TCP: which connection and direction; relative seq/ack are handy for display. */
   tcp?: { connId: string; relSeq: number; relAck: number; len: number; flags: number };
@@ -37,6 +39,7 @@ interface QItem {
   order: number;
   fn: () => void;
   cancelled: boolean;
+  job: number;
 }
 
 /**
@@ -51,11 +54,13 @@ export class Simulator {
   private heap: QItem[] = [];
   private order = 0;
   private pduCounter = 0;
-  private packetCounter = 0;
+  private packetCounters = new Map<string, number>();
   private handles = new Map<number, QItem>();
+  /** The job at work: whatever a callback schedules or sends belongs to the job that set it off. */
+  job = 0;
 
   at(time: number, fn: () => void): number {
-    const item: QItem = { at: Math.max(time, this.now), order: this.order++, fn, cancelled: false };
+    const item: QItem = { at: Math.max(time, this.now), order: this.order++, fn, cancelled: false, job: this.job };
     this.push(item);
     this.handles.set(item.order, item);
     return item.order;
@@ -87,7 +92,12 @@ export class Simulator {
   }
 
   newPacket(origin: string, kind: PacketKind, label: string, extra: Partial<PacketInfo> = {}): PacketInfo {
-    const info: PacketInfo = { id: `pk${this.packetCounter++}`, origin, kind, label, createdAt: this.now, ...extra };
+    // Each sender counts its own in each job, so a packet that is never sent does not renumber anyone else's: the other
+    // job's, or those of the other end of a call, which talks on its own clock.
+    const sender = `${this.job}.${origin}`;
+    const n = this.packetCounters.get(sender) ?? 0;
+    this.packetCounters.set(sender, n + 1);
+    const info: PacketInfo = { id: `pk${sender}.${n}`, origin, kind, label, createdAt: this.now, job: this.job, ...extra };
     this.packets.set(info.id, info);
     return info;
   }
@@ -100,6 +110,7 @@ export class Simulator {
       if (it.at > maxTime) break;
       this.handles.delete(it.order);
       this.now = it.at;
+      this.job = it.job;
       it.fn();
     }
   }
