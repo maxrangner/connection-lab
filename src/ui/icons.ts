@@ -53,6 +53,31 @@ export function drawPair(g: SVGGElement): void {
   el('circle', { cx: -14, cy: 2, r: 4, class: 'pair-dot' }, g);
 }
 
+/** An address tag with nothing written on it yet: the device that has to ask for an address first. */
+export function drawTag(g: SVGGElement): void {
+  el('path', { d: 'M-24 -14 H10 L24 0 L10 14 H-24 Z', class: 'tag' }, g);
+  el('circle', { cx: 12, cy: 0, r: 3, class: 'tag-hole' }, g);
+  for (let i = 0; i < 3; i++) el('line', { x1: -17 + i * 10, x2: -11 + i * 10, y1: 0, y2: 0, class: 'tag-dash' }, g);
+}
+
+/** A snowflake: the cold resolver, with nothing in its cache. */
+export function drawSnowflake(g: SVGGElement): void {
+  for (let i = 0; i < 3; i++) {
+    const a = (i * Math.PI) / 3;
+    const dx = Math.cos(a) * 24;
+    const dy = Math.sin(a) * 24;
+    el('line', { x1: -dx, y1: -dy, x2: dx, y2: dy, class: 'flake' }, g);
+    for (const s of [-1, 1]) {
+      for (const t of [0.55, -0.55]) {
+        const px = dx * t;
+        const py = dy * t;
+        const b = a + (s * Math.PI) / 3;
+        el('line', { x1: px, y1: py, x2: px + Math.cos(b) * 7 * Math.sign(t), y2: py + Math.sin(b) * 7 * Math.sign(t), class: 'flake' }, g);
+      }
+    }
+  }
+}
+
 /** A long page: the bigger page. */
 export function drawPage(g: SVGGElement): void {
   el('path', { d: 'M-17 -27 H9 L19 -17 V27 H-17 Z', class: 'page-sheet' }, g);

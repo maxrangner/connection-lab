@@ -6,7 +6,7 @@ import { shade } from './shade';
 import type { Details, PartKey, Row, Story, Trip, Wrap } from './story';
 import { bandPoint, pageContent, Paper, PAPER_H, PAPER_W, photoContent, type Parts } from './paper';
 import { drawBook, drawShelf, SERVER } from './stations';
-import { addressBefore, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, LEVEL, lockPose, NO_LOCK, packetPos, packetPose, segAt, swapLanding, swapMoment, trayOpacity, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
+import { addressBefore, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, LEVEL, lockPose, NO_LOCK, packetPos, packetPose, segAt, swapLanding, swapMoment, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
 
 export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', vpn: '#2e5e6e', eth: '#e08b33', wifi: '#2a9d8f' } as const;
 const DEVICE = '#d9d0c2';
@@ -375,8 +375,16 @@ export class NetworkScene {
     name.textContent = 'VPN tunnel';
   }
 
+  /** Is this device on the table: the VPN server only with a VPN, the name servers only with a cold resolver. */
+  private shown(device: string): boolean {
+    const kind = this.tl.kind.get(device) ?? '';
+    if (kind === 'vpn-server') return this.story.vpn;
+    if (UPSTREAM_KINDS.has(kind)) return this.story.cold;
+    return true;
+  }
+
   private linkShown(device: string): boolean {
-    return this.tl.kind.get(device) !== 'vpn-server' || this.story.vpn;
+    return this.shown(device);
   }
 
   /** Is this link really on the table right now? */
@@ -638,6 +646,22 @@ export class NetworkScene {
         box(g, { x: x - 0.7, y: y - 0.55, z: 0.75, w: 1.4, d: 1.1, h: 0.35, color: '#c9b79c', cls: 'dev-body' });
         return null;
       }
+      case 'root-server': {
+        // The top of the tree: a cabinet with a globe on it.
+        box(g, { x: x - 1.0, y: y - 0.8, z: 0, w: 2.0, d: 1.6, h: 0.75, ...neutral });
+        const top = iso(x, y, 1.3);
+        el('circle', { cx: top.sx, cy: top.sy, r: 12, class: 'root-globe' }, g);
+        el('ellipse', { cx: top.sx, cy: top.sy, rx: 5, ry: 12, class: 'root-globe' }, g);
+        el('line', { x1: top.sx - 12, y1: top.sy, x2: top.sx + 12, y2: top.sy, class: 'root-globe' }, g);
+        return null;
+      }
+      case 'tld-server':
+      case 'auth-server': {
+        // Cabinets like the resolver's, each with its own thinner book.
+        box(g, { x: x - 1.0, y: y - 0.8, z: 0, w: 2.0, d: 1.6, h: 0.75, ...neutral });
+        box(g, { x: x - 0.7, y: y - 0.55, z: 0.75, w: 1.4, d: 1.1, h: 0.2, color: kind === 'tld-server' ? '#b9c6a8' : '#c9b79c', cls: 'dev-body' });
+        return null;
+      }
       default: {
         box(g, { x: x - SERVER.half, y: y - SERVER.half, z: 0, w: SERVER.half * 2, d: SERVER.half * 2, h: SERVER.height, ...neutral });
         for (const z of SERVER.slots) line(g, v3(x - SERVER.slotHalf, y + SERVER.half, z), v3(x + SERVER.slotHalf, y + SERVER.half, z), { class: 'slot' });
@@ -673,8 +697,8 @@ export class NetworkScene {
     // Once a run starts, whatever it doesn't use steps back.
     const greying = v >= 0;
     for (const d of this.devices) {
-      // Without a VPN its server is not on the table.
-      const absent = d.kind === 'vpn-server' && !this.story.vpn;
+      // Without a VPN its server is not on the table, nor the name servers without a cold resolver.
+      const absent = !this.shown(d.id);
       d.g.classList.toggle('absent', absent);
       d.g.classList.toggle('unused', !absent && greying && !this.used.has(d.id));
     }

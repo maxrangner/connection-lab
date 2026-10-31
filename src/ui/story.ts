@@ -144,6 +144,10 @@ export interface Story {
   clients: string[];
   /** All traffic goes through the VPN server. */
   vpn: boolean;
+  /** The resolver has nothing cached and walks root → TLD → authoritative: those three servers are on the table. */
+  cold: boolean;
+  /** The device starts with no address and gets one by DHCP first. */
+  dhcp: boolean;
   /** Which device each address belongs to. */
   names: Record<string, string>;
   devices: { id: string; label: string; kind: string }[];
@@ -583,6 +587,8 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
     client,
     clients,
     vpn: r.scenario.devices.some((d) => d.tunnel),
+    cold: r.scenario.devices.some((d) => d.apps.some((a) => a.kind === 'dns-server' && !!a.upstream)),
+    dhcp: r.scenario.devices.some((d) => d.id === client && d.apps.some((a) => a.kind === 'dhcp-client')),
     // An address a device gets by DHCP belongs to whoever has the MAC it is leased to.
     names: Object.fromEntries(r.scenario.devices.flatMap((d) => [
       ...d.ifaces.flatMap((i) => [i.ip, ...(i.aliases ?? [])].map((ip) => [ip, d.label])),

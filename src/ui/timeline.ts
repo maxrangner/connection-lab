@@ -122,9 +122,15 @@ const POS: Record<string, { x: number; y: number }> = {
   'dns-resolver': { x: 16, y: -8 },
   // The far corner: its own cables reach the DNS resolver and the web server without passing the ISP router again.
   'vpn-server': { x: 24, y: -8 },
+  // The name servers a cold resolver walks, in a row behind it: root, the TLD's, the site's own.
+  'root-server': { x: 8, y: -16 },
+  'tld-server': { x: 16, y: -16 },
+  'auth-server': { x: 24, y: -16 },
 };
 
-export const DEVICE_TOP: Record<string, number> = { laptop: 1.7, phone: 2.0, 'home-router': 0.55, router: 0.8, 'web-server': 2.6, 'dns-resolver': 1.1, 'vpn-server': 1.3 };
+export const DEVICE_TOP: Record<string, number> = { laptop: 1.7, phone: 2.0, 'home-router': 0.55, router: 0.8, 'web-server': 2.6, 'dns-resolver': 1.1, 'vpn-server': 1.3, 'root-server': 1.5, 'tld-server': 1.1, 'auth-server': 1.1 };
+/** The servers only a cold resolver talks to; off the table otherwise. */
+export const UPSTREAM_KINDS = new Set(['root-server', 'tld-server', 'auth-server']);
 export const CABLE_Z = 0.55;
 /** Tray levels: 0 Ethernet, 1 IP, 2 transport, 3 app. The VPN case goes on just above Ethernet. */
 export const LEVEL: Record<Wrap | 'app', number> = { eth: 0, vpn: 0.5, ip: 1, l4: 2, app: 3 };

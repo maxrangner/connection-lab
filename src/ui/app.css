@@ -885,6 +885,10 @@ body {
   position: fixed;
   z-index: 5;
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: calc(100vw - 16px);
+  box-sizing: border-box;
   gap: 6px;
   padding: 8px;
   border-radius: 16px;
@@ -1149,6 +1153,37 @@ body {
 
 .pair-dot {
   fill: #fffdf8;
+}
+
+/* The Setup menu's empty address tag and snowflake */
+.tag {
+  fill: #fffdf8;
+  stroke: #3d7ea6;
+  stroke-width: 3;
+  stroke-linejoin: round;
+}
+
+.tag-hole {
+  fill: #3d7ea6;
+}
+
+.tag-dash {
+  stroke: #3d7ea6;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+}
+
+.flake {
+  stroke: #3d7ea6;
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+/* The root server's globe */
+.root-globe {
+  fill: none;
+  stroke: #7d5a10;
+  stroke-width: 1.5;
 }
 
 /* The Setup menu's ARP bubble */
