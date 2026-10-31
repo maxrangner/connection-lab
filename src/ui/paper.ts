@@ -113,6 +113,27 @@ export const photoContent =
     el('use', { href: `#${id}`, x: -w / 2, y: -h / 2 }, g);
   };
 
+/**
+ * A voice: what was heard, one band per packet from the top down, each drawn as its real samples swinging left and
+ * right of the middle, so a loud packet is wide and a lost one leaves its band empty. `heard` holds the µ-law bytes
+ * of each packet, or null for one that never came; `decode` turns a byte into a 16-bit sample.
+ */
+export const voiceContent =
+  (heard: (Uint8Array | null)[], decode: (b: number) => number): Content =>
+  (g, w, h) => {
+    const band = h / heard.length;
+    const parts: string[] = [];
+    heard.forEach((bytes, i) => {
+      if (!bytes) return;
+      const y0 = -h / 2 + i * band;
+      for (let k = 0; k < bytes.length; k++) {
+        const x = (decode(bytes[k]!) / 32768) * (w / 2 - 6);
+        parts.push(`${k ? 'L' : 'M'}${x.toFixed(1)} ${(y0 + ((k + 0.5) / bytes.length) * band).toFixed(2)}`);
+      }
+    });
+    el('path', { d: parts.join(''), class: 'paper-voice' }, g);
+  };
+
 /** A page: its real title and grey bars for the rest of it. */
 export const pageContent =
   (title: string): Content =>

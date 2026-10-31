@@ -128,9 +128,11 @@ const POS: Record<string, { x: number; y: number }> = {
   'root-server': { x: 8, y: -16 },
   'tld-server': { x: 16, y: -16 },
   'auth-server': { x: 24, y: -16 },
+  // The friend's phone, on the far side of the internet, in front of the web server.
+  peer: { x: 24, y: 8 },
 };
 
-export const DEVICE_TOP: Record<string, number> = { laptop: 1.7, phone: 2.0, 'home-router': 0.55, router: 0.8, 'web-server': 2.6, 'dns-resolver': 1.1, 'vpn-server': 1.3, 'root-server': 1.5, 'tld-server': 1.1, 'auth-server': 1.1 };
+export const DEVICE_TOP: Record<string, number> = { laptop: 1.7, phone: 2.0, 'home-router': 0.55, router: 0.8, 'web-server': 2.6, 'dns-resolver': 1.1, 'vpn-server': 1.3, 'root-server': 1.5, 'tld-server': 1.1, 'auth-server': 1.1, peer: 2.0 };
 /** The servers only a cold resolver talks to; off the table otherwise. */
 export const UPSTREAM_KINDS = new Set(['root-server', 'tld-server', 'auth-server']);
 export const CABLE_Z = 0.55;
@@ -260,7 +262,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
           d *= linkPace(step.link);
           break;
         case 'flow':
-          ({ packets: seg.flow, waits: seg.waits } = planFlow(step.packets, t, story, knocks, linkPace, cues, reactions, step.packets.length > 1 ? FLOW_HOP : ACK_HOP));
+          ({ packets: seg.flow, waits: seg.waits } = planFlow(step.packets, t, story, knocks, linkPace, cues, reactions, step.packets.length > 1 ? FLOW_HOP : ACK_HOP, trip.kind === 'call'));
           d = Math.max(t, ...seg.flow.map((p) => p.t1), ...seg.waits.map((w) => w.t1)) - t + (step.packets.length > 1 ? 0.5 : 0);
           break;
         case 'lost': {
@@ -358,6 +360,8 @@ function planFlow(
   cues: Cue[],
   reactions: Reaction[],
   hop: number,
+  /** A call: each side talks on its own clock, nothing is a reply to anything, so nothing waits for what was heard. */
+  independent = false,
 ): { packets: FlowPacket[]; waits: FlowWait[] } {
   const delay = new Map(story.links.map((l) => [l.id, l.delay]));
   const heard: { sim: number; v: number }[] = [];
@@ -377,7 +381,7 @@ function planFlow(
   let puzzled = false;
   const planned = packets.map((trip): FlowPacket => {
     let t = Math.max(from, (lastSent.get(trip.origin) ?? -Infinity) + FLOW_GAP);
-    for (const h of heard) if (h.sim <= trip.start) t = Math.max(t, h.v);
+    if (!independent) for (const h of heard) if (h.sim <= trip.start) t = Math.max(t, h.v);
     const key = `${trip.origin}|${trip.part?.n ?? trip.l4Label}`;
     const before = sent.get(key);
     sent.set(key, trip);
@@ -391,9 +395,9 @@ function planFlow(
     for (const s of trip.steps) {
       if (s.kind !== 'travel' && s.kind !== 'lost') continue;
       const lost = s.kind === 'lost';
-      // Cut under it by the viewer: where it was. Lost by itself: halfway along.
+      // Cut under it by the viewer: where it was. Dropped off a full port buffer: right at the router. Lost by itself: halfway along.
       const caught = knocks.get(`${trip.packetId}@${s.link}`);
-      const fall = lost ? (caught ?? 0.5) : 1;
+      const fall = lost ? (caught ?? (trip.droppedAtQueue ? 0.08 : 0.5)) : 1;
       const d = hop * linkPace(s.link) * fall;
       hops.push({ from: s.from, to: s.to, link: s.link, at: s.at, t0: t, t1: t + d, lost, fall, seen: s.seen });
       t += d;

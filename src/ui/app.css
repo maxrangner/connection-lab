@@ -406,6 +406,13 @@ body {
   fill: #f1eadf;
 }
 
+.paper-voice {
+  fill: none;
+  stroke: #2a9d8f;
+  stroke-width: 0.8;
+  stroke-linejoin: round;
+}
+
 .paper-num {
   font-size: 16px;
   font-weight: 800;
@@ -1189,6 +1196,26 @@ body {
   fill: none;
   stroke: #7d5a10;
   stroke-width: 1.5;
+}
+
+/* The call card's handset and the Setup menu's thin pipe */
+.handset {
+  fill: #3d7ea6;
+}
+
+.site-card-globe .handset {
+  fill: #fffdf8;
+}
+
+.pipe {
+  fill: none;
+  stroke: #3d7ea6;
+  stroke-width: 3;
+  stroke-linejoin: round;
+}
+
+.pipe-end {
+  fill: #3d7ea6;
 }
 
 /* The Setup menu's ARP bubble */

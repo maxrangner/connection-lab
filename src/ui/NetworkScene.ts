@@ -4,7 +4,8 @@ import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, easeOutBounce, iso, i
 import { drawSatellite, drawScissors, drawShield, drawSpyglass } from './icons';
 import { shade } from './shade';
 import type { Details, PartKey, Row, Story, Trip, Wrap } from './story';
-import { bandPoint, pageContent, Paper, PAPER_H, PAPER_W, photoContent, type Parts } from './paper';
+import { bandPoint, pageContent, Paper, PAPER_H, PAPER_W, photoContent, voiceContent, type Parts } from './paper';
+import { ulawDecode } from '../sim';
 import { drawBook, drawShelf, SERVER } from './stations';
 import { addressBefore, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, LEVEL, lockPose, NO_LOCK, packetPos, packetPose, segAt, swapLanding, swapMoment, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
 
@@ -250,7 +251,7 @@ export class NetworkScene {
     this.used = new Set(story.trips.flatMap(stops));
     const image = story.image ?? '';
     if ((this.photo.getAttribute('href') ?? '') !== image) this.photo.setAttribute('href', image);
-    this.sheet.setContent(story.image ? photoContent(PHOTO_ID) : pageContent(story.pageTitle ?? story.site));
+    this.sheet.setContent(story.voice ? voiceContent(story.voice.heard, ulawDecode) : story.image ? photoContent(PHOTO_ID) : pageContent(story.pageTitle ?? story.site));
     for (const screen of this.screens.values()) {
       if ((screen.photo.getAttribute('href') ?? '') !== image) screen.photo.setAttribute('href', image);
       screen.photo.style.display = image ? '' : 'none';
@@ -404,6 +405,7 @@ export class NetworkScene {
     const kind = this.tl.kind.get(device) ?? '';
     if (kind === 'vpn-server') return this.story.vpn;
     if (UPSTREAM_KINDS.has(kind)) return this.story.cold;
+    if (kind === 'peer') return this.story.call;
     return true;
   }
 
@@ -645,6 +647,14 @@ export class NetworkScene {
         box(g, { x: x - 0.7, y: y - 0.12, z: 0, w: 1.4, d: 0.22, h: 2.3, ...neutral });
         return this.buildScreen(g, iso(x - 0.6, y + 0.1, 2.18), 1.2 * U, 2.0 * U);
       }
+      case 'peer': {
+        // The friend's phone, far away: the same phone with a dark screen.
+        box(g, { x: x - 0.5, y: y - 0.6, z: 0, w: 1.0, d: 0.5, h: 0.25, ...neutral });
+        box(g, { x: x - 0.7, y: y - 0.12, z: 0, w: 1.4, d: 0.22, h: 2.3, ...neutral });
+        const a = iso(x - 0.6, y + 0.1, 2.18);
+        el('rect', { x: 0, y: 0, width: 1.2 * U, height: 2.0 * U, fill: '#3b4049', transform: faceTf(a, '+y') }, g);
+        return null;
+      }
       case 'home-router': {
         box(g, { x: x - 1.1, y: y - 0.7, z: 0, w: 2.2, d: 1.4, h: 0.55, ...neutral });
         for (const ax of [x - 0.8, x + 0.8]) line(g, v3(ax, y - 0.55, 0.55), v3(ax, y - 0.55, 1.6), { class: 'antenna' });
@@ -776,7 +786,8 @@ export class NetworkScene {
       const known = own && this.story.remembered ? 1 : this.screenAfterRead(v, 'dns', id);
       screen.dns.setAttribute('opacity', (known * (1 - page)).toFixed(3));
       const last = tl.segs[tl.segs.length - 1];
-      const failed = own && !this.story.pageTitle && !!last && v >= last.t1;
+      // A call has no page to show: it is not a failure when none comes.
+      const failed = own && !this.story.pageTitle && !this.story.call && !!last && v >= last.t1;
       screen.fail.setAttribute('opacity', failed ? '1' : '0');
     }
   }

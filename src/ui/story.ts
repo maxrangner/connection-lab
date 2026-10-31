@@ -713,7 +713,8 @@ function gatherStream(trips: Trip[], client: string): Trip[] {
 function gatherCall(trips: Trip[]): Trip[] {
   const first = trips.findIndex((t) => t.chapter === 'call');
   if (first < 0) return smallAcks(trips);
-  const packets = trips.slice(first).filter((t) => t.chapter === 'call');
+  // Only what comes back is numbered: the sheet beside the caller fills with what it hears; its own voice goes out as plain blocks.
+  const packets = trips.slice(first).filter((t) => t.chapter === 'call').map((t) => (t.outward ? { ...t, part: undefined } : t));
   const call: Trip = { ...trips[first]!, part: undefined, retry: false, timedOut: false, lost: false, kind: 'call', steps: [{ kind: 'flow', packets }] };
   return [...smallAcks(trips.slice(0, first)), call, ...smallAcks(trips.slice(first).filter((t) => t.chapter !== 'call'), 'call')];
 }

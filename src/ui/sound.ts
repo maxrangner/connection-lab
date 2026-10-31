@@ -75,6 +75,30 @@ export class Sound {
     }
   }
 
+  /** What a call's receiver heard: one second of 8 kHz samples, with silence where a packet never came. */
+  playVoice(heard: (Int16Array | number[] | null)[], perPacket: number): void {
+    if (this.muted) return;
+    try {
+      this.ctx ??= new AudioContext();
+      if (this.ctx.state === 'suspended') void this.ctx.resume();
+    } catch {
+      return;
+    }
+    const c = this.ctx;
+    const buf = c.createBuffer(1, heard.length * perPacket, 8000);
+    const data = buf.getChannelData(0);
+    heard.forEach((pcm, i) => {
+      if (!pcm) return;
+      for (let k = 0; k < perPacket; k++) data[i * perPacket + k] = (pcm[k] ?? 0) / 32768;
+    });
+    const src = c.createBufferSource();
+    src.buffer = buf;
+    const g = c.createGain();
+    g.gain.value = 0.9;
+    src.connect(g).connect(c.destination);
+    src.start(c.currentTime + 0.1);
+  }
+
   private tone(c: AudioContext, t: number, type: OscillatorType, f0: number, f1: number, dur: number, gain: number): void {
     const o = c.createOscillator();
     const g = c.createGain();

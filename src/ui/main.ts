@@ -1,9 +1,9 @@
 import './app.css';
-import { fetchWebPage, runScenario, type Cut, type ManualFault } from '../sim';
+import { fetchWebPage, runScenario, ulawDecodeAll, type Cut, type ManualFault } from '../sim';
 import { el } from './svg';
 import { clamp01, easeInOut, easeOutBack, iso, lerp, U } from './project';
 import { HexCard } from './hexCard';
-import { drawPadlock, drawPage, drawPair, drawQuestion, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawTag } from './icons';
+import { drawHandset, drawPadlock, drawPage, drawPair, drawPipe, drawQuestion, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawTag } from './icons';
 import { Menu } from './menus';
 import { NetworkScene, type Camera } from './NetworkScene';
 import { Sound } from './sound';
@@ -23,10 +23,10 @@ const LINGER = 1.4;
 const BACK_GRACE = 1;
 
 /** What the next run is like, set from the Setup menu between runs: changing it mid-run would rewrite what happened. */
-type Setting = 'https' | 'big' | 'slow' | 'vpn' | 'arp' | 'together' | 'dhcp' | 'cold';
+type Setting = 'https' | 'big' | 'slow' | 'vpn' | 'arp' | 'together' | 'dhcp' | 'cold' | 'thin';
 type Features = Record<Setting, boolean>;
-const SETTINGS: Setting[] = ['https', 'big', 'slow', 'vpn', 'arp', 'together', 'dhcp', 'cold'];
-const features: Features = { https: false, big: false, slow: false, vpn: false, arp: false, together: false, dhcp: false, cold: false };
+const SETTINGS: Setting[] = ['https', 'big', 'slow', 'vpn', 'arp', 'together', 'dhcp', 'cold', 'thin'];
+const features: Features = { https: false, big: false, slow: false, vpn: false, arp: false, together: false, dhcp: false, cold: false, thin: false };
 /** The line the spyglass is on, if any. */
 let spyLine: string | null = null;
 /** The visual time it was put there: it can only read what passes from then on. */
@@ -68,14 +68,17 @@ const known = new Map<string, { site: string; ip: string; until: number }>();
 /** This run is a second visit: the address is remembered, so there is nothing to look up. */
 let revisit = false;
 /** What a card on the table asks for: the page, or the photo. */
-type Wanted = 'page' | 'photo';
+type Wanted = 'page' | 'photo' | 'call';
+const WANTED: Wanted[] = ['page', 'photo', 'call'];
 /** The card picked up last. */
 let carried: Wanted = 'page';
 const pageSite = (): 'info.cern.ch' | 'example.com' => (features.big ? 'info.cern.ch' : 'example.com');
 const siteName = (): 'info.cern.ch' | 'example.com' | 'httpbin.org' => (carried === 'photo' ? 'httpbin.org' : pageSite());
+/** The name the device will look up: a site, or the friend to call. */
+const wantedName = (): string => (carried === 'call' ? 'sam.example' : siteName());
 function remembers(): boolean {
   const k = known.get(client);
-  return !!k && k.site === siteName() && performance.now() < k.until;
+  return !!k && k.site === wantedName() && performance.now() < k.until;
 }
 /** How far the ISP router has been dragged away, in tiles: the fibre gets longer and so does its delay. */
 let stretch = 0;
@@ -91,6 +94,8 @@ function simulate(): void {
     together: features.together,
     dhcp: features.dhcp,
     cold: features.cold,
+    thin: features.thin,
+    call: carried === 'call',
     ...(stretch > 0 ? { wanDelay: wanDelayFor(stretch) } : {}),
   });
   const plan = { randomLoss: 0, decided, cuts, manual: faults };
@@ -117,7 +122,7 @@ let mode: Mode = 'idle';
 
 // The site card rests on the table between the laptop and the phone.
 const home = iso(0, 7.4, 0.5);
-const HOMES: Record<Wanted, { sx: number; sy: number }> = { page: home, photo: { sx: home.sx, sy: home.sy + 88 } };
+const HOMES: Record<Wanted, { sx: number; sy: number }> = { page: home, photo: { sx: home.sx, sy: home.sy + 88 }, call: { sx: home.sx, sy: home.sy + 150 } };
 const card = el('g', { class: 'site-card' }, svg);
 const cardBody = el('g', {}, card);
 el('rect', { x: -88, y: -22, width: 176, height: 44, rx: 10, class: 'site-card-bg' }, cardBody);
@@ -139,9 +144,17 @@ el('rect', { x: -77, y: -10, width: 24, height: 20, rx: 2, class: 'site-card-glo
 el('path', { d: 'M-75 7l7-8 5 5 3-3 5 6', class: 'site-card-globe' }, photoBody);
 el('text', { x: 12, y: 0, dy: '0.35em', 'text-anchor': 'middle' }, photoBody).textContent = 'photo.jpg';
 const photoBadges = el('g', {}, photoCard);
-const CARDS: Record<Wanted, SVGGElement> = { page: card, photo: photoCard };
 
-scene.setOnTable([home, { sx: home.sx - 110, sy: home.sy + 50 }, { sx: home.sx + 110, sy: home.sy - 40 }, { sx: HOMES.photo.sx - 110, sy: HOMES.photo.sy + 50 }]);
+// The call card: a handset, and the friend's name.
+const callCard = el('g', { class: 'site-card' }, svg);
+const callBody = el('g', {}, callCard);
+el('rect', { x: -88, y: -22, width: 176, height: 44, rx: 10, class: 'site-card-bg' }, callBody);
+drawHandset(el('g', { transform: 'translate(-66 0) scale(0.42)', class: 'site-card-globe' }, callBody));
+el('text', { x: 12, y: 0, dy: '0.35em', 'text-anchor': 'middle' }, callBody).textContent = 'call Sam';
+const callBadges = el('g', {}, callCard);
+const CARDS: Record<Wanted, SVGGElement> = { page: card, photo: photoCard, call: callCard };
+
+scene.setOnTable([home, { sx: home.sx - 110, sy: home.sy + 50 }, { sx: home.sx + 110, sy: home.sy - 40 }, { sx: HOMES.call.sx - 110, sy: HOMES.call.sy + 50 }]);
 
 /** A setting changed before a run: show the network it will use, with a clean screen. */
 function preview(): void {
@@ -159,7 +172,7 @@ function showFeatures(): void {
     cardText.textContent = site;
     cardPop = 0;
   }
-  for (const [badges, skip] of [[cardBadges, null], [photoBadges, 'big']] as const) {
+  for (const [badges, skip] of [[cardBadges, null], [photoBadges, 'big'], [callBadges, 'big']] as const) {
     badges.replaceChildren();
     SETUP.filter((s) => features[s.id] && s.id !== skip).forEach((s, i) => {
       const g = el('g', { transform: `translate(${72 - i * 30} -24)` }, badges);
@@ -268,6 +281,7 @@ const SETUP: { id: Setting; label: string; draw: (g: SVGGElement) => void; span:
   { id: 'together', label: 'Together', draw: drawPair, span: 34 },
   { id: 'dhcp', label: 'No address', draw: drawTag, span: 34 },
   { id: 'cold', label: 'Cold resolver', draw: drawSnowflake, span: 34 },
+  { id: 'thin', label: 'Thin pipe', draw: drawPipe, span: 34 },
 ];
 function setSetting(id: Setting, on: boolean): void {
   features[id] = on;
@@ -460,7 +474,7 @@ function toSvg(e: PointerEvent): { sx: number; sy: number } {
   return { sx: p.x, sy: p.y };
 }
 
-for (const wanted of ['page', 'photo'] as const) {
+for (const wanted of WANTED) {
   const g = CARDS[wanted];
   g.addEventListener('pointerdown', (e) => {
     if (mode !== 'idle' && mode !== 'spring') return;
@@ -765,6 +779,8 @@ function beginRun(): void {
 function endRun(): void {
   const ip = story.remembered ?? story.dnsAnswer;
   if (ip && !revisit) known.set(client, { site: story.site, ip, until: performance.now() + (story.dnsTtl ?? 0) * 1000 });
+  // A call over: hear what came through, holes and all.
+  if (story.voice) sound.playVoice(story.voice.heard.map((b) => (b ? ulawDecodeAll(b) : null)), 160);
   idleV = tl.total;
   const from = scene.dropPoints().find((d) => d.id === client) ?? home;
   anim = { from, to: { ...HOMES[carried] }, t: 0, dur: 0.8 };
@@ -828,13 +844,17 @@ function frame(now: number): void {
   const scale = (mode === 'drop' ? 1 - 0.8 * dropK : mode === 'drag' ? 1.06 : 0.2 + 0.8 * riseK) * pop;
   const cardOp = (1 - dropK) * riseK;
   const moving = CARDS[carried];
-  const resting = CARDS[carried === 'page' ? 'photo' : 'page'];
-  const rest = HOMES[carried === 'page' ? 'photo' : 'page'];
-  moving.style.display = resting.style.display = mode === 'play' ? 'none' : '';
+  moving.style.display = mode === 'play' ? 'none' : '';
   moving.setAttribute('transform', `translate(${cardPos.sx.toFixed(1)} ${(cardPos.sy + bob).toFixed(1)}) scale(${scale.toFixed(3)})`);
   moving.setAttribute('opacity', cardOp.toFixed(3));
-  resting.setAttribute('transform', `translate(${rest.sx.toFixed(1)} ${(rest.sy - bob).toFixed(1)})`);
-  resting.setAttribute('opacity', '1');
+  for (const w of WANTED) {
+    if (w === carried) continue;
+    const resting = CARDS[w];
+    const rest = HOMES[w];
+    resting.style.display = mode === 'play' ? 'none' : '';
+    resting.setAttribute('transform', `translate(${rest.sx.toFixed(1)} ${(rest.sy - bob).toFixed(1)})`);
+    resting.setAttribute('opacity', '1');
+  }
   hint.style.display = mode === 'idle' ? '' : 'none';
 
   // The camera eases between the whole network (between runs) and a close follow of the packet,
@@ -932,9 +952,9 @@ if (import.meta.env.DEV) {
         return tl.reactions;
       },
       /** Start a run straight away with these things on the table (for screenshots). */
-      start(f: Partial<Features> & { photo?: boolean; spy?: string; cut?: string | string[]; slow?: boolean; vpn?: boolean; again?: boolean; from?: Client }): void {
+      start(f: Partial<Features> & { photo?: boolean; call?: boolean; spy?: string; cut?: string | string[]; slow?: boolean; vpn?: boolean; again?: boolean; from?: Client }): void {
         client = f.from ?? 'laptop';
-        carried = f.photo ? 'photo' : 'page';
+        carried = f.call ? 'call' : f.photo ? 'photo' : 'page';
         for (const k of SETTINGS) if (features[k] !== !!f[k]) setSetting(k, !!f[k]);
         for (const l of [...cutLines]) clearLine(l);
         for (const l of [f.cut ?? []].flat()) toggleCut(l);

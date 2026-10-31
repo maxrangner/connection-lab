@@ -78,6 +78,18 @@ export function drawSnowflake(g: SVGGElement): void {
   }
 }
 
+/** A telephone handset: the call. */
+export function drawHandset(g: SVGGElement): void {
+  el('path', { d: 'M-22 -14 C-22 -24 -14 -26 -8 -20 L-2 -12 C2 -8 0 -4 -4 0 C0 8 8 16 16 20 C20 16 24 14 28 18 L34 24 C38 30 36 38 26 38 C0 38 -22 14 -22 -14 Z', class: 'handset' }, g);
+}
+
+/** A pipe that narrows: the thin line to the ISP. */
+export function drawPipe(g: SVGGElement): void {
+  el('path', { d: 'M-26 -16 H-8 L8 -6 H26 M-26 16 H-8 L8 6 H26', class: 'pipe' }, g);
+  el('rect', { x: -28, y: -20, width: 6, height: 40, rx: 2, class: 'pipe-end' }, g);
+  el('rect', { x: 22, y: -10, width: 6, height: 20, rx: 2, class: 'pipe-end' }, g);
+}
+
 /** A long page: the bigger page. */
 export function drawPage(g: SVGGElement): void {
   el('path', { d: 'M-17 -27 H9 L19 -17 V27 H-17 Z', class: 'page-sheet' }, g);
