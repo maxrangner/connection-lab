@@ -15,6 +15,7 @@ import * as tlsCern from './tlsCapture_info_cern_ch';
 import * as tlsPhoto from './tlsCapture_httpbin_org';
 import { CERN_A_RECORDS, CERN_DNS_TTL, CERN_HOST, CERN_HTTP_REQUEST, CERN_HTTP_RESPONSE_BASE64, CERN_IP, CERN_PATH } from './infoCernCapture';
 import { PHOTO_A_RECORDS, PHOTO_DNS_TTL, PHOTO_HOST, PHOTO_HTTP_REQUEST, PHOTO_HTTP_RESPONSE_BASE64, PHOTO_IP, PHOTO_PATH } from './photoCapture';
+import type { MqttQos } from '../proto/mqtt';
 import { RTP_PORT } from '../proto/rtp';
 import { VOICE_CLIP_CALLER_BASE64, VOICE_CLIP_FRIEND_BASE64 } from './voiceClip';
 
@@ -156,6 +157,8 @@ export interface FetchWebPageOptions {
    * been connected for a while by then, as in any home: that part really runs, before `READING_AT`, and is not told.
    */
   reading?: boolean;
+  /** How sure a reading is of arriving. See `MqttQos`. */
+  qos?: MqttQos;
 }
 
 /**
@@ -196,7 +199,12 @@ const SCAN = { ports: [21, 22, 23, 25, 80, 443, 3306, 8080], open: [22, 443], ga
 export type { Action, Job };
 
 /** When a reading is taken, in seconds: long after the sensor and the apps are connected, even over a satellite. */
-export const READING_AT = 10;
+export const READING_AT = 20;
+/**
+ * A line that is cut as a reading is taken has been out for a while: from here. Long enough before it for keep-alive to find
+ * out on both sides, so a device on that line is properly gone by then, and not just late.
+ */
+export const OFFLINE_AT = 10;
 const BROKER_NAME = 'broker.example';
 const TEMPERATURE_TOPIC = 'home/livingroom/temperature';
 
@@ -430,7 +438,8 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
     ? Array.from({ length: BOTS }, (_, i) => outsider(i + 1, `bot${i + 1}`, `Bot ${i + 1}`, 'bot', [{ kind: 'flood', to: server.ip, port: 80, packets: FLOOD.packets, burst: FLOOD.burst, gap: FLOOD.gap, bytes: FLOOD.bytes }]))
     : [];
   const scanner = attacks.has('scan') ? [outsider(BOTS + 1, 'scanner', 'Scanner', 'scanner', [{ kind: 'port-scan', to: server.ip, ports: SCAN.ports, gap: SCAN.gap }])] : [];
-  const broker = cloud ? [outsider(BOTS + 2, 'broker', 'MQTT broker', 'mqtt-broker', [{ kind: 'mqtt-broker', processing: 0.0003 }])] : [];
+  const brokerApp = { kind: 'mqtt-broker' as const, processing: 0.0003, watchUntil: READING_AT };
+  const broker = cloud ? [outsider(BOTS + 2, 'broker', 'MQTT broker', 'mqtt-broker', [brokerApp])] : [];
   const outsiders = [...bots, ...scanner, ...broker];
   const resolver = ADDR.resolver.ip;
   const jobs: Record<Job, () => AppSpec> = {
@@ -445,8 +454,8 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
     apps: [jobs[job]()],
   });
   const appsOf = (d: HomeDevice) => {
-    if (d.kind === 'mqtt-broker') return { apps: [{ kind: 'mqtt-broker' as const, processing: 0.0003 }] };
-    const client = { kind: 'mqtt-client' as const, clientId: d.id, broker: cloud ? BROKER_NAME : LOCAL_BROKER.ip, resolver };
+    if (d.kind === 'mqtt-broker') return { apps: [brokerApp] };
+    const client = { kind: 'mqtt-client' as const, clientId: d.id, broker: cloud ? BROKER_NAME : LOCAL_BROKER.ip, resolver, qos: opts.qos ?? 0, watchUntil: READING_AT };
     if (reading) return { apps: [d.id === from ? { ...client, publish: { topic: TEMPERATURE_TOPIC, at: READING_AT } } : { ...client, subscribe: TEMPERATURE_TOPIC }] };
     const join = joins.find((j) => j.device === d.id);
     return d.id === from ? browser(d.port) : join ? joined(join.job, d.port) : { apps: [] };

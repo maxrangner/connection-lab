@@ -102,9 +102,20 @@ export type AppSpec =
    * An MQTT client: it looks the broker up, connects and stays connected. An app subscribes to a topic; a sensor publishes
    * one reading to its topic at the time given.
    */
-  | { kind: 'mqtt-client'; clientId: string; broker: string; resolver: Ip4; subscribe?: string; publish?: { topic: string; at: number } }
-  /** An MQTT broker: it hands a copy of what is published to each client subscribed to that topic. */
-  | { kind: 'mqtt-broker'; processing: number }
+  | {
+      kind: 'mqtt-client';
+      clientId: string;
+      broker: string;
+      resolver: Ip4;
+      /** How sure a reading is of arriving, from the client to the broker and from the broker to an app. */
+      qos: 0 | 1 | 2;
+      subscribe?: string;
+      publish?: { topic: string; at: number };
+      /** Keep-alive runs until then, so a line cut before it is noticed; from then on a short run has no call for it. */
+      watchUntil: number;
+    }
+  /** An MQTT broker: it hands a copy of what is published to each client subscribed to that topic, and keeps what it must. */
+  | { kind: 'mqtt-broker'; processing: number; watchUntil: number }
   | {
       kind: 'dns-server';
       /** What the resolver already has in its cache. */

@@ -1146,6 +1146,40 @@ button.action-menu[hidden] {
   display: none;
 }
 
+/* An item with more behind it: the arrow beside it opens a popup of its own. */
+.menu-row {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.menu-row .menu-item {
+  flex: 1;
+  min-width: 0;
+}
+
+.menu-row button.smart-menu {
+  flex: none;
+  width: 44px;
+  min-width: 0;
+  padding: 0;
+  font: inherit;
+  font-size: 24px;
+  color: var(--ink);
+  cursor: pointer;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.menu-row button.smart-menu.on {
+  background: var(--on);
+}
+
+.menu-row button.smart-menu::after {
+  content: none;
+}
+
 .sensor-eye {
   fill: var(--app);
   stroke: #3d7a52;
@@ -1253,6 +1287,20 @@ button.action-menu::after {
   grid-row: 1 / 3;
   width: 36px;
   height: 36px;
+}
+
+/* Words only: nothing to draw for a choice like these. */
+.menu-panel.smart-menu {
+  width: min(250px, 100vw - 16px);
+}
+
+.menu-panel.smart-menu .menu-item {
+  grid-template-columns: 1fr;
+  padding: 5px 12px;
+}
+
+.menu-panel.smart-menu .menu-hint {
+  grid-column: 1;
 }
 
 .menu-hint {

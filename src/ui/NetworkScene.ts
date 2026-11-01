@@ -1417,7 +1417,7 @@ export class NetworkScene {
   /** A stream: its packets as small blocks on the cables, far ones first. A part flies onto the sheet, a lost one falls. */
   private drawFlow(flow: FlowPacket[], waits: FlowWait[], v: number, traffic: boolean): void {
     for (const w of waits) if (v >= w.t0 && v < w.t1) this.drawWait(w.step, (v - w.t0) / (w.t1 - w.t0), w.t1 - w.t0);
-    const blocks: { at: Vec3; size: number; color: string; op: number; named?: boolean }[] = [];
+    const blocks: { at: Vec3; size: number; color: string; op: number; named?: string | null }[] = [];
     // A block says nothing by itself: an ACK on its own says what it is, and so do the first few of a stream.
     const named = namedAcks(flow);
     for (const p of flow) {
@@ -1428,7 +1428,7 @@ export class NetworkScene {
       const end = p.hops[p.hops.length - 1]!;
       const at = this.blockAt(p, v);
       if (at) {
-        blocks.push({ at, size, color, op: 1, named: named.includes(p) });
+        blocks.push({ at, size, color, op: 1, named: named.includes(p) ? (p.trip.message?.kind === 'mqtt-control' ? p.trip.card : 'ACK: got it') : null });
       } else if (end.lost) {
         const tau = v - end.t1;
         const at = this.onLane(end, end.fall);
@@ -1446,7 +1446,7 @@ export class NetworkScene {
       box(g, { x: b.at.x - b.size / 2, y: b.at.y - b.size / 2, z: b.at.z, w: b.size, d: b.size, h: b.size * 0.6, color: b.color });
       if (b.named) {
         const c = iso(b.at.x, b.at.y, b.at.z + 1);
-        el('text', { x: c.sx.toFixed(1), y: c.sy.toFixed(1), 'text-anchor': 'middle', class: 'ack-name' }, this.tags).textContent = 'ACK: got it';
+        el('text', { x: c.sx.toFixed(1), y: c.sy.toFixed(1), 'text-anchor': 'middle', class: 'ack-name' }, this.tags).textContent = b.named;
       }
     }
   }

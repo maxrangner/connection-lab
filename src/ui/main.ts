@@ -1,5 +1,5 @@
 import './app.css';
-import { EVERY_JOB, fetchWebPage, READING_AT, runScenario, ulawDecodeAll, type Attack, type Cut, type Job, type ManualFault } from '../sim';
+import { EVERY_JOB, fetchWebPage, OFFLINE_AT, runScenario, ulawDecodeAll, type Attack, type Cut, type Job, type ManualFault } from '../sim';
 import { el } from './svg';
 import { clamp01, easeInOut, easeOutBack, iso, ISO_X, ISO_Y, lerp, U } from './project';
 import { HexCard } from './hexCard';
@@ -76,8 +76,16 @@ let knownIp: string | undefined;
 const isProbe = (w: Job): boolean => w === 'ping' || w === 'trace';
 /** This run is the sensor taking a reading, not a card on a device. */
 let reading = false;
-/** The smart home's broker is out on the internet instead of at home. */
+/** The smart home's broker is out on the internet instead of at home, and how sure a reading is of arriving. */
 let cloud = false;
+let qos: 0 | 1 | 2 = 0;
+try {
+  const saved = JSON.parse(localStorage.getItem('net.smart') ?? '{}') as { cloud?: boolean; qos?: number };
+  cloud = !!saved.cloud;
+  if (saved.qos === 1 || saved.qos === 2) qos = saved.qos;
+} catch {
+  // Nothing remembered; start plain.
+}
 /** The card picked up last. */
 let carried: Job = 'page';
 const pageSite = (): 'info.cern.ch' | 'example.com' => (features.big ? 'info.cern.ch' : 'example.com');
@@ -122,6 +130,7 @@ function simulate(): void {
     thin: features.thin,
     smart: features.smart,
     cloud,
+    qos,
     call: carried === 'call' && !reading,
     ...(stretch > 0 ? { wanDelay: wanDelayFor(stretch) } : {}),
     ...(noise > 0 ? { noise } : {}),
@@ -338,8 +347,14 @@ const SETUP: { id: Setting; label: string; hint: string; draw: (g: SVGGElement) 
   { id: 'smart', label: 'Smart home', hint: 'A sensor that reports to your apps', draw: drawThermometer, span: 34 },
   { id: 'quiet', label: 'Quiet devices', hint: 'No speech bubbles', draw: drawHush, span: 34 },
 ];
+/** The lines that go when the smart home changes. */
+const SMART_LINKS = ['wlan2', 'lan2', 'broker-link'];
 function setSetting(id: Setting, on: boolean): void {
   features[id] = on;
+  if (id === 'smart' && !on) {
+    for (const l of SMART_LINKS) clearLine(l);
+    if (spyLine && SMART_LINKS.includes(spyLine)) setSpyLine(null);
+  }
   // The line to the ISP becomes radio, which cannot be cut.
   if (id === 'slow' && on && cutLines.has('wan')) toggleCut('wan');
   // The VPN's cables go with it.
@@ -457,6 +472,44 @@ toolsMenu.button.addEventListener('click', () => {
   if (!toolsMenu.isOpen) pickUp(null);
 });
 const setupMenu = new Menu<Setting>(controls, root, 'Setup', 'Setup', SETUP, (id) => setSetting(id, !features[id]));
+// What kind of smart home: an arrow beside it in the Setup, with a popup of its own.
+type SmartOption = 'home' | 'cloud' | 'qos0' | 'qos1' | 'qos2';
+const smartMenu = new Menu<SmartOption>(
+  setupMenu.row('smart'),
+  root,
+  '›',
+  'Smart home options',
+  [
+    { id: 'home', label: 'Broker at home', hint: 'Readings stay in the house' },
+    { id: 'cloud', label: 'Broker in the cloud', hint: 'Out through your router and back' },
+    { id: 'qos0', label: 'QoS 0', hint: 'Sent once, can be lost' },
+    { id: 'qos1', label: 'QoS 1', hint: 'Confirmed, can arrive twice' },
+    { id: 'qos2', label: 'QoS 2', hint: 'Arrives exactly once' },
+  ],
+  (id) => {
+    if (id === 'home' || id === 'cloud') {
+      cloud = id === 'cloud';
+      for (const l of ['lan2', 'broker-link']) clearLine(l);
+      if (spyLine === 'lan2' || spyLine === 'broker-link') setSpyLine(null);
+    } else qos = Number(id.slice(3)) as 0 | 1 | 2;
+    try {
+      localStorage.setItem('net.smart', JSON.stringify({ cloud, qos }));
+    } catch {
+      // Not remembered; fine.
+    }
+    showSmart();
+    if (features.smart) preview();
+    else setSetting('smart', true);
+    sound.play('snap');
+  },
+);
+smartMenu.mark('smart-menu');
+function showSmart(): void {
+  smartMenu.setOn('home', !cloud);
+  smartMenu.setOn('cloud', cloud);
+  for (const n of [0, 1, 2] as const) smartMenu.setOn(`qos${n}`, qos === n);
+}
+showSmart();
 /** The size of a device's "+ action" (see app.css), and how high it can go: clear of the chapter name. */
 const ACTION_W = 104;
 const ACTION_H = 34;
@@ -613,6 +666,7 @@ for (const menu of menus) {
 }
 const placeMenus = (): void => {
   for (const menu of menus) menu.place();
+  smartMenu.place();
   const bar = controls.getBoundingClientRect();
   scene.setBar(window.innerHeight - bar.top);
   heardCard.style.bottom = `${window.innerHeight - bar.top + 8}px`;
@@ -1046,6 +1100,9 @@ function reset(): void {
   attacks.clear();
   scene.setRevealed([]);
   for (const id of Object.keys(ATTACK_LINKS) as Attack[]) attackMenu.setOn(id, false);
+  cloud = false;
+  qos = 0;
+  showSmart();
   for (const menu of menus) menu.setOpen(false);
   showChapterMenu(false);
   for (const k of SETTINGS) features[k] = false;
@@ -1076,8 +1133,8 @@ function beginRun(): void {
   knocks.clear();
   runSeed = 1 + Math.floor(Math.random() * 1e6);
   decided = {};
-  // The sensor and the apps were connected long before anyone cut anything.
-  cuts = [...cutLines].map((link) => ({ link, from: reading ? READING_AT : 0 }));
+  // A line already cut when a reading is taken has been out for a while, long enough for everyone to have noticed.
+  cuts = [...cutLines].map((link) => ({ link, from: reading ? OFFLINE_AT : 0 }));
   warmArp = !reading && cutLines.size > 0;
   recall();
   joined = [];
@@ -1191,6 +1248,7 @@ function frame(now: number): void {
   }
   snapCamera = false;
   scene.applyCamera(cam);
+  if (!setupMenu.isOpen) smartMenu.setOpen(false);
   const lowest = (spyCard.top ?? window.innerHeight - scene.barHeight) - ACTION_H / 2 - 8;
   const pinned = `translate(${(ACTION_W / 2 + 8).toFixed(0)}px, ${lowest.toFixed(0)}px)`;
   const outOfView: (typeof deviceActions)[number][] = [];

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fetchWebPage, READING_AT, runScenario, type Attack, type SimResult } from '../sim';
+import { fetchWebPage, OFFLINE_AT, READING_AT, runScenario, type Attack, type SimResult } from '../sim';
 import { buildStory, type Story, type Trip } from './story';
 import { buildTimeline, crossings, realAt, seenSoFar, type Timeline } from './timeline';
 import { buildSpeech } from './speech';
@@ -196,5 +196,144 @@ describe('a broker at home', () => {
 
   it('runs on a noisy Wi-Fi too', () => {
     expect(told(home({ noise: 0.4 }))).toHaveLength(2);
+  });
+});
+
+const onWire = (r: SimResult): string[] => {
+  const seen = new Set<string>();
+  return r.events.flatMap((e) => {
+    if (e.type !== 'tx' || seen.has(e.packetId)) return [];
+    seen.add(e.packetId);
+    const p = r.packets.get(e.packetId)!;
+    return p.createdAt >= READING_AT && p.label.startsWith('MQTT') ? [`${e.fromDevice} ${p.label.slice(5)}`] : [];
+  });
+};
+
+describe('how sure a reading is of arriving', () => {
+  const run = (opts: object = {}, faults: object = {}): SimResult => runScenario(fetchWebPage({ reading: true, ...opts }), { seed: 1, faults: { ...CLEAN, ...faults }, maxTime: 1000 });
+
+  it('QoS 0: sent once, on every leg, and nobody answers', () => {
+    expect(onWire(run({ qos: 0 }))).toEqual(['sensor PUBLISH', 'local-broker PUBLISH', 'local-broker PUBLISH']);
+  });
+
+  it('QoS 1: each leg is answered with a PUBACK', () => {
+    expect(onWire(run({ qos: 1 })).sort()).toEqual(['laptop PUBACK', 'local-broker PUBACK', 'local-broker PUBLISH', 'local-broker PUBLISH', 'phone PUBACK', 'sensor PUBLISH']);
+  });
+
+  it('QoS 2: four steps on each leg, and the broker passes it on only once it is released', () => {
+    const wire = onWire(run({ qos: 2 }));
+    expect(wire.slice(0, 4)).toEqual(['sensor PUBLISH', 'local-broker PUBREC', 'sensor PUBREL', 'local-broker PUBCOMP']);
+    expect(wire.slice(4).filter((x) => x.startsWith('local-broker PUBLISH'))).toHaveLength(2);
+    for (const app of ['laptop', 'phone']) {
+      expect(wire).toContain(`${app} PUBREC`);
+      expect(wire).toContain(`${app} PUBCOMP`);
+    }
+    expect(wire.filter((x) => x === 'local-broker PUBREL')).toHaveLength(2);
+    expect(wire).toHaveLength(12);
+  });
+
+  it('every app gets it once, at every level, in the cloud too', () => {
+    for (const qos of [0, 1, 2] as const) for (const cloud of [false, true]) expect(told(run({ qos, cloud })).map((x) => x.split(':')[0])).toEqual(['laptop', 'phone']);
+  });
+
+  it('the sensor\'s own exchange is told in full, and the same steps with each app as small blocks', () => {
+    const s = buildStory(run({ qos: 2 }));
+    const whole = s.trips.filter((t) => t.message?.kind === 'mqtt-control' && !t.steps.some((x) => x.kind === 'flow'));
+    expect(whole.map((t) => t.card)).toEqual(['PUBREC', 'PUBREL', 'PUBCOMP']);
+    const small = s.trips.flatMap((t) => t.steps.flatMap((x) => (x.kind === 'flow' ? x.packets : []))).filter((t) => t.message?.kind === 'mqtt-control');
+    expect(small.map((t) => t.card).sort()).toEqual(['PUBCOMP', 'PUBCOMP', 'PUBREC', 'PUBREC', 'PUBREL', 'PUBREL']);
+  });
+
+  it('a TCP ACK and a PUBACK are different things, and both go by', () => {
+    const r = run({ qos: 1 });
+    const fromBroker = r.events.flatMap((e) => (e.type === 'tx' && e.fromDevice === 'local-broker' && r.packets.get(e.packetId)!.createdAt >= READING_AT ? [r.packets.get(e.packetId)!.label] : []));
+    expect(fromBroker.slice(0, 2)).toEqual(['ACK', 'MQTT PUBACK']);
+  });
+
+  it('what it says in each step comes from the devices', () => {
+    const s = buildStory(run({ qos: 1 }));
+    const tl = buildTimeline(s);
+    expect(buildSpeech(s, tl.segs).map((b) => b.text)).toContain('Got it');
+  });
+
+  it('a short run with no packets lost has no call for keep-alive', () => {
+    const r = run({ qos: 2 });
+    expect([...r.packets.values()].some((p) => p.createdAt >= READING_AT && /PING/.test(p.label))).toBe(false);
+  });
+});
+
+describe('an app that is away', () => {
+  const offline = { cuts: [{ link: 'lan', from: OFFLINE_AT }] };
+  const mended = (to: number) => ({ cuts: [{ link: 'lan', from: OFFLINE_AT, to }] });
+  const run = (qos: 0 | 1 | 2, faults: object): SimResult => runScenario(fetchWebPage({ reading: true, qos }), { seed: 1, faults: { ...CLEAN, ...faults }, maxTime: 1000 });
+  const actions = (r: SimResult, action: string): string[] => r.events.flatMap((e) => (e.type === 'app' && e.action === action ? [e.deviceId] : []));
+  const heardBy = (r: SimResult): string[] => told(r).map((x) => x.split(':')[0]!);
+
+  it('with its cable cut a while ago, both ends have noticed by the time of the reading', () => {
+    const r = run(1, offline);
+    const when = r.events.filter((e) => e.type === 'app' && e.action === 'mqtt-offline').map((e) => e.t);
+    expect(actions(r, 'mqtt-offline').sort()).toEqual(['laptop', 'local-broker']);
+    expect(Math.max(...when)).toBeLessThan(READING_AT);
+  });
+
+  it('QoS 0: the laptop never gets that reading, even when the cable is mended', () => {
+    const r = run(0, mended(READING_AT + 1));
+    expect(heardBy(r)).toEqual(['phone']);
+    expect(actions(r, 'mqtt-missed')).toEqual(['local-broker']);
+    expect(actions(r, 'mqtt-back')).toEqual(['laptop']);
+  });
+
+  for (const qos of [1, 2] as const) {
+    it(`QoS ${qos}: the broker keeps it, and the laptop gets it once it is back, once`, () => {
+      const r = run(qos, mended(READING_AT + 1));
+      expect(actions(r, 'mqtt-held')).toEqual(['local-broker']);
+      expect(heardBy(r)).toEqual(['phone', 'laptop']);
+      const [phone, laptop] = told(r);
+      expect(laptop!.split(' ').at(-1)).toBe(phone!.split(' ').at(-1));
+    });
+
+    it(`QoS ${qos}: while the cable stays cut the broker keeps waiting`, () => {
+      const r = run(qos, offline);
+      expect(heardBy(r)).toEqual(['phone']);
+      expect(actions(r, 'mqtt-back')).toEqual([]);
+    });
+  }
+
+  it('the session lasted: back again, the app does not have to subscribe', () => {
+    const r = run(1, mended(READING_AT + 1));
+    const again = [...r.packets.values()].filter((p) => p.createdAt >= READING_AT && p.label.startsWith('MQTT') && p.origin === 'laptop').map((p) => p.label);
+    expect(again).toContain('MQTT CONNECT');
+    expect(again).not.toContain('MQTT SUBSCRIBE');
+  });
+
+  it('the story shows the laptop trying, coming back, and the reading landing', () => {
+    const s = buildStory(run(1, mended(READING_AT + 1)));
+    const all = s.trips.flatMap((t) => (t.steps.some((x) => x.kind === 'flow') ? t.steps.flatMap((x) => (x.kind === 'flow' ? x.packets : [])) : [t]));
+    expect(all.some((t) => t.origin === 'laptop' && t.l4Label === 'SYN')).toBe(true);
+    expect(all.some((t) => t.card === 'CONNECT')).toBe(true);
+    expect(s.screens.laptop!.pageTitle).toBe(s.screens.phone!.pageTitle);
+    expect(buildTimeline(s).total).toBeGreaterThan(0);
+  });
+
+  it('with QoS 0 the laptop comes back with nothing on its screen', () => {
+    const s = buildStory(run(0, mended(READING_AT + 1)));
+    expect(s.screens.laptop!.pageTitle).toBeNull();
+    expect(s.screens.phone!.pageTitle).toMatch(/°C/);
+  });
+
+  it('a broker with its cable cut: QoS 0 is lost at the sensor, and QoS 1 waits there', () => {
+    const cut = { cuts: [{ link: 'lan2', from: OFFLINE_AT, to: READING_AT + 1 }] };
+    expect(told(run(0, cut))).toEqual([]);
+    const r = run(1, cut);
+    expect(heardBy(r).sort()).toEqual(['laptop', 'phone']);
+  });
+
+  it('a cut once a reading is under way is only a late packet: TCP sends it again, at any QoS', () => {
+    for (const qos of [0, 1] as const) expect(heardBy(run(qos, { cuts: [{ link: 'lan', from: READING_AT, to: READING_AT + 1.5 }] })).sort()).toEqual(['laptop', 'phone']);
+  });
+
+  it('the run comes to an end if nobody mends the cable', () => {
+    const r = run(1, offline);
+    expect(r.endTime).toBeLessThan(200);
   });
 });
