@@ -30,6 +30,18 @@ describe('going back to a site', () => {
     }
   });
 
+  it('another device can still find the site while the first goes back to an older address', () => {
+    const knownIp = story({ site: 'httpbin.org' }).dnsAnswer!;
+    const s = story({ ...COLD_PHOTO, revisit: true, knownIp, joins: [{ job: 'photo', at: 0.02 }] });
+    expect(s.remembered).toBe(knownIp);
+    expect(s.fetched).toEqual(['laptop', 'phone']);
+  });
+
+  it('goes back through a VPN too', () => {
+    const knownIp = story(COLD_PHOTO).dnsAnswer!;
+    expect(story({ site: 'httpbin.org', vpn: true, revisit: true, knownIp }).fetched).toEqual(['laptop']);
+  });
+
   it('with no address to go by it uses the one this run has', () => {
     expect(story({ ...COLD_PHOTO, revisit: true }).fetched).toEqual(['laptop']);
   });

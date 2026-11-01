@@ -185,7 +185,6 @@ export const DEVICE_TOP: Record<string, number> = { laptop: 1.7, phone: 2.0, 'ho
 export const UPSTREAM_KINDS = new Set(['root-server', 'tld-server', 'auth-server']);
 /** The attackers switched on from the Attack popup. */
 export const ATTACKER_KINDS = new Set(['stranger', 'scanner', 'bot']);
-/** What is yours, and on the table from the start. The rest of the network shows up as packets reach it. */
 /** Seconds before the first packet sets off over a cable: it is laid over the first two, and the device at its end springs up over the second two. */
 const LAY_FROM = 1.3;
 const LAID_BY = 0.7;

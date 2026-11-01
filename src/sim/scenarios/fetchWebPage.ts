@@ -1,3 +1,4 @@
+import { inSubnet } from '../bytes/addr';
 import { ascii, fromBase64 } from '../bytes/bytes';
 import type { AppSpec, DeviceKind, DeviceSpec, IfaceSpec, Job, LinkSpec, RouteSpec, Scenario } from '../model';
 import { dnsAddresses, parseDns } from '../proto/dns';
@@ -72,8 +73,8 @@ export interface FetchWebPageOptions {
    */
   revisit?: boolean;
   /**
-   * On a revisit, the address the first visit found. It can be another of the site's addresses than the usual one (a cold
-   * walk ends where it ends), and a device goes back to the address it remembers. The usual one if left out.
+   * On a revisit, the address the first visit found. It can be another of the site's addresses than the one this run's
+   * lookup would give (a cold walk ends where it ends), and a device goes back to what it remembers. This run's if left out.
    */
   knownIp?: string;
   /**
@@ -181,6 +182,13 @@ const SCAN = { ports: [21, 22, 23, 25, 80, 443, 3306, 8080], open: [22, 443], ga
 
 export type { Job };
 
+/** The real address blocks the web server's addresses are part of: Cloudflare's, with example.com, and CERN's own. */
+const SERVER_BLOCKS = [
+  { network: '104.16.0.0', prefixLen: 13 },
+  { network: '172.64.0.0', prefixLen: 13 },
+  { network: '188.184.0.0', prefixLen: 15 },
+];
+
 /** How long after the first device another one starts unless told, in seconds: close enough that their packets interleave. */
 export const COMPANION_DELAY = 0.004;
 
@@ -207,9 +215,11 @@ export interface HomeDevice {
   port: Pick<IfaceSpec, 'id' | 'name' | 'ip' | 'mac' | 'wifi'>;
   link: Pick<LinkSpec, 'id' | 'bitsPerSecond' | 'delay' | 'label' | 'name'>;
   actions: Job[];
+  /** Its colour, once several devices' packets are on the table at once. */
+  color: string;
 }
 
-const EVERY_JOB: Job[] = ['page', 'photo', 'call', 'ping', 'trace'];
+export const EVERY_JOB: Job[] = ['page', 'photo', 'call', 'ping', 'trace'];
 
 export const HOME_DEVICES: HomeDevice[] = [
   {
@@ -222,6 +232,7 @@ export const HOME_DEVICES: HomeDevice[] = [
     port: { id: 'home.lan', name: 'lan', ...ADDR.homeLan },
     link: { id: 'lan', bitsPerSecond: 1e9, delay: 5e-8, label: 'Ethernet cable · 1 Gbit/s', name: 'the Ethernet cable' },
     actions: EVERY_JOB,
+    color: '#4f9d69',
   },
   {
     id: 'phone',
@@ -235,6 +246,7 @@ export const HOME_DEVICES: HomeDevice[] = [
     port: { id: 'home.wlan', name: 'wlan', ...ADDR.homeWlan, wifi: 'ap' },
     link: { id: 'wlan', bitsPerSecond: 300e6, delay: 3e-8, label: 'Wi-Fi · 300 Mbit/s', name: 'the Wi-Fi' },
     actions: EVERY_JOB,
+    color: '#d6488f',
   },
 ];
 
@@ -316,16 +328,23 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
   const upstream = nameServers(host);
   const cold = !!opts.cold && !!upstream.answer;
   // Cold, the site's address is whatever its own name server answered on the day of the walk.
+  const server = { ip: cold ? upstream.answer! : site.ip, mac: ADDR.server.mac };
+  // The one server holds every address its sites can resolve to, so whichever one a device has, it gets there.
+  const aliases = [...new Set(Object.values(SITES).flatMap((s) => [s.ip, nameServers(new URL(s.url).hostname).answer ?? s.ip]))].filter((ip) => ip !== server.ip);
   const revisit = !!opts.revisit;
   const knownIp = revisit && !opts.call ? opts.knownIp : undefined;
-  const server = { ip: knownIp ?? (cold ? upstream.answer! : site.ip), mac: ADDR.server.mac };
   const tls = opts.https ? { host: site.tls.TLS_HOST, flights: site.tls.TLS_FLIGHTS, secrets: site.tls.TLS_SECRETS } : undefined;
   const url = opts.https ? site.url.replace(/^http:/, 'https:') : site.url;
   const warm = revisit || !!opts.warmArp;
   const homes = opts.home ?? HOME_DEVICES;
   const from = opts.from ?? homes[0]!.id;
   const idle = homes.map((d) => d.id).filter((id) => id !== from && !opts.joins?.some((j) => j.device === id));
-  const joins = (opts.joins ?? []).map((j) => ({ device: j.device ?? idle.shift()!, job: j.job ?? 'page', at: j.at ?? COMPANION_DELAY }));
+  const joins = (opts.joins ?? []).map((j) => {
+    const device = j.device ?? idle.shift();
+    if (!homes.some((d) => d.id === device) || device === from) throw new Error(`No free device for this job: ${device}`);
+    return { device: device!, job: j.job ?? 'page', at: j.at ?? COMPANION_DELAY };
+  });
+  if (new Set(joins.map((j) => j.device)).size < joins.length) throw new Error('A device runs one added job at a time');
   const dhcp = !!opts.dhcp;
   const browser = (gateway: { ip: string; mac: string }) => ({
     ...(opts.vpn ? { tunnel: { ip: ADDR.vpn.tunnelIp, server: ADDR.vpn.ip } } : {}),
@@ -350,7 +369,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
             url,
             ...(dhcp ? {} : { resolver: ADDR.resolver.ip }),
             request: ascii(opts.https ? site.tls.TLS_REQUEST : site.request),
-            ...(revisit ? { knownAddress: server.ip } : {}),
+            ...(revisit ? { knownAddress: knownIp ?? server.ip } : {}),
             ...(tls ? { tls } : {}),
           },
     ],
@@ -363,7 +382,6 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
     : [];
   const scanner = attacks.has('scan') ? [outsider(BOTS + 1, 'scanner', 'Scanner', 'scanner', [{ kind: 'port-scan', to: server.ip, ports: SCAN.ports, gap: SCAN.gap }])] : [];
   const outsiders = [...bots, ...scanner];
-  const aliases = joins.length ? [CAPTURED_FROM_IP, PHOTO_IP].filter((ip) => ip !== server.ip) : [];
   const resolver = ADDR.resolver.ip;
   const jobs: Record<Job, () => AppSpec> = {
     page: () => ({ kind: 'browser', url: SITES['example.com'].url, resolver, request: ascii(HTTP_REQUEST) }),
@@ -402,6 +420,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
       kind: d.kind,
       layout: d.layout,
       actions: d.actions,
+      color: d.color,
       ifaces: [{ id: ifaceOf(d), name: d.iface.name, mac: d.mac, ip, prefixLen, ...(d.iface.wifi ? { wifi: d.iface.wifi } : {}) }],
       routes,
       ...appsOf(d),
@@ -472,15 +491,9 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           { network: ADDR.vpn.ip, prefixLen: 32, iface: 'isp.p3' },
           { network: ADDR.friend.ip, prefixLen: 32, iface: 'isp.p4' },
           ...outsiders.map((o) => o.route),
-          // Real Cloudflare prefixes containing example.com's addresses.
-          { network: '104.16.0.0', prefixLen: 13, iface: 'isp.p2' },
-          { network: '172.64.0.0', prefixLen: 13, iface: 'isp.p2' },
-          // CERN's own address block, where info.cern.ch lives.
-          { network: '188.184.0.0', prefixLen: 15, iface: 'isp.p2' },
-          // The cloud address httpbin.org answered from.
-          { network: PHOTO_IP, prefixLen: 32, iface: 'isp.p2' },
-          // Cold, the walk may end at another of the site's addresses than the one the page was captured from.
-          ...(server.ip !== site.ip ? [{ network: server.ip, prefixLen: 32, iface: 'isp.p2' }] : []),
+          ...SERVER_BLOCKS.map((b) => ({ ...b, iface: 'isp.p2' })),
+          // Whatever else the server answers to: the cloud addresses httpbin.org answered from, the address a walk ended at.
+          ...[server.ip, ...aliases].filter((ip) => !SERVER_BLOCKS.some((b) => inSubnet(ip, b.network, b.prefixLen))).map((ip) => ({ network: ip, prefixLen: 32, iface: 'isp.p2' })),
         ],
         arp: {
           [ADDR.homeWan.ip]: ADDR.homeWan.mac,
@@ -506,10 +519,10 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
         ],
         routes: [
           { network: '0.0.0.0', prefixLen: 0, via: ADDR.ispToVpn.ip, iface: 'vpn.eth0' },
-          { network: server.ip, prefixLen: 32, iface: 'vpn.eth1' },
+          ...[server.ip, ...aliases].map((ip) => ({ network: ip, prefixLen: 32, iface: 'vpn.eth1' })),
           { network: ADDR.resolver.ip, prefixLen: 32, iface: 'vpn.eth2' },
         ],
-        arp: { [ADDR.ispToVpn.ip]: ADDR.ispToVpn.mac, [server.ip]: ADDR.serverFromVpn.mac, [ADDR.resolver.ip]: ADDR.resolverFromVpn.mac },
+        arp: { [ADDR.ispToVpn.ip]: ADDR.ispToVpn.mac, ...Object.fromEntries([server.ip, ...aliases].map((ip) => [ip, ADDR.serverFromVpn.mac])), [ADDR.resolver.ip]: ADDR.resolverFromVpn.mac },
         apps: [],
       },
       {
@@ -552,12 +565,12 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
       {
         id: 'server',
         label: 'Web server',
-        sublabel: `${new URL(site.url).hostname} · ${server.ip}`,
+        sublabel: `${new URL(site.url).hostname} · ${knownIp ?? server.ip}`,
         kind: 'web-server',
         layout: { x: 1480, y: 735 },
         ifaces: [
-          { id: 'server.eth0', name: 'eth0', mac: server.mac, ip: server.ip, prefixLen: 32, ...(aliases.length ? { aliases } : {}) },
-          { id: 'server.eth1', name: 'eth1', mac: ADDR.serverFromVpn.mac, ip: server.ip, prefixLen: 32 },
+          { id: 'server.eth0', name: 'eth0', mac: server.mac, ip: server.ip, prefixLen: 32, aliases },
+          { id: 'server.eth1', name: 'eth1', mac: ADDR.serverFromVpn.mac, ip: server.ip, prefixLen: 32, aliases },
         ],
         routes: [
           { network: '0.0.0.0', prefixLen: 0, via: ADDR.ispToServer.ip, iface: 'server.eth0' },

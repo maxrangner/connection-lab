@@ -13,6 +13,7 @@ const TABLET: HomeDevice = {
   port: { id: 'home.wlan2', name: 'wlan2', ip: '192.168.1.1', mac: 'a4:91:b1:7d:02:04', wifi: 'ap' },
   link: { ...HOME_DEVICES[1]!.link, id: 'wlan2' },
   actions: ['page', 'ping'],
+  color: '#c98a1b',
 };
 const home = [...HOME_DEVICES, TABLET];
 const CLEAN = { randomLoss: 0, manual: [] };
@@ -72,6 +73,20 @@ describe('your own devices', () => {
   it('a third action changes nothing that was on screen when it came', () => {
     const { first, second, v2 } = both({ device: 'phone', job: 'page' }, { device: 'tablet', job: 'page' });
     expect(shownBy(second, v2)).toEqual(shownBy(first, v2));
+  });
+
+  it('each has a colour of its own, whoever goes first', () => {
+    for (const from of ['laptop', 'phone']) {
+      const colors = story({ from }).devices.flatMap((d) => (d.color ? [d.color] : []));
+      expect(new Set(colors).size).toBe(3);
+    }
+  });
+
+  it('asking for a job no device can take says so', () => {
+    expect(() => fetchWebPage({ joins: [{}, {}] })).toThrow();
+    expect(() => fetchWebPage({ joins: [{ device: 'laptop' }] })).toThrow();
+    expect(() => fetchWebPage({ joins: [{ device: 'nobody' }] })).toThrow();
+    expect(() => fetchWebPage({ home, joins: [{ device: 'phone' }, { device: 'phone' }] })).toThrow();
   });
 
   it('nothing of an added action goes before it was added', () => {
