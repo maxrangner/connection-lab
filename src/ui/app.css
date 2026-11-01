@@ -323,106 +323,6 @@ body {
   transform: translateY(-50%) rotate(45deg);
 }
 
-/* During a run the cards wait down the side of the screen */
-.dock {
-  position: fixed;
-  top: 50%;
-  left: max(10px, env(safe-area-inset-left, 0px));
-  transform: translateY(-50%);
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-  /* A layer of its own: the stage under it is sliced anew as the packet moves, and the dock must not be repainted with it */
-  will-change: transform;
-}
-
-.dock[hidden],
-.dock-ghost[hidden],
-.dock-ring[hidden] {
-  display: none;
-}
-
-.dock-label {
-  width: 96px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--ink-soft);
-}
-
-/* A tall screen: the map fills the width and your devices are at its left edge, so the dock lies in a row above it instead */
-@media (max-aspect-ratio: 5/6) {
-  .dock {
-    top: calc(92px + env(safe-area-inset-top, 0px));
-    left: max(16px, env(safe-area-inset-left, 0px));
-    transform: none;
-    flex-flow: row wrap;
-    width: 264px;
-  }
-
-  .dock-label {
-    width: 100%;
-  }
-}
-
-/* A phone on its side: the dock has to fit between the chapter and the bar */
-@media (max-height: 420px) {
-  .dock {
-    gap: 4px;
-  }
-
-  .dock-label {
-    display: none;
-  }
-
-  .dock .dock-card {
-    width: 36px;
-    height: 36px;
-  }
-}
-
-.dock-card,
-.dock-ghost {
-  display: grid;
-  place-items: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-  background: var(--app);
-  border: 1px solid #3d7a52;
-  box-shadow: 0 2px 6px rgb(var(--shadow) / 0.25);
-}
-
-.dock-card {
-  padding: 0;
-  cursor: grab;
-  touch-action: none;
-}
-
-.dock-ghost {
-  position: fixed;
-  top: -22px;
-  left: -22px;
-  pointer-events: none;
-  z-index: 3;
-}
-
-.dock-ghost.over {
-  background: var(--out);
-  outline: 3px solid var(--burst);
-}
-
-.dock-ring {
-  position: fixed;
-  top: -46px;
-  left: -46px;
-  width: 92px;
-  height: 92px;
-  border: 3px dashed var(--app);
-  border-radius: 50%;
-  pointer-events: none;
-}
-
 /* The name stays top right, behind the map: whatever crosses that corner goes over it. It takes the room the chapter name leaves. */
 .logo {
   position: fixed;
@@ -1152,6 +1052,22 @@ body {
 /* The bar and its popups */
 .menu-button {
   min-width: 78px;
+}
+
+/* Add starts something, like the cards it stands in for */
+.net-controls button.add-menu {
+  color: #fff;
+  background: var(--app);
+  border-color: #3d7a52;
+}
+
+.net-controls button.add-menu::after {
+  color: inherit;
+}
+
+.menu-panel.add-menu .menu-item svg {
+  border-radius: 12px;
+  background: var(--app);
 }
 
 .menu-button::after {

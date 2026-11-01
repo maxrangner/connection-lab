@@ -440,6 +440,40 @@ toolsMenu.button.addEventListener('click', () => {
   if (!toolsMenu.isOpen) pickUp(null);
 });
 const setupMenu = new Menu<Setting>(controls, root, 'Setup', 'Setup', SETUP, (id) => setSetting(id, !features[id]));
+/** What can start on a device with nothing to do, in the white of the cards. */
+const ACTIONS: Record<Wanted, { label: string; draw: (g: SVGGElement) => void }> = {
+  page: {
+    label: 'Page',
+    draw: (g) => {
+      el('circle', { r: 9 }, g);
+      el('ellipse', { rx: 4, ry: 9 }, g);
+    },
+  },
+  photo: {
+    label: 'Photo',
+    draw: (g) => {
+      el('rect', { x: -12, y: -10, width: 24, height: 20, rx: 2 }, g);
+      el('path', { d: 'M-10 7l7-8 5 5 3-3 5 6' }, g);
+    },
+  },
+  call: { label: 'Call', draw: (g) => drawHandset(el('g', { transform: 'scale(0.42)' }, g)) },
+  ping: { label: 'Ping', draw: (g) => drawPing(el('g', { transform: 'scale(0.42)' }, g)) },
+  trace: { label: 'Trace', draw: (g) => drawTrace(el('g', { transform: 'scale(0.42)' }, g)) },
+};
+// Setup cannot change a run under way, so Add takes its place in the bar for as long as one lasts.
+const addMenu = new Menu<Wanted>(
+  controls,
+  root,
+  'Add',
+  'Add an action on the other device',
+  WANTED.map((id) => ({ id, label: ACTIONS[id].label, span: 16, draw: (g) => ACTIONS[id].draw(el('g', { class: 'site-card-globe' }, g)) })),
+  (id) => {
+    addMenu.setOpen(false);
+    joinIn(id);
+  },
+);
+addMenu.mark('add-menu');
+addMenu.button.hidden = true;
 showSetup();
 const ATTACK_LINKS: Record<Attack, string[]> = { listen: [], flood: ['bot1-link', 'bot2-link', 'bot3-link'], scan: ['scanner-link'] };
 const attackMenu = new Menu<Attack>(
@@ -467,7 +501,7 @@ function setAttack(id: Attack, on: boolean): void {
   preview();
   sound.play(on ? 'pop' : 'thud');
 }
-const menus: { isOpen: boolean; setOpen(open: boolean): void; place(): void; button: HTMLButtonElement }[] = [speedMenu, toolsMenu, setupMenu, attackMenu];
+const menus: { isOpen: boolean; setOpen(open: boolean): void; place(): void; button: HTMLButtonElement }[] = [speedMenu, toolsMenu, setupMenu, addMenu, attackMenu];
 for (const menu of menus) {
   menu.button.addEventListener('click', () => {
     for (const other of menus) if (other !== menu) other.setOpen(false);
@@ -523,59 +557,6 @@ button('↺', 'Reset', reset);
 controls.appendChild(Object.assign(document.createElement('span'), { className: 'bar-break' }));
 root.appendChild(controls);
 
-/** How close to a device, in screen pixels, a card from the dock has to come. */
-const DOCK_REACH = 70;
-const DOCK_ICONS: Record<Wanted, { name: string; draw: (g: SVGGElement) => void }> = {
-  page: {
-    name: 'the page',
-    draw: (g) => {
-      el('circle', { r: 9 }, g);
-      el('ellipse', { rx: 4, ry: 9 }, g);
-    },
-  },
-  photo: {
-    name: 'the photo',
-    draw: (g) => {
-      el('rect', { x: -12, y: -10, width: 24, height: 20, rx: 2 }, g);
-      el('path', { d: 'M-10 7l7-8 5 5 3-3 5 6' }, g);
-    },
-  },
-  call: { name: 'a call', draw: (g) => drawHandset(el('g', { transform: 'scale(0.42)' }, g)) },
-  ping: { name: 'a ping', draw: (g) => drawPing(el('g', { transform: 'scale(0.42)' }, g)) },
-  trace: { name: 'a trace', draw: (g) => drawTrace(el('g', { transform: 'scale(0.42)' }, g)) },
-};
-const dockIcon = (w: Wanted): SVGSVGElement => {
-  const icon = el('svg', { viewBox: '-16 -16 32 32', width: 30, height: 30, 'aria-hidden': 'true' });
-  DOCK_ICONS[w].draw(el('g', { class: 'site-card-globe' }, icon));
-  return icon;
-};
-/** A card from the dock, in hand. */
-let holding: { x: number; y: number } | null = null;
-const dock = document.createElement('div');
-dock.className = 'dock';
-dock.hidden = true;
-dock.appendChild(Object.assign(document.createElement('span'), { className: 'dock-label', textContent: 'drag in a secondary action' }));
-/** The card under the finger, and the ring on the device it can go to. */
-const dockGhost = document.createElement('div');
-dockGhost.className = 'dock-ghost';
-const dockRing = document.createElement('div');
-dockRing.className = 'dock-ring';
-dockGhost.hidden = dockRing.hidden = true;
-root.append(dock, dockRing, dockGhost);
-
-/** Where the device that has nothing to do is on screen. */
-function freeSpot(): { x: number; y: number } | null {
-  const free = scene.dropPoints().find((d) => d.id !== client);
-  const m = svg.getScreenCTM();
-  if (!free || !m) return null;
-  const p = new DOMPoint(free.sx, free.sy).matrixTransform(m);
-  return { x: p.x, y: p.y };
-}
-const overFree = (): boolean => {
-  const spot = freeSpot();
-  return !!holding && !!spot && Math.hypot(holding.x - spot.x, holding.y - spot.y) < DOCK_REACH;
-};
-
 /** The other device starts on this job now: what has been shown stays, and from the next step on everything runs at once. */
 function joinIn(job: Wanted): void {
   const seen = seenSoFar(tl, v);
@@ -587,31 +568,6 @@ function joinIn(job: Wanted): void {
   simulate();
   scene.setStory(story, tl);
   sound.play('pop');
-}
-
-for (const w of WANTED) {
-  const b = document.createElement('button');
-  b.className = 'dock-card';
-  b.setAttribute('aria-label', `Drag ${DOCK_ICONS[w].name} onto the other device`);
-  b.appendChild(dockIcon(w));
-  const letGo = (): void => {
-    if (!holding) return;
-    const landed = overFree() && mode === 'play' && !joined;
-    holding = null;
-    if (landed) joinIn(w);
-  };
-  b.addEventListener('pointerdown', (e) => {
-    holding = { x: e.clientX, y: e.clientY };
-    b.setPointerCapture(e.pointerId);
-    dockGhost.replaceChildren(dockIcon(w));
-  });
-  b.addEventListener('pointermove', (e) => {
-    if (holding) holding = { x: e.clientX, y: e.clientY };
-  });
-  b.addEventListener('pointerup', letGo);
-  b.addEventListener('pointercancel', letGo);
-  b.addEventListener('lostpointercapture', letGo);
-  dock.appendChild(b);
 }
 
 /** What the stranger has read off the air so far, just above the bar wherever the camera goes. */
@@ -946,7 +902,6 @@ function reset(): void {
   doneFor = 0;
   camFree = false;
   showAll = false;
-  holding = null;
   faults.length = 0;
   knocks.clear();
   decided = {};
@@ -1101,19 +1056,11 @@ function frame(now: number): void {
     resting.setAttribute('opacity', '1');
   }
   hint.style.display = mode === 'idle' ? '' : 'none';
-  dock.hidden = mode !== 'play' || !!joined || v >= tl.total;
-  dockGhost.hidden = dockRing.hidden = !holding;
-  if (holding) {
-    const spot = freeSpot();
-    dockGhost.style.transform = `translate(${holding.x}px, ${holding.y}px)`;
-    dockGhost.classList.toggle('over', overFree());
-    if (spot) dockRing.style.transform = `translate(${spot.x}px, ${spot.y}px)`;
-  }
 
   // The camera eases between the whole network (between runs) and a close follow of the packet,
-  // unless the viewer has taken it over. A card in hand needs the whole network, and so does more than one job at a time.
-  if (!camFree || holding) {
-    const wide = !!holding || (mode === 'play' && (!!joined || story.attackers.length > 0) && !segAt(tl, v)?.seg.flow);
+  // unless the viewer has taken it over. More than one job at a time needs the whole network.
+  if (!camFree) {
+    const wide = mode === 'play' && (!!joined || story.attackers.length > 0) && !segAt(tl, v)?.seg.flow;
     const target = mode === 'play' && !wide ? scene.followCamera(v) : showAll || wide || attacks.size ? scene.wholeCamera() : scene.overviewCamera();
     const ease = snapCamera ? 1 : Math.min(1, dt * (seek ? 6 : 3.5));
     cam = { cx: lerp(cam.cx, target.cx, ease), cy: lerp(cam.cy, target.cy, ease), scale: lerp(cam.scale, target.scale, ease) };
@@ -1165,6 +1112,11 @@ function frame(now: number): void {
     menu.button.disabled = !canSetUp();
     if (!canSetUp()) menu.setOpen(false);
   }
+  setupMenu.button.hidden = mode === 'play';
+  addMenu.button.hidden = mode !== 'play';
+  // One extra action a run for now, and it needs something left to run alongside.
+  addMenu.button.disabled = mode !== 'play' || !!joined || v >= tl.total;
+  if (addMenu.button.disabled) addMenu.setOpen(false);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
