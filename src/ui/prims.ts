@@ -145,21 +145,25 @@ export function slab(parent: Element, s: { x: number; y: number; z: number; w: n
   outline(parent, [...top, ...foot.map((p) => iso(p.x, p.y, s.z))]);
 }
 
-/** Standing up, its face towards +y: a panel with rounded corners, `y` being that face, and a bold outline. */
-export function panel(parent: Element, s: { x: number; y: number; z: number; w: number; h: number; t: number; r: number; color: string }): void {
-  const edge = roundedRect(s.w, s.h, s.r).map(([a, b]) => ({ x: s.x + a, z: s.z + b }));
-  const [mx, mz] = [s.x + s.w / 2, s.z + s.h / 2];
-  edge.forEach((a, i) => {
-    const b = edge[(i + 1) % edge.length]!;
-    const flip = (b.z - a.z) * ((a.x + b.x) / 2 - mx) - (b.x - a.x) * ((a.z + b.z) / 2 - mz) < 0 ? -1 : 1;
-    const n = { x: (flip * (b.z - a.z)) / Math.hypot(b.x - a.x, b.z - a.z), z: (flip * (a.x - b.x)) / Math.hypot(b.x - a.x, b.z - a.z) };
-    if (n.x + n.z <= 0) return;
-    const color = shade(s.color, FACE.top * Math.max(0, n.z) ** 2 + FACE.right * Math.max(0, n.x) ** 2);
-    el('path', { d: pathOf([iso(a.x, s.y, a.z), iso(b.x, s.y, b.z), iso(b.x, s.y - s.t, b.z), iso(a.x, s.y - s.t, a.z)]), fill: color, stroke: color, 'stroke-width': 0.7 }, parent);
+/**
+ * Standing up, its face towards +y and leaning back by `lean` radians from its foot at (y, z): a panel with rounded corners
+ * and a bold outline, `h` long up the lean, `t` thick behind the face.
+ */
+export function panel(parent: Element, s: { x: number; y: number; z: number; w: number; h: number; t: number; r: number; lean: number; color: string }): void {
+  const [sin, cos] = [Math.sin(s.lean), Math.cos(s.lean)];
+  const on = (a: number, b: number, behind: number): Pt => iso(s.x + a, s.y - b * sin - behind * cos, s.z + b * cos - behind * sin);
+  const edge = roundedRect(s.w, s.h, s.r);
+  edge.forEach(([ax, ab], i) => {
+    const [bx, bb] = edge[(i + 1) % edge.length]!;
+    const flip = (bb - ab) * ((ax + bx) / 2 - s.w / 2) - (bx - ax) * ((ab + bb) / 2 - s.h / 2) < 0 ? -1 : 1;
+    const n = { x: (flip * (bb - ab)) / Math.hypot(bx - ax, bb - ab), up: (flip * (ax - bx)) / Math.hypot(bx - ax, bb - ab) };
+    if (n.x + n.up <= 0) return;
+    const color = shade(s.color, FACE.top * Math.max(0, n.up) ** 2 + FACE.right * Math.max(0, n.x) ** 2);
+    el('path', { d: pathOf([on(ax, ab, 0), on(bx, bb, 0), on(bx, bb, s.t), on(ax, ab, s.t)]), fill: color, stroke: color, 'stroke-width': 0.7 }, parent);
   });
-  const face = edge.map((p) => iso(p.x, s.y, p.z));
+  const face = edge.map(([a, b]) => on(a, b, 0));
   el('path', { d: pathOf(face), fill: shade(s.color, FACE.left) }, parent);
-  outline(parent, [...face, ...edge.map((p) => iso(p.x, s.y - s.t, p.z))]);
+  outline(parent, [...face, ...edge.map(([a, b]) => on(a, b, s.t))]);
 }
 
 /** The shadow a thing with this footprint throws on the table. */

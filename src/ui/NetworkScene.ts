@@ -123,8 +123,12 @@ const cardLen = (trip: Trip): number => {
 };
 
 /** Text printed on a box face: `+y` faces run along +x on screen, `+x` faces along −y. */
-const faceTf = (p: { sx: number; sy: number }, face: '+y' | '+x'): string =>
-  `matrix(1 ${face === '+y' ? 0.5 : -0.5} 0 1 ${p.sx.toFixed(1)} ${p.sy.toFixed(1)})`;
+const faceTf = (p: { sx: number; sy: number }, face: '+y' | '+x', lean = 0): string =>
+  `matrix(1 ${face === '+y' ? 0.5 : -0.5} ${(-Math.sin(lean)).toFixed(3)} ${(Math.sin(lean) / 2 + Math.cos(lean)).toFixed(3)} ${p.sx.toFixed(1)} ${p.sy.toFixed(1)})`;
+/** A laptop's lid, as long as the keyboard part is deep, leaning back from the hinge as a laptop's does. */
+const LID = { long: 1.8, lean: (18 * Math.PI) / 180 };
+/** How far up the lid its screen starts and ends. */
+const LID_SCREEN = { from: 0.14, to: 1.7 };
 
 
 interface Part {
@@ -620,7 +624,7 @@ export class NetworkScene {
   private screenPoint(device = this.tl.client): Vec3 {
     const d = this.tl.pos.get(device) ?? { x: 0, y: 0 };
     const kind = this.tl.kind.get(device);
-    return kind === 'phone' || kind === 'peer' ? v3(d.x, d.y + 0.2, 1.3) : v3(d.x, d.y - 0.6, 0.95);
+    return kind === 'phone' || kind === 'peer' ? v3(d.x, d.y + 0.2, 1.3) : v3(d.x, d.y - 0.9 - 0.9 * Math.sin(LID.lean), 0.14 + 0.9 * Math.cos(LID.lean));
   }
 
   private depthOf(id: string): number {
@@ -919,8 +923,8 @@ export class NetworkScene {
    * A screen on a vertical face at world point `a` (its top-left corner, face looking towards +y), `w` × `h` px.
    * Content is laid out for the laptop's 66 × 37 px screen and scaled to fit.
    */
-  private buildScreen(g: SVGGElement, a: { sx: number; sy: number }, w: number, h: number, glass = '#3b4049'): Screen {
-    const face = el('g', { class: 'dev-screen', transform: faceTf(a, '+y') }, g);
+  private buildScreen(g: SVGGElement, a: { sx: number; sy: number }, w: number, h: number, glass = '#3b4049', lean = 0): Screen {
+    const face = el('g', { class: 'dev-screen', transform: faceTf(a, '+y', lean) }, g);
     el('rect', { x: 0, y: 0, width: w, height: h, rx: glass === LAPTOP_GLASS ? 3 : 0, fill: glass }, face);
     if (glass === LAPTOP_GLASS) el('path', { d: `M${w * 0.5} 0H${w * 0.82}L${w * 0.4} ${h}H${w * 0.08}Z`, class: 'dev-glare' }, face);
     const W = 2.36 * U;
@@ -954,15 +958,16 @@ export class NetworkScene {
       case 'scanner':
       case 'laptop': {
         const body = kind === 'laptop' ? LAPTOP_BODY : neutral.color;
-        groundShadow(g, { x: x - 0.9, y: y - 1.15, w: 3.1, d: 2.0, r: 0.3 });
-        panel(g, { x: x - 1.3, y: y - 0.95, z: 0.14, w: 2.6, h: 1.56, t: 0.1, r: 0.14, color: body });
+        groundShadow(g, { x: x - 0.9, y: y - 1.3, w: 3.2, d: 2.2, r: 0.3 });
+        panel(g, { x: x - 1.3, y: y - 0.9, z: 0.14, w: 2.6, h: LID.long, t: 0.1, r: 0.14, lean: LID.lean, color: body });
         slab(g, { x: x - 1.3, y: y - 0.9, z: 0, w: 2.6, d: 1.8, h: 0.14, r: 0.16, color: body });
         const keys = Array.from({ length: 4 * 11 }, (_, i) => ({ x: x - 1.08 + (i % 11) * 0.198, y: y - 0.74 + Math.floor(i / 11) * 0.2, w: 0.16, d: 0.15 }));
         tiles(g, keys, 0.14, { class: 'dev-keys' });
         tiles(g, [{ x: x - 0.42, y: y + 0.14, w: 0.84, d: 0.56 }], 0.14, { class: 'dev-pad' });
         line(g, v3(x + 1.3, y + 0.28, 0.07), v3(x + 1.3, y + 0.5, 0.07), { class: 'dev-port' });
         // Screen glass on the face towards the viewer; what it shows changes as the story goes on.
-        return this.buildScreen(g, iso(x - 1.18, y - 0.95, 1.6), 2.36 * U, 1.32 * U, kind === 'laptop' ? LAPTOP_GLASS : undefined);
+        const corner = iso(x - 1.18, y - 0.9 - LID_SCREEN.to * Math.sin(LID.lean), 0.14 + LID_SCREEN.to * Math.cos(LID.lean));
+        return this.buildScreen(g, corner, 2.36 * U, (LID_SCREEN.to - LID_SCREEN.from) * U, kind === 'laptop' ? LAPTOP_GLASS : undefined, LID.lean);
       }
       case 'phone': {
         // A phone standing on a little stand, screen towards the viewer.

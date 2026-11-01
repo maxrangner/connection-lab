@@ -188,7 +188,7 @@ const POS: Record<string, { x: number; y: number }> = {
   bot3: { x: 11, y: -8 },
 };
 
-export const DEVICE_TOP: Record<string, number> = { laptop: 1.7, phone: 2.0, 'home-router': 0.55, router: 0.8, 'web-server': 2.6, 'dns-resolver': 1.1, 'vpn-server': 1.3, 'root-server': 1.5, 'tld-server': 1.1, 'auth-server': 1.1, peer: 2.0, stranger: 1.7, scanner: 1.7, bot: 1.8, sensor: 0.9, 'mqtt-broker': 1.5 };
+export const DEVICE_TOP: Record<string, number> = { laptop: 1.85, phone: 2.0, 'home-router': 0.55, router: 0.8, 'web-server': 2.6, 'dns-resolver': 1.1, 'vpn-server': 1.3, 'root-server': 1.5, 'tld-server': 1.1, 'auth-server': 1.1, peer: 2.0, stranger: 1.85, scanner: 1.85, bot: 1.8, sensor: 0.9, 'mqtt-broker': 1.5 };
 /** The servers only a cold resolver talks to; off the table otherwise. */
 export const UPSTREAM_KINDS = new Set(['root-server', 'tld-server', 'auth-server']);
 /** The attackers switched on from the Attack popup. */
