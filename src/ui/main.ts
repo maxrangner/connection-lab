@@ -440,6 +440,10 @@ toolsMenu.button.addEventListener('click', () => {
   if (!toolsMenu.isOpen) pickUp(null);
 });
 const setupMenu = new Menu<Setting>(controls, root, 'Setup', 'Setup', SETUP, (id) => setSetting(id, !features[id]));
+/** The size of a device's "+ action" (see app.css), and how high it can go: clear of the chapter name. */
+const ACTION_W = 104;
+const ACTION_H = 34;
+const ACTION_TOP = 110;
 /** What can start on a device with nothing to do, in the white of the cards. */
 const ACTIONS: Record<Wanted, { label: string; draw: (g: SVGGElement) => void }> = {
   page: {
@@ -460,20 +464,23 @@ const ACTIONS: Record<Wanted, { label: string; draw: (g: SVGGElement) => void }>
   ping: { label: 'Ping', draw: (g) => drawPing(el('g', { transform: 'scale(0.42)' }, g)) },
   trace: { label: 'Trace', draw: (g) => drawTrace(el('g', { transform: 'scale(0.42)' }, g)) },
 };
-// Setup cannot change a run under way, so Add takes its place in the bar for as long as one lasts.
-const addMenu = new Menu<Wanted>(
-  controls,
-  root,
-  'Add',
-  'Add an action on the other device',
-  WANTED.map((id) => ({ id, label: ACTIONS[id].label, span: 16, draw: (g) => ACTIONS[id].draw(el('g', { class: 'site-card-globe' }, g)) })),
-  (id) => {
-    addMenu.setOpen(false);
-    joinIn(id);
-  },
-);
-addMenu.mark('add-menu');
-addMenu.button.hidden = true;
+// A device with nothing to do has a button of its own during a run, opening what it can do.
+const deviceActions = (['laptop', 'phone'] as const).map((device) => {
+  const menu = new Menu<Wanted>(
+    root,
+    root,
+    '+ action',
+    `Add an action on the ${device}`,
+    WANTED.map((id) => ({ id, label: ACTIONS[id].label, span: 16, draw: (g) => ACTIONS[id].draw(el('g', { class: 'site-card-globe' }, g)) })),
+    (id) => {
+      menu.setOpen(false);
+      joinIn(id);
+    },
+  );
+  menu.mark('action-menu');
+  menu.button.hidden = true;
+  return { device, menu };
+});
 showSetup();
 const ATTACK_LINKS: Record<Attack, string[]> = { listen: [], flood: ['bot1-link', 'bot2-link', 'bot3-link'], scan: ['scanner-link'] };
 const attackMenu = new Menu<Attack>(
@@ -501,7 +508,7 @@ function setAttack(id: Attack, on: boolean): void {
   preview();
   sound.play(on ? 'pop' : 'thud');
 }
-const menus: { isOpen: boolean; setOpen(open: boolean): void; place(): void; button: HTMLButtonElement }[] = [speedMenu, toolsMenu, setupMenu, addMenu, attackMenu];
+const menus: { isOpen: boolean; setOpen(open: boolean): void; place(): void; button: HTMLButtonElement }[] = [speedMenu, toolsMenu, setupMenu, attackMenu, ...deviceActions.map((a) => a.menu)];
 for (const menu of menus) {
   menu.button.addEventListener('click', () => {
     for (const other of menus) if (other !== menu) other.setOpen(false);
@@ -565,6 +572,7 @@ function joinIn(job: Wanted): void {
   // A device joining in looks everything up afresh: it remembers nothing from before.
   known.delete(client === 'laptop' ? 'phone' : 'laptop');
   seek = null;
+  camFree = false;
   simulate();
   scene.setStory(story, tl);
   sound.play('pop');
@@ -1058,15 +1066,32 @@ function frame(now: number): void {
   hint.style.display = mode === 'idle' ? '' : 'none';
 
   // The camera eases between the whole network (between runs) and a close follow of the packet,
-  // unless the viewer has taken it over. More than one job at a time needs the whole network.
+  // unless the viewer has taken it over. More than one action at a time needs the whole network.
   if (!camFree) {
-    const wide = mode === 'play' && (!!joined || story.attackers.length > 0) && !segAt(tl, v)?.seg.flow;
+    const wide = mode === 'play' && (!!joined || story.attackers.length > 0);
     const target = mode === 'play' && !wide ? scene.followCamera(v) : showAll || wide || attacks.size ? scene.wholeCamera() : scene.overviewCamera();
     const ease = snapCamera ? 1 : Math.min(1, dt * (seek ? 6 : 3.5));
     cam = { cx: lerp(cam.cx, target.cx, ease), cy: lerp(cam.cy, target.cy, ease), scale: lerp(cam.scale, target.scale, ease) };
   }
   snapCamera = false;
   scene.applyCamera(cam);
+  for (const { device, menu } of deviceActions) {
+    // It needs something left to run alongside.
+    const free = mode === 'play' && !joined && v < tl.total && device !== client;
+    menu.button.hidden = !free;
+    if (!free) {
+      menu.setOpen(false);
+      continue;
+    }
+    const spot = scene.actionSpot(device);
+    const lowest = window.innerHeight - scene.barHeight - ACTION_H / 2 - 8;
+    const inView = spot.x >= ACTION_W / 2 + 8 && spot.x <= window.innerWidth - ACTION_W / 2 - 8 && spot.y >= ACTION_TOP && spot.y <= lowest;
+    // With the device out of view its button waits in one quiet spot, and says whose it is.
+    const [x, y] = inView ? [spot.x, spot.y] : [ACTION_W / 2 + 8, lowest];
+    setText(menu.button, inView ? '+ action' : `+ ${device}`);
+    menu.button.style.transform = `translate(${x.toFixed(0)}px, ${y.toFixed(0)}px)`;
+    menu.place();
+  }
 
   const shown = mode === 'play' ? v : idleV;
   const heard = tl.attackReadouts.find((x) => x.device === story.listener);
@@ -1112,11 +1137,6 @@ function frame(now: number): void {
     menu.button.disabled = !canSetUp();
     if (!canSetUp()) menu.setOpen(false);
   }
-  setupMenu.button.hidden = mode === 'play';
-  addMenu.button.hidden = mode !== 'play';
-  // One extra action a run for now, and it needs something left to run alongside.
-  addMenu.button.disabled = mode !== 'play' || !!joined || v >= tl.total;
-  if (addMenu.button.disabled) addMenu.setOpen(false);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
