@@ -181,9 +181,9 @@ const POS: Record<string, { x: number; y: number }> = {
   // The friend's phone, on the far side of the internet, in front of the web server.
   peer: { x: 24, y: 8 },
   // Red, once dragged in. The stranger sits within reach of the Wi-Fi, the others out on the internet by the ISP router.
-  stranger: { x: 14, y: 11 },
-  scanner: { x: 20, y: 8 },
-  bot1: { x: -2, y: -13 },
+  stranger: { x: 13, y: 11 },
+  scanner: { x: 31, y: 9 },
+  bot1: { x: -4, y: -16 },
   bot2: { x: 6, y: -12 },
   bot3: { x: 11, y: -8 },
 };
