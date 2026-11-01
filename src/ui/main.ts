@@ -444,6 +444,8 @@ const setupMenu = new Menu<Setting>(controls, root, 'Setup', 'Setup', SETUP, (id
 const ACTION_W = 104;
 const ACTION_H = 34;
 const ACTION_TOP = 110;
+/** What the "?" takes up at the left edge, with its margins. */
+const ABOUT_ROOM = 60;
 /** What can start on a device with nothing to do, in the white of the cards. */
 const ACTIONS: Record<Wanted, { label: string; draw: (g: SVGGElement) => void }> = {
   page: {
@@ -509,7 +511,59 @@ function setAttack(id: Attack, on: boolean): void {
   preview();
   sound.play(on ? 'pop' : 'thud');
 }
-const menus: { isOpen: boolean; setOpen(open: boolean): void; place(): void; button: HTMLButtonElement }[] = [speedMenu, toolsMenu, setupMenu, attackMenu, ...deviceActions.map((a) => a.menu)];
+/** Where to find me. A link goes here once its address is known; nothing shows a dead one. GitHub is the profile until the repo is out. */
+const LINKS = [{ label: 'GitHub', url: 'https://github.com/maxrangner' }];
+/** True of the page as it stands. Anything that stores more or sends anything, cookies included, has to change this first. */
+const PRIVACY = "This page sets no cookies and doesn't track you. Your theme, sound and Setup choices are saved in this browser only and are never sent anywhere. The site hosting the page may have its own rules.";
+const aboutBtn = document.createElement('button');
+aboutBtn.className = 'about-button';
+aboutBtn.textContent = '?';
+aboutBtn.setAttribute('aria-label', 'About Connection Lab');
+aboutBtn.setAttribute('aria-expanded', 'false');
+const aboutCard = document.createElement('div');
+aboutCard.className = 'about-card';
+aboutCard.hidden = true;
+aboutCard.tabIndex = -1;
+const aboutText = (tag: string, text: string): HTMLElement => {
+  const e = document.createElement(tag);
+  e.textContent = text;
+  aboutCard.appendChild(e);
+  return e;
+};
+aboutText('h2', 'Connection Lab');
+aboutText('p', 'See how the internet really works. Every packet is built and read byte by byte, right here in your browser. Nothing touches the real network.');
+aboutText('h3', 'Made by Max Rangner');
+const aboutLinks = aboutText('div', '');
+aboutLinks.className = 'about-links';
+for (const { label, url } of LINKS) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  a.textContent = label;
+  aboutLinks.appendChild(a);
+}
+aboutText('h3', 'Cookies and privacy');
+aboutText('p', PRIVACY);
+root.append(aboutBtn, aboutCard);
+const about = {
+  button: aboutBtn,
+  get isOpen(): boolean {
+    return !aboutCard.hidden;
+  },
+  setOpen(open: boolean): void {
+    if (open === this.isOpen) return;
+    if (!open && aboutCard.contains(document.activeElement)) aboutBtn.focus();
+    aboutCard.hidden = !open;
+    aboutBtn.setAttribute('aria-expanded', String(open));
+    if (open) aboutCard.focus();
+  },
+  place(): void {},
+};
+aboutBtn.addEventListener('click', () => about.setOpen(!about.isOpen));
+/** The "?" fits beside the bar, or else above it, which is a narrow screen. */
+let aboutBeside = true;
+const menus: { isOpen: boolean; setOpen(open: boolean): void; place(): void; button: HTMLButtonElement }[] = [speedMenu, toolsMenu, setupMenu, attackMenu, ...deviceActions.map((a) => a.menu), about];
 for (const menu of menus) {
   menu.button.addEventListener('click', () => {
     for (const other of menus) if (other !== menu) other.setOpen(false);
@@ -518,8 +572,12 @@ for (const menu of menus) {
 }
 const placeMenus = (): void => {
   for (const menu of menus) menu.place();
-  scene.setBar(window.innerHeight - controls.getBoundingClientRect().top);
-  heardCard.style.bottom = `${window.innerHeight - controls.getBoundingClientRect().top + 8}px`;
+  const bar = controls.getBoundingClientRect();
+  scene.setBar(window.innerHeight - bar.top);
+  heardCard.style.bottom = `${window.innerHeight - bar.top + 8}px`;
+  aboutBeside = bar.left >= ABOUT_ROOM;
+  aboutBtn.style.bottom = aboutBeside ? '' : `${window.innerHeight - bar.top + 8}px`;
+  aboutCard.style.bottom = `${window.innerHeight - aboutBtn.getBoundingClientRect().top + 10}px`;
   spyCard.place(controls);
 };
 const soundBtn = button('♪', 'Mute', () => {
@@ -1087,7 +1145,7 @@ function frame(now: number): void {
     const lowest = (spyCard.top ?? window.innerHeight - scene.barHeight) - ACTION_H / 2 - 8;
     const inView = spot.x >= ACTION_W / 2 + 8 && spot.x <= window.innerWidth - ACTION_W / 2 - 8 && spot.y >= ACTION_TOP && spot.y <= lowest;
     // With the device out of view its button waits in one quiet spot, and says whose it is.
-    const [x, y] = inView ? [spot.x, spot.y] : [ACTION_W / 2 + 8, lowest];
+    const [x, y] = inView ? [spot.x, spot.y] : [ACTION_W / 2 + (aboutBeside ? 8 : ABOUT_ROOM), lowest];
     setText(menu.button, inView ? '+ action' : `+ ${device}`);
     menu.button.style.transform = `translate(${x.toFixed(0)}px, ${y.toFixed(0)}px)`;
   }
