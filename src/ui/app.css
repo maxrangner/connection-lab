@@ -294,7 +294,7 @@ body {
 
 .follow {
   position: fixed;
-  top: calc(14px + env(safe-area-inset-top, 0px));
+  top: calc(58px + env(safe-area-inset-top, 0px));
   right: max(16px, env(safe-area-inset-right, 0px));
 }
 
@@ -331,7 +331,7 @@ body {
   transform: translateY(-50%);
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   /* A layer of its own: the stage under it is sliced anew as the packet moves, and the dock must not be repainted with it */
   will-change: transform;
@@ -344,6 +344,7 @@ body {
 }
 
 .dock-label {
+  width: 96px;
   font-size: 12px;
   font-weight: 600;
   color: var(--ink-soft);
@@ -355,13 +356,12 @@ body {
     top: calc(92px + env(safe-area-inset-top, 0px));
     left: max(16px, env(safe-area-inset-left, 0px));
     transform: none;
-    flex-direction: row;
+    flex-flow: row wrap;
+    width: 264px;
   }
 
   .dock-label {
-    width: 40px;
-    font-size: 11px;
-    line-height: 13px;
+    width: 100%;
   }
 }
 
@@ -423,24 +423,30 @@ body {
   pointer-events: none;
 }
 
-/* The name, top left, until the chapter name takes its place */
+/* The name stays top right, behind the map: whatever crosses that corner goes over it. It takes the room the chapter name leaves. */
 .logo {
   position: fixed;
+  z-index: -1;
   top: calc(18px + env(safe-area-inset-top, 0px));
-  left: max(16px, env(safe-area-inset-left, 0px));
-  width: min(56vw, 300px);
+  right: max(16px, env(safe-area-inset-right, 0px));
+  width: min(100vw - 225px, 300px);
   pointer-events: none;
   user-select: none;
 }
 
-.logo[hidden] {
-  display: none;
-}
-
-/* A phone on its side: clear of the cards */
+/* A phone on its side */
 @media (max-height: 420px) {
   .logo {
     width: 200px;
+  }
+}
+
+/* Too narrow for the words beside the chapter name: the image hangs off the screen, with only its mark showing */
+@media (max-width: 349px) {
+  .logo {
+    width: 200px;
+    right: -139px;
+    clip-path: inset(0 77% 0 0);
   }
 }
 
