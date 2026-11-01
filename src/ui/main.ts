@@ -492,11 +492,7 @@ const smartMenu = new Menu<SmartOption>(
       for (const l of ['lan2', 'broker-link']) clearLine(l);
       if (spyLine === 'lan2' || spyLine === 'broker-link') setSpyLine(null);
     } else qos = Number(id.slice(3)) as 0 | 1 | 2;
-    try {
-      localStorage.setItem('net.smart', JSON.stringify({ cloud, qos }));
-    } catch {
-      // Not remembered; fine.
-    }
+    rememberSmart();
     showSmart();
     if (features.smart) preview();
     else setSetting('smart', true);
@@ -504,7 +500,17 @@ const smartMenu = new Menu<SmartOption>(
   },
 );
 smartMenu.mark('smart-menu');
+setupMenu.hold(smartMenu);
+function rememberSmart(): void {
+  try {
+    localStorage.setItem('net.smart', JSON.stringify({ cloud, qos }));
+  } catch {
+    // Not remembered; fine.
+  }
+}
 function showSmart(): void {
+  // Anything but the plain choice shows without opening the popup.
+  smartMenu.button.classList.toggle('on', cloud || qos > 0);
   smartMenu.setOn('home', !cloud);
   smartMenu.setOn('cloud', cloud);
   for (const n of [0, 1, 2] as const) smartMenu.setOn(`qos${n}`, qos === n);
@@ -514,6 +520,8 @@ showSmart();
 const ACTION_W = 104;
 const ACTION_H = 34;
 const ACTION_TOP = 110;
+/** How far past its middle the arrow of a button can go. */
+const ACTION_ARROW = ACTION_W / 2 - 20;
 /** What can start on a device with nothing to do, in the white of the cards. */
 const ACTIONS: Record<Job, { label: string; draw: (g: SVGGElement) => void }> = {
   page: {
@@ -746,6 +754,20 @@ const heardCard = document.createElement('div');
 heardCard.className = 'heard-card';
 heardCard.hidden = true;
 root.appendChild(heardCard);
+const heardArrow = document.createElement('div');
+heardArrow.className = 'heard-arrow';
+heardArrow.hidden = true;
+root.appendChild(heardArrow);
+/** The card's little arrow: on the edge nearest the stranger, pointing at it wherever the camera has gone. */
+function pointHeard(): void {
+  const to = scene.deviceSpot(story.listener!);
+  const r = heardCard.getBoundingClientRect();
+  const x = Math.max(r.left + 14, Math.min(r.right - 14, to.x));
+  const y = Math.max(r.top, Math.min(r.bottom, to.y));
+  const inside = to.x >= r.left && to.x <= r.right && to.y >= r.top && to.y <= r.bottom;
+  heardArrow.hidden = inside;
+  heardArrow.style.transform = `translate(${x.toFixed(0)}px, ${y.toFixed(0)}px) rotate(${Math.atan2(to.y - y, to.x - x).toFixed(3)}rad)`;
+}
 // Outside the bar, so the bar never moves.
 const followBtn = document.createElement('button');
 followBtn.className = 'follow';
@@ -1102,6 +1124,7 @@ function reset(): void {
   for (const id of Object.keys(ATTACK_LINKS) as Attack[]) attackMenu.setOn(id, false);
   cloud = false;
   qos = 0;
+  rememberSmart();
   showSmart();
   for (const menu of menus) menu.setOpen(false);
   showChapterMenu(false);
@@ -1248,8 +1271,23 @@ function frame(now: number): void {
   }
   snapCamera = false;
   scene.applyCamera(cam);
-  if (!setupMenu.isOpen) smartMenu.setOpen(false);
   const lowest = (spyCard.top ?? window.innerHeight - scene.barHeight) - ACTION_H / 2 - 8;
+  const actionSize = scene.actionSize();
+  const halfW = (ACTION_W / 2) * actionSize + 8;
+  const inView = (s: { x: number; y: number }): boolean => s.x >= halfW && s.x <= window.innerWidth - halfW && s.y >= ACTION_TOP && s.y <= lowest;
+  /** The first spot by this device that leaves the others in sight, or any it has. */
+  const spotFor = (device: string): ReturnType<typeof scene.actionSpots>[number] | undefined => {
+    const spots = scene.actionSpots(device).filter(inView);
+    return spots.find((s) => !scene.hides(device, s, (ACTION_W + 8) * actionSize, (ACTION_H + 8) * actionSize)) ?? spots[0];
+  };
+  /** A button on the table, with its arrow on the device it belongs to. */
+  const putAction = (b: HTMLButtonElement, spot: { x: number; y: number; points?: string }, to: number): void => {
+    b.style.transform = `translate(${spot.x.toFixed(0)}px, ${spot.y.toFixed(0)}px) scale(${actionSize.toFixed(3)})`;
+    b.style.setProperty('--size', actionSize.toFixed(3));
+    b.style.setProperty('--arrow', `${Math.max(-ACTION_ARROW, Math.min(ACTION_ARROW, (to - spot.x) / actionSize)).toFixed(0)}px`);
+    if (spot.points) b.dataset.points = spot.points;
+    else delete b.dataset.points;
+  };
   const pinned = `translate(${(ACTION_W / 2 + 8).toFixed(0)}px, ${lowest.toFixed(0)}px)`;
   const outOfView: (typeof deviceActions)[number][] = [];
   for (const action of deviceActions) {
@@ -1260,10 +1298,10 @@ function frame(now: number): void {
     menu.button.hidden = !free;
     // Open, it stays put: the run goes on, and what you are aiming for must not move.
     if (!free || menu.isOpen) continue;
-    const spot = scene.actionSpot(device);
-    if (spot.x >= ACTION_W / 2 + 8 && spot.x <= window.innerWidth - ACTION_W / 2 - 8 && spot.y >= ACTION_TOP && spot.y <= lowest) {
+    const spot = spotFor(device);
+    if (spot) {
       setText(menu.button, '+ action');
-      menu.button.style.transform = `translate(${spot.x.toFixed(0)}px, ${spot.y.toFixed(0)}px)`;
+      putAction(menu.button, spot, spot.x);
     } else outOfView.push(action);
   }
   // With its device out of view a button waits in one quiet spot, and says whose it is.
@@ -1273,6 +1311,7 @@ function frame(now: number): void {
     menu.button.hidden = shared || picking;
     setText(menu.button, `+ ${device}`);
     menu.button.style.transform = pinned;
+    delete menu.button.dataset.points;
   }
   if (!shared || picking) moreDevices.setOpen(false);
   moreDevices.button.hidden = !shared || picking;
@@ -1281,8 +1320,8 @@ function frame(now: number): void {
   const reader = mode === 'idle' ? story.devices.find((d) => d.actions.includes('reading')) : undefined;
   readingBtn.hidden = !reader;
   if (reader) {
-    const spot = scene.actionSpot(reader.id);
-    readingBtn.style.transform = `translate(${Math.max(ACTION_W / 2 + 8, Math.min(window.innerWidth - ACTION_W / 2 - 8, spot.x)).toFixed(0)}px, ${Math.min(spot.y, lowest).toFixed(0)}px)`;
+    const spot = spotFor(reader.id) ?? scene.actionSpots(reader.id)[0]!;
+    putAction(readingBtn, { ...spot, x: Math.max(halfW, Math.min(window.innerWidth - halfW, spot.x)), y: Math.min(spot.y, lowest) }, spot.x);
   }
 
   const shown = mode === 'play' ? v : idleV;
@@ -1290,7 +1329,9 @@ function frame(now: number): void {
   const heardLines = heard && shown >= 0 ? screenAt(heard.readout, shown) : null;
   heardCard.hidden = !heardLines;
   if (heardLines) setText(heardCard, heardLines.join('\n'));
-  scene.render(shown);
+  heardArrow.hidden = !heardLines;
+  if (heardLines) pointHeard();
+  scene.render(shown, mode === 'play' ? 0 : riseK);
   scene.drawPacket(shown, peek, pill && pillOpen > 0.02 ? { key: pill, k: pillOpen } : null);
   spyCard.update(spyLine ? spyLog(tl, spyLine, shown, spyFrom) : []);
   realClock.hidden = mode !== 'play';
@@ -1391,6 +1432,15 @@ if (import.meta.env.DEV) {
       },
       get reactions() {
         return tl.reactions;
+      },
+      get camera() {
+        return cam;
+      },
+      /** Run to the end, and on into what comes after it. */
+      finish(): void {
+        v = tl.total;
+        paused = false;
+        peek = peekTarget = 0;
       },
       /** Start a run straight away with these things on the table (for screenshots). */
       start(f: Partial<Features> & { photo?: boolean; call?: boolean; ping?: boolean; trace?: boolean; spy?: string; cut?: string | string[]; slow?: boolean; vpn?: boolean; again?: boolean; from?: string; noise?: number; reading?: boolean }): void {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fetchWebPage, OFFLINE_AT, READING_AT, runScenario, type Attack, type SimResult } from '../sim';
 import { buildStory, type Story, type Trip } from './story';
-import { buildTimeline, crossings, realAt, seenSoFar, type Timeline } from './timeline';
+import { buildTimeline, crossings, namedAcks, realAt, seenSoFar, type Timeline } from './timeline';
 import { buildSpeech } from './speech';
 
 const CLEAN = { randomLoss: 0, manual: [] };
@@ -14,6 +14,15 @@ const readings = (t: Trip[]): Trip[] => t.filter((x) => x.message?.kind === 'rea
 const told = (r: SimResult): string[] => r.events.flatMap((e) => (e.type === 'app' && e.action === 'mqtt-received' ? [`${e.deviceId}: ${e.info?.topic} ${e.info?.value}`] : []));
 
 describe('the sensor takes a reading', () => {
+  it('every step of QoS says what it is, also when the plain ACKs of a flood share the flow', () => {
+    const { tl } = run({ cloud: false, qos: 2, attacks: ['flood'] });
+    for (const flow of tl.segs.flatMap((x) => (x.flow ? [x.flow] : []))) {
+      const steps = flow.filter((p) => p.trip.message?.kind === 'mqtt-control');
+      expect(namedAcks(flow).filter((p) => steps.includes(p))).toEqual(steps);
+    }
+    expect(tl.segs.some((x) => x.flow?.some((p) => p.trip.message?.kind === 'mqtt-control'))).toBe(true);
+  });
+
   it('goes to the broker, and the broker sends each app its own copy', () => {
     const { s } = run();
     expect(readings(s.trips).map((t) => `${t.origin} → ${t.to === '203.0.113.7' ? 'home' : 'broker'}`)).toEqual(['sensor → broker', 'broker → home', 'broker → home']);
@@ -330,6 +339,21 @@ describe('an app that is away', () => {
 
   it('a cut once a reading is under way is only a late packet: TCP sends it again, at any QoS', () => {
     for (const qos of [0, 1] as const) expect(heardBy(run(qos, { cuts: [{ link: 'lan', from: READING_AT, to: READING_AT + 1.5 }] })).sort()).toEqual(['laptop', 'phone']);
+  });
+
+  it('the broker gives an app up one and a half keep-alives after it last heard from it', () => {
+    const r = run(0, offline);
+    const pings = [...r.packets.values()].filter((p) => p.origin === 'laptop' && p.label === 'MQTT PINGREQ' && p.createdAt < OFFLINE_AT).map((p) => p.createdAt);
+    const gone = r.events.find((e) => e.type === 'app' && e.action === 'mqtt-offline' && e.deviceId === 'local-broker' && e.info?.client === 'laptop');
+    expect(gone!.t - pings.at(-1)!).toBeCloseTo(4.5, 1);
+  });
+
+  it('with nothing cut nobody is given up, even with a broker far away', () => {
+    for (const slow of [false, true]) for (const qos of [0, 1, 2] as const) {
+      const r = runScenario(fetchWebPage({ reading: true, cloud: true, slow, qos }), { seed: 1, faults: CLEAN, maxTime: 1000 });
+      expect(r.events.filter((e) => e.type === 'app' && e.action === 'mqtt-offline')).toEqual([]);
+      expect(heardBy(r).sort()).toEqual(['laptop', 'phone']);
+    }
   });
 
   it('the run comes to an end if nobody mends the cable', () => {

@@ -946,7 +946,7 @@ body {
   fill: #e6b93a;
 }
 
-.device.absent {
+.absent {
   display: none;
 }
 
@@ -987,10 +987,6 @@ body {
   100% {
     transform: translate(0, 0);
   }
-}
-
-.link.absent {
-  display: none;
 }
 
 .net-stage.tool-spy {
@@ -1185,15 +1181,35 @@ button.action-menu[hidden] {
   stroke: #3d7a52;
 }
 
-/* Small to look at, big to hit: 48px high however small the phone */
+/* Small to look at, big to hit: 48px high however small the phone or far back the camera */
 button.action-menu::before {
   content: '';
   position: absolute;
-  inset: -8px;
+  inset: calc(17px - 24px / var(--size, 1)) -8px;
 }
 
 button.action-menu::after {
   content: none;
+}
+
+/* A little arrow to the device it belongs to */
+button.action-menu[data-points]::after {
+  content: '';
+  position: absolute;
+  left: calc(50% + var(--arrow, 0px) - 9px);
+  width: 18px;
+  height: 11px;
+  background: var(--app);
+}
+
+button.action-menu[data-points='up']::after {
+  top: -11px;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+
+button.action-menu[data-points='down']::after {
+  bottom: -11px;
+  clip-path: polygon(0 0, 100% 0, 50% 100%);
 }
 
 .menu-panel.action-menu .menu-item svg {
@@ -1773,6 +1789,24 @@ button.action-menu::after {
 }
 
 .heard-card[hidden] {
+  display: none;
+}
+
+/* Along +x from the card's edge: turned to point at the stranger. */
+.heard-arrow {
+  position: fixed;
+  z-index: 3;
+  top: -9px;
+  left: -5px;
+  width: 18px;
+  height: 18px;
+  background: #6e2020;
+  clip-path: polygon(0 0, 100% 50%, 0 100%);
+  transform-origin: 5px 9px;
+  pointer-events: none;
+}
+
+.heard-arrow[hidden] {
   display: none;
 }
 

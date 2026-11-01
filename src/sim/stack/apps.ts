@@ -219,10 +219,10 @@ export function startMqttClient(host: Host, spec: MqttClientSpec, mss: number): 
     let received: Uint8Array = new Uint8Array(0);
     /** No answer to the last PINGREQ yet. */
     let silent: number | undefined;
-    const lost = (conn: TcpConnection): void => {
+    const lost = (reason: string): void => {
       up = undefined;
-      conn.abort();
-      sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-client', action: 'mqtt-offline', info: { reason: 'no PINGRESP' } });
+      sim.cancel(silent);
+      sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-client', action: 'mqtt-offline', info: { reason } });
       connect(ip, true);
     };
     const keepAlive = (conn: TcpConnection): void => {
@@ -230,7 +230,10 @@ export function startMqttClient(host: Host, spec: MqttClientSpec, mss: number): 
       sim.after(MQTT_KEEP_ALIVE, () => {
         if (conn !== up) return;
         say(conn, buildMqttPing(MQTT_PINGREQ), 'MQTT PINGREQ');
-        silent = sim.after(MQTT_KEEP_ALIVE, () => lost(conn));
+        silent = sim.after(MQTT_KEEP_ALIVE, () => {
+          conn.abort();
+          lost('no PINGRESP');
+        });
       });
     };
     host.tcpConnect(ip, MQTT_PORT, { mss, wscale: 7, app: 'mqtt' }, {
@@ -273,8 +276,9 @@ export function startMqttClient(host: Host, spec: MqttClientSpec, mss: number): 
           }
         });
       },
-      onError(_conn, reason) {
+      onError(conn, reason) {
         sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-client', action: 'error', info: { reason } });
+        if (conn === up) lost(reason);
       },
     });
   };
@@ -333,11 +337,12 @@ export function startMqttBroker(host: Host, spec: MqttBrokerSpec, mss: number): 
     }
   };
   const watch = (s: MqttSession, conn: TcpConnection): void => {
-    const wait = (s.keepAlive * 3) / 2;
-    if (sim.now + wait >= spec.watchUntil + wait) return;
-    sim.after(wait, () => {
+    const { heard } = s;
+    const due = heard + (s.keepAlive * 3) / 2;
+    if (due >= spec.watchUntil) return;
+    sim.after(due - sim.now, () => {
       if (s.conn !== conn) return;
-      if (sim.now - s.heard < wait) return watch(s, conn);
+      if (s.heard !== heard) return watch(s, conn);
       s.conn = undefined;
       conn.abort();
       sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-broker', action: 'mqtt-offline', info: { reason: 'keep-alive ran out', client: s.clientId } });
@@ -392,6 +397,11 @@ export function startMqttBroker(host: Host, spec: MqttBrokerSpec, mss: number): 
             if (m.type === MQTT_PUBREC) mqttSend(host, c, buildMqttAck(MQTT_PUBREL, m.packetId), 'MQTT PUBREL');
           }
         });
+      },
+      onError(c, reason) {
+        if (me?.conn !== c) return;
+        me.conn = undefined;
+        sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-broker', action: 'mqtt-offline', info: { reason, client: me.clientId } });
       },
     };
   });

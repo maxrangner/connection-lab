@@ -353,7 +353,7 @@ function seenOn(pdu: PduSnapshot | undefined, p: PacketInfo): Seen | undefined {
   if (p.kind === 'flood') return { ...base, lines: ['junk'], kind: 'open' };
   // Plain MQTT: the topic and the reading are right there in the bytes.
   const mqtt = layer(pdu, 'mqtt');
-  if (mqtt) return { ...base, lines: field(mqtt, 'mqtt.payload') ? [field(mqtt, 'mqtt.topic'), readingOf(mqtt)] : [mqttName(mqtt)], kind: 'open' };
+  if (mqtt) return { ...base, lines: isPublish(mqtt) ? [field(mqtt, 'mqtt.topic'), readingOf(mqtt)] : [mqttName(mqtt)], kind: 'open' };
   const icmp = layer(pdu, 'icmp');
   if (icmp) return { ...base, lines: [icmpCardLabel(icmp.summary)], kind: 'open' };
   const tls = layer(pdu, 'tls');
@@ -375,6 +375,7 @@ function seenOn(pdu: PduSnapshot | undefined, p: PacketInfo): Seen | undefined {
 const readingOf = (mqtt: LayerPdu): string => `${field(mqtt, 'mqtt.payload')} °C`;
 /** "MQTT PUBACK 1" → "PUBACK". */
 const mqttName = (mqtt: LayerPdu): string => mqtt.summary.split(' ')[1] ?? 'MQTT';
+const isPublish = (mqtt: LayerPdu): boolean => mqttName(mqtt) === 'PUBLISH';
 
 const rowsOf = (fields: Field[]): Row[] =>
   fields.filter((f) => f.importance === 'key').flatMap((f) => [{ name: f.name, value: clip(f.display, 30) }, ...rowsOf(f.children ?? [])]);
@@ -411,7 +412,7 @@ function httpMessage(line: string): Message | undefined {
 }
 
 function messageOf(app: LayerPdu | undefined): Message | undefined {
-  if (app?.protocol === 'mqtt') return { kind: field(app, 'mqtt.payload') ? 'reading' : 'mqtt-control' };
+  if (app?.protocol === 'mqtt') return { kind: isPublish(app) ? 'reading' : 'mqtt-control' };
   if (app?.protocol === 'http') return httpMessage(app.summary.replace(/^HTTP /, ''));
   // A referral is a server's answer too: "not me, ask these"; it looked the name up to say so.
   if (app?.protocol === 'dns' && /^DNS (response|referral)/.test(app.summary)) return { kind: 'dns-answer', name: field(app, 'dns.question').split(' ')[0]! };
@@ -604,7 +605,7 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
   if (!arp && (!ip || (!l4 && !icmp))) return null;
   const app = layer(packet, 'http') ?? layer(packet, 'dns') ?? layer(packet, 'dhcp') ?? layer(packet, 'rtp') ?? layer(packet, 'mqtt');
   const dataBytes = arp ? arp.end - arp.start : icmp ? icmp.end - icmp.start : l4!.payloadEnd - l4!.headerEnd;
-  const appCard = (a: LayerPdu): string => (a.protocol === 'http' ? cardLabel(a.summary) : a.protocol === 'dhcp' ? dhcpCardLabel(a.summary) : a.protocol === 'rtp' ? 'voice' : a.protocol === 'mqtt' ? (field(a, 'mqtt.payload') ? readingOf(a) : mqttName(a)) : dnsCardLabel(a.summary));
+  const appCard = (a: LayerPdu): string => (a.protocol === 'http' ? cardLabel(a.summary) : a.protocol === 'dhcp' ? dhcpCardLabel(a.summary) : a.protocol === 'rtp' ? 'voice' : a.protocol === 'mqtt' ? (isPublish(a) ? readingOf(a) : mqttName(a)) : dnsCardLabel(a.summary));
   // What the device is running: ping numbers its cards out of its count, traceroute's probes say their TTL.
   const apps = r.scenario.devices.flatMap((d) => d.apps);
   const probeApp = apps.find((a) => a.kind === 'ping');
