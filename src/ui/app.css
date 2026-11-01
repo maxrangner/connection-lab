@@ -23,7 +23,12 @@
   color-scheme: light;
 }
 
+:root {
+  --rim: transparent;
+}
+
 :root[data-theme='dark'] {
+  --rim: rgb(255 255 255 / 0.2);
   --paper: #2b2824;
   --paper-2: #1c1a17;
   --ink: #efe8dc;
@@ -80,6 +85,50 @@ body {
 
 .net-stage.panning {
   cursor: grabbing;
+}
+
+/* The bold-outline style */
+.dev-line {
+  fill: none;
+  stroke: #1f2633;
+  stroke-width: 2.4;
+  stroke-linejoin: round;
+}
+
+.dev-glass-line {
+  stroke-width: 1.8;
+}
+
+.dev-rim {
+  fill: none;
+  stroke: var(--rim);
+  stroke-width: 5;
+  stroke-linejoin: round;
+}
+
+.dev-shadow {
+  fill: rgb(var(--shadow) / 0.2);
+}
+
+.dev-keys {
+  fill: #2f3f5a;
+}
+
+.dev-pad {
+  fill: #c9c3b7;
+  stroke: #1f2633;
+  stroke-width: 0.8;
+}
+
+.dev-port {
+  stroke: #1f2633;
+  stroke-width: 2.6;
+  stroke-linecap: round;
+}
+
+.dev-glare {
+  fill: #fff;
+  opacity: 0.14;
 }
 
 .ibox path {

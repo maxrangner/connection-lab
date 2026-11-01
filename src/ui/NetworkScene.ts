@@ -1,6 +1,6 @@
 import type { Action } from '../sim';
 import { el, setAttr, setText } from './svg';
-import { box, cylinder, line, rbox, tile } from './prims';
+import { box, cylinder, groundShadow, line, panel, rbox, slab, tile, tiles } from './prims';
 import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, easeOutBounce, iso, isoV, lerp, U, unproject, v3, type Pt, type Vec3 } from './project';
 import { drawSatellite, drawScissors, drawShield, drawSpyglass } from './icons';
 import { shade } from './shade';
@@ -12,6 +12,9 @@ import { addressBefore, ATTACKER_KINDS, detailsAt, DEVICE_TOP, FACE_EMOJI, forma
 
 export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', vpn: '#2e5e6e', eth: '#e08b33', wifi: '#2a9d8f' } as const;
 const DEVICE = '#d9d0c2';
+/** The first device in the bold-outline style: a warmer, lighter body, and glass that is blue until it shows something. */
+const LAPTOP_BODY = '#f2ebdd';
+const LAPTOP_GLASS = '#5b8ec4';
 /** Everything an attacker brings to the table. */
 const ATTACKER = '#d23b3b';
 /** A locked (encrypted) card: dark, under a padlock. */
@@ -916,9 +919,10 @@ export class NetworkScene {
    * A screen on a vertical face at world point `a` (its top-left corner, face looking towards +y), `w` × `h` px.
    * Content is laid out for the laptop's 66 × 37 px screen and scaled to fit.
    */
-  private buildScreen(g: SVGGElement, a: { sx: number; sy: number }, w: number, h: number): Screen {
+  private buildScreen(g: SVGGElement, a: { sx: number; sy: number }, w: number, h: number, glass = '#3b4049'): Screen {
     const face = el('g', { class: 'dev-screen', transform: faceTf(a, '+y') }, g);
-    el('rect', { x: 0, y: 0, width: w, height: h, fill: '#3b4049' }, face);
+    el('rect', { x: 0, y: 0, width: w, height: h, rx: glass === LAPTOP_GLASS ? 3 : 0, fill: glass }, face);
+    if (glass === LAPTOP_GLASS) el('path', { d: `M${w * 0.5} 0H${w * 0.82}L${w * 0.4} ${h}H${w * 0.08}Z`, class: 'dev-glare' }, face);
     const W = 2.36 * U;
     const H = 1.32 * U;
     const k = Math.min(w / W, h / H);
@@ -939,6 +943,7 @@ export class NetworkScene {
     }
     const fail = el('text', { x: w / 2, y: h / 2, dy: '0.35em', class: 'screen-fail', 'text-anchor': 'middle', opacity: 0 }, face);
     fail.textContent = '✗';
+    if (glass === LAPTOP_GLASS) el('rect', { x: 0, y: 0, width: w, height: h, rx: 3, class: 'dev-line dev-glass-line' }, face);
     return { face, page, title, dns, dnsName: name, dnsAddr, fail, photo };
   }
 
@@ -948,10 +953,16 @@ export class NetworkScene {
       case 'stranger':
       case 'scanner':
       case 'laptop': {
-        box(g, { x: x - 1.3, y: y - 0.9, z: 0, w: 2.6, d: 1.8, h: 0.14, ...neutral });
-        box(g, { x: x - 1.3, y: y - 1.05, z: 0.14, w: 2.6, d: 0.1, h: 1.56, ...neutral });
+        const body = kind === 'laptop' ? LAPTOP_BODY : neutral.color;
+        groundShadow(g, { x: x - 0.9, y: y - 1.15, w: 3.1, d: 2.0, r: 0.3 });
+        panel(g, { x: x - 1.3, y: y - 0.95, z: 0.14, w: 2.6, h: 1.56, t: 0.1, r: 0.14, color: body });
+        slab(g, { x: x - 1.3, y: y - 0.9, z: 0, w: 2.6, d: 1.8, h: 0.14, r: 0.16, color: body });
+        const keys = Array.from({ length: 4 * 11 }, (_, i) => ({ x: x - 1.08 + (i % 11) * 0.198, y: y - 0.74 + Math.floor(i / 11) * 0.2, w: 0.16, d: 0.15 }));
+        tiles(g, keys, 0.14, { class: 'dev-keys' });
+        tiles(g, [{ x: x - 0.42, y: y + 0.14, w: 0.84, d: 0.56 }], 0.14, { class: 'dev-pad' });
+        line(g, v3(x + 1.3, y + 0.28, 0.07), v3(x + 1.3, y + 0.5, 0.07), { class: 'dev-port' });
         // Screen glass on the face towards the viewer; what it shows changes as the story goes on.
-        return this.buildScreen(g, iso(x - 1.18, y - 0.95, 1.6), 2.36 * U, 1.32 * U);
+        return this.buildScreen(g, iso(x - 1.18, y - 0.95, 1.6), 2.36 * U, 1.32 * U, kind === 'laptop' ? LAPTOP_GLASS : undefined);
       }
       case 'phone': {
         // A phone standing on a little stand, screen towards the viewer.

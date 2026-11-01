@@ -1,5 +1,5 @@
 import { el } from './svg';
-import { iso, U, type Vec3 } from './project';
+import { iso, U, type Pt, type Vec3 } from './project';
 import { FACE, shade } from './shade';
 
 export interface BoxSpec {
@@ -80,6 +80,97 @@ export function rbox(parent: Element | null, s: RBoxSpec): SVGGElement {
   el('path', { d: `M${corner(L, -W, top)}L${corner(L, W, top)}L${corner(-L, W, top)}L${corner(-L, -W, top)}Z`, fill: shade(s.color, FACE.top) }, g);
   if (parent) parent.appendChild(g);
   return g;
+}
+
+/** The points around a rectangle of this size with rounded corners, its corner at the origin, going round one way. */
+function roundedRect(w: number, h: number, r: number): [number, number][] {
+  const out: [number, number][] = [];
+  const corners: [number, number, number][] = [
+    [w - r, r, -90],
+    [w - r, h - r, 0],
+    [r, h - r, 90],
+    [r, r, 180],
+  ];
+  for (const [cx, cy, from] of corners) {
+    for (let i = 0; i <= 5; i++) {
+      const a = ((from + i * 18) * Math.PI) / 180;
+      out.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+    }
+  }
+  return out;
+}
+
+const pathOf = (pts: Pt[]): string => `M${pts.map((p) => `${p.sx.toFixed(2)} ${p.sy.toFixed(2)}`).join('L')}Z`;
+
+/** The outline around these points. */
+function hull(pts: Pt[]): Pt[] {
+  const sorted = [...pts].sort((a, b) => a.sx - b.sx || a.sy - b.sy);
+  const half = (list: Pt[]): Pt[] => {
+    const out: Pt[] = [];
+    for (const p of list) {
+      while (out.length >= 2) {
+        const [a, b] = [out[out.length - 2]!, out[out.length - 1]!];
+        if ((b.sx - a.sx) * (p.sy - a.sy) - (b.sy - a.sy) * (p.sx - a.sx) > 0) break;
+        out.pop();
+      }
+      out.push(p);
+    }
+    out.pop();
+    return out;
+  };
+  return [...half(sorted), ...half(sorted.reverse())];
+}
+
+/** The bold outline around a whole shape, with a thin light rim outside it that keeps it off a dark table. */
+function outline(parent: Element, pts: Pt[]): void {
+  const d = pathOf(hull(pts));
+  el('path', { d, class: 'dev-rim' }, parent);
+  el('path', { d, class: 'dev-line' }, parent);
+}
+
+/** Lying flat: a slab with rounded corners, sides shaded by how they face, and a bold outline. */
+export function slab(parent: Element, s: { x: number; y: number; z: number; w: number; d: number; h: number; r: number; color: string }): void {
+  const foot = roundedRect(s.w, s.d, s.r).map(([a, b]) => ({ x: s.x + a, y: s.y + b }));
+  const [mx, my] = [s.x + s.w / 2, s.y + s.d / 2];
+  foot.forEach((a, i) => {
+    const b = foot[(i + 1) % foot.length]!;
+    const flip = (b.y - a.y) * ((a.x + b.x) / 2 - mx) - (b.x - a.x) * ((a.y + b.y) / 2 - my) < 0 ? -1 : 1;
+    const n = { x: (flip * (b.y - a.y)) / Math.hypot(b.x - a.x, b.y - a.y), y: (flip * (a.x - b.x)) / Math.hypot(b.x - a.x, b.y - a.y) };
+    if (n.x + n.y <= 0) return;
+    const color = shade(s.color, FACE.left * Math.max(0, n.y) ** 2 + FACE.right * Math.max(0, n.x) ** 2);
+    el('path', { d: pathOf([iso(a.x, a.y, s.z + s.h), iso(b.x, b.y, s.z + s.h), iso(b.x, b.y, s.z), iso(a.x, a.y, s.z)]), fill: color, stroke: color, 'stroke-width': 0.7 }, parent);
+  });
+  const top = foot.map((p) => iso(p.x, p.y, s.z + s.h));
+  el('path', { d: pathOf(top), fill: shade(s.color, FACE.top) }, parent);
+  outline(parent, [...top, ...foot.map((p) => iso(p.x, p.y, s.z))]);
+}
+
+/** Standing up, its face towards +y: a panel with rounded corners, `y` being that face, and a bold outline. */
+export function panel(parent: Element, s: { x: number; y: number; z: number; w: number; h: number; t: number; r: number; color: string }): void {
+  const edge = roundedRect(s.w, s.h, s.r).map(([a, b]) => ({ x: s.x + a, z: s.z + b }));
+  const [mx, mz] = [s.x + s.w / 2, s.z + s.h / 2];
+  edge.forEach((a, i) => {
+    const b = edge[(i + 1) % edge.length]!;
+    const flip = (b.z - a.z) * ((a.x + b.x) / 2 - mx) - (b.x - a.x) * ((a.z + b.z) / 2 - mz) < 0 ? -1 : 1;
+    const n = { x: (flip * (b.z - a.z)) / Math.hypot(b.x - a.x, b.z - a.z), z: (flip * (a.x - b.x)) / Math.hypot(b.x - a.x, b.z - a.z) };
+    if (n.x + n.z <= 0) return;
+    const color = shade(s.color, FACE.top * Math.max(0, n.z) ** 2 + FACE.right * Math.max(0, n.x) ** 2);
+    el('path', { d: pathOf([iso(a.x, s.y, a.z), iso(b.x, s.y, b.z), iso(b.x, s.y - s.t, b.z), iso(a.x, s.y - s.t, a.z)]), fill: color, stroke: color, 'stroke-width': 0.7 }, parent);
+  });
+  const face = edge.map((p) => iso(p.x, s.y, p.z));
+  el('path', { d: pathOf(face), fill: shade(s.color, FACE.left) }, parent);
+  outline(parent, [...face, ...edge.map((p) => iso(p.x, s.y - s.t, p.z))]);
+}
+
+/** The shadow a thing with this footprint throws on the table. */
+export function groundShadow(parent: Element, s: { x: number; y: number; w: number; d: number; r: number }): void {
+  el('path', { d: pathOf(roundedRect(s.w, s.d, s.r).map(([a, b]) => iso(s.x + a, s.y + b))), class: 'dev-shadow' }, parent);
+}
+
+/** Many small flat rectangles at height z, as one shape: keys on a keyboard. */
+export function tiles(parent: Element, rects: { x: number; y: number; w: number; d: number }[], z: number, attrs: Record<string, string | number>): void {
+  const d = rects.map((r) => pathOf([iso(r.x, r.y, z), iso(r.x + r.w, r.y, z), iso(r.x + r.w, r.y + r.d, z), iso(r.x, r.y + r.d, z)])).join('');
+  el('path', { d, ...attrs }, parent);
 }
 
 /** A flat iso rectangle on the ground plane (or at height z). */
