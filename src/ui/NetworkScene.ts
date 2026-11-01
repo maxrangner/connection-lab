@@ -204,6 +204,9 @@ export class NetworkScene {
   private overview = { x: 0, y: 0, w: 1, h: 1 };
   private onTable: { sx: number; sy: number }[] = [];
   private bar = 0;
+  /** The stretch of the table in view, for what must not be cut off at its edges. */
+  private viewX = 0;
+  private viewW = 0;
   private remembered: ReadonlyMap<string, { site: string; ip: string }> = new Map();
   /** The kind of frame around the packet being drawn. */
   private l2: L2 = 'ethernet';
@@ -771,7 +774,9 @@ export class NetworkScene {
   applyCamera(c: Camera): void {
     const w = (this.svg.clientWidth || 1) / c.scale;
     const h = (this.svg.clientHeight || 1) / c.scale;
-    setAttr(this.svg, 'viewBox', `${(c.cx - w / 2).toFixed(1)} ${(c.cy - h / 2).toFixed(1)} ${w.toFixed(1)} ${h.toFixed(1)}`);
+    this.viewX = c.cx - w / 2;
+    this.viewW = w;
+    setAttr(this.svg, 'viewBox', `${this.viewX.toFixed(1)} ${(c.cy - h / 2).toFixed(1)} ${w.toFixed(1)} ${h.toFixed(1)}`);
   }
 
   /**
@@ -1103,21 +1108,27 @@ export class NetworkScene {
    */
   private renderSpeech(v: number): void {
     const live = this.quiet ? [] : this.tl.speech.filter((b) => v >= b.t0 && v < b.t1);
-    const looks = live.map((b) => ({ b, size: easeOutBack(clamp01((v - b.t0) / 0.25)), op: clamp01((b.t1 - v) / 0.25) }));
-    const drawn = looks.map(({ b, size, op }) => `${b.device} ${b.text} ${size.toFixed(2)} ${op.toFixed(2)}`).join('|');
+    // The camera sits further back on a phone.
+    const big = (this.svg.clientWidth || 1) < 520 ? 1.3 : 1;
+    const looks = live.map((b) => {
+      const d = this.tl.pos.get(b.device) ?? { x: 0, y: 0 };
+      const s = iso(d.x, d.y + 1.9, 0);
+      const w = b.text.length * SPEECH_CHAR + 28;
+      // A long line under a device at the edge of the view moves in, and points back at it.
+      const room = (w / 2) * big + 8;
+      const x = room * 2 < this.viewW ? Math.max(this.viewX + room, Math.min(this.viewX + this.viewW - room, s.sx)) : s.sx;
+      return { b, s, w, x, size: easeOutBack(clamp01((v - b.t0) / 0.25)), op: clamp01((b.t1 - v) / 0.25) };
+    });
+    const drawn = looks.map(({ b, x, size, op }) => `${b.device} ${b.text} ${x.toFixed(0)} ${size.toFixed(2)} ${op.toFixed(2)}`).join('|');
     if (drawn === this.speechDrawn) return;
     this.speechDrawn = drawn;
     this.speechLayer.replaceChildren();
-    // The camera sits further back on a phone.
-    const big = (this.svg.clientWidth || 1) < 520 ? 1.3 : 1;
-    for (const { b, size, op } of looks) {
-      const d = this.tl.pos.get(b.device) ?? { x: 0, y: 0 };
-      const s = iso(d.x, d.y + 1.9, 0);
+    for (const { b, s, w, x, size, op } of looks) {
       const flagged = [...this.tl.readout.flags, ...this.tl.joinReadout.flags].filter((f) => f.device === b.device && v >= f.t).length;
       const y = s.sy + (flagged ? SPEECH_UNDER_FLAG + (flagged - 1) * FLAG_ROW : SPEECH_UNDER_NAME);
-      const g = el('g', { class: 'mood', opacity: op.toFixed(3), transform: `translate(${s.sx.toFixed(1)} ${y.toFixed(1)}) scale(${(size * big).toFixed(3)})` }, this.speechLayer);
-      const w = b.text.length * SPEECH_CHAR + 28;
-      el('path', { d: `M${-w / 2 + 16} 8 H-9 L0 -2 L9 8 H${w / 2 - 16} a16 16 0 0 1 0 32 H${-w / 2 + 16} a16 16 0 0 1 0 -32 Z`, class: 'speech-bg' }, g);
+      const g = el('g', { class: 'mood', opacity: op.toFixed(3), transform: `translate(${x.toFixed(1)} ${y.toFixed(1)}) scale(${(size * big).toFixed(3)})` }, this.speechLayer);
+      const tip = Math.max(-w / 2 + 28, Math.min(w / 2 - 28, (s.sx - x) / big));
+      el('path', { d: `M${-w / 2 + 16} 8 H${tip - 9} L${tip} -2 L${tip + 9} 8 H${w / 2 - 16} a16 16 0 0 1 0 32 H${-w / 2 + 16} a16 16 0 0 1 0 -32 Z`, class: 'speech-bg' }, g);
       el('text', { y: 24, 'text-anchor': 'middle', dy: '0.36em', class: 'speech-text' }, g).textContent = b.text;
     }
   }

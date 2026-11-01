@@ -349,6 +349,22 @@ body {
   color: var(--ink-soft);
 }
 
+/* A tall screen: the map fills the width and your devices are at its left edge, so the dock lies in a row above it instead */
+@media (max-aspect-ratio: 5/6) {
+  .dock {
+    top: calc(92px + env(safe-area-inset-top, 0px));
+    left: max(16px, env(safe-area-inset-left, 0px));
+    transform: none;
+    flex-direction: row;
+  }
+
+  .dock-label {
+    width: 40px;
+    font-size: 11px;
+    line-height: 13px;
+  }
+}
+
 /* A phone on its side: the dock has to fit between the chapter and the bar */
 @media (max-height: 420px) {
   .dock {
@@ -677,6 +693,7 @@ body {
 }
 
 .chapter-menu {
+  z-index: 5;
   position: fixed;
   /* Below the real-time pill, which sits right under the chapter name */
   top: calc(92px + env(safe-area-inset-top, 0px));
