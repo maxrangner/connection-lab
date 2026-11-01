@@ -65,7 +65,7 @@ export class HexCard {
   private readonly title = document.createElement('div');
   private readonly grid = document.createElement('div');
   private readonly note = document.createElement('div');
-  private shown: { id: string; key: PartKey } | null = null;
+  private key: PartKey | null = null;
   private pdu: PduSnapshot | null = null;
 
   constructor(root: HTMLElement, onClose: () => void) {
@@ -98,8 +98,9 @@ export class HexCard {
   /** Show this snapshot with this piece bright. Showing the same again costs nothing. */
   show(pdu: PduSnapshot, key: PartKey): void {
     this.panel.hidden = false;
-    if (this.shown?.id === pdu.id && this.shown.key === key) return;
-    this.shown = { id: pdu.id, key };
+    // By the snapshot itself: its number starts over every run.
+    if (this.pdu === pdu && this.key === key) return;
+    this.key = key;
     this.pdu = pdu;
     const owner = ownerOf(pdu);
     const range = rangeOf(pdu, key);

@@ -10,6 +10,7 @@ import {
   TLS_ALERT,
   TLS_APPLICATION_DATA,
   type AppAction,
+  type Job,
   type Field,
   type LayerPdu,
   type OpenedRecord,
@@ -198,8 +199,8 @@ export interface Story {
   client: string;
   /** Every device with a job this run, in the order of their job numbers: the client, the attackers, the one that joined in. */
   clients: string[];
-  /** The device whose card was dropped in during the run, if one was. */
-  joiner?: string;
+  /** The devices that had an action added during the run, in the order of their job numbers. */
+  joiners: string[];
   /** The attackers sending packets this run. Whatever they send runs alongside the rest from the start. */
   attackers: string[];
   /** The stranger by the Wi-Fi, who only hears, and what it heard. */
@@ -229,7 +230,7 @@ export interface Story {
   noise: number;
   /** Which device each address belongs to. */
   names: Record<string, string>;
-  devices: { id: string; label: string; kind: string }[];
+  devices: { id: string; label: string; kind: string; actions: Job[] }[];
   /** Cables, with their one-way delay in seconds, and the frames a port's buffer holds when it is finite. */
   links: { id: string; a: string; b: string; delay: number; medium: 'cable' | 'wifi'; queue?: number }[];
   trips: Trip[];
@@ -245,8 +246,8 @@ export interface Story {
   remembered: string | null;
   /** When the device pings or traces the path to the site instead of fetching the page. */
   probe?: Probe;
-  /** The same for a ping or trace dropped in on the other device. */
-  joinProbe?: Probe;
+  /** The same for each ping or trace added on another device. */
+  joinProbes: { device: string; probe: Probe }[];
 }
 
 const WRAP_OF_LAYER: Record<number, Wrap | undefined> = { 4: 'l4', 3: 'ip', 2: 'eth' };
@@ -787,8 +788,8 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
   const asked = new Map<string, number>();
   const client = r.scenario.startDevice;
   const attackers = (r.scenario.attackers ?? []).map((a) => a.device);
-  const joiner = r.scenario.companion?.device;
-  const clients = [client, ...attackers, ...(joiner ? [joiner] : [])];
+  const joiners = (r.scenario.companions ?? []).map((c) => c.device);
+  const clients = [client, ...attackers, ...joiners];
   const listener = r.scenario.links.find((l) => l.overheardBy)?.overheardBy;
   const scan = scanOf(r);
   const { packets, hellos } = chosen(r, !!opts.arp);
@@ -804,7 +805,10 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
   addLookups(trips, title);
   const voice = voiceOf(r, client);
   const probe = probeOf(r, client);
-  const joinProbe = joiner ? probeOf(r, joiner) : undefined;
+  const joinProbes = joiners.flatMap((device) => {
+    const found = probeOf(r, device);
+    return found ? [{ device, probe: found }] : [];
+  });
   // A job that joined in goes after the first job's own story: dropping a card must not change what was told before it.
   const own = trips.filter((t) => t.client === client);
   const gathered = gatherProbes(probe ? quickLookup(own) : own);
@@ -814,7 +818,7 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
   const wifiIfaces = new Set(r.scenario.devices.flatMap((d) => d.ifaces.filter((i) => i.wifi).map((i) => i.id)));
   const ifaceDevice = new Map(r.scenario.devices.flatMap((d) => d.ifaces.map((i) => [i.id, d.id] as const)));
   return {
-    devices: r.scenario.devices.map((d) => ({ id: d.id, label: d.label, kind: d.kind })),
+    devices: r.scenario.devices.map((d) => ({ id: d.id, label: d.label, kind: d.kind, actions: d.actions ?? [] })),
     links: r.scenario.links.map((l) => ({
       id: l.id,
       a: ifaceDevice.get(l.a) ?? l.a,
@@ -826,7 +830,7 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
     site: screens[client]!.site,
     client,
     clients,
-    ...(joiner ? { joiner } : {}),
+    joiners,
     attackers,
     ...(listener ? { listener } : {}),
     heard: heardOf(r),
@@ -857,7 +861,7 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
     })(),
     remembered: dnsAnswer(r, client, 'dns-cache-hit'),
     ...(probe ? { probe } : {}),
-    ...(joinProbe ? { joinProbe } : {}),
+    joinProbes,
   };
 }
 

@@ -60,7 +60,7 @@ export function runScenario(scenario: Scenario, opts: RunOptions): SimResult {
     }
   }
   // The user starts the browser, a voice call, a ping or a traceroute at t = 0; after DHCP if the device needs an address first.
-  const starts = [{ device: scenario.startDevice, at: 0 }, ...(scenario.attackers ?? []), ...(scenario.companion ? [scenario.companion] : [])];
+  const starts = [{ device: scenario.startDevice, at: 0 }, ...(scenario.attackers ?? []), ...(scenario.companions ?? [])];
   for (const [job, s] of starts.entries()) {
     const start = world.devices.get(s.device);
     const apps = start ? (scenario.devices.find((d) => d.id === start.id)?.apps ?? []) : [];

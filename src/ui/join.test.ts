@@ -15,8 +15,8 @@ function dropped(a: Job, b: Job, share: number, setup: object = {}): { before: T
   const before = buildTimeline(story(a, setup));
   const v = before.total * share;
   const join = { job: b, at: joinAt(before, v) };
-  const s = story(a, { ...setup, join });
-  return { before, after: buildTimeline(s, new Map(), 0, v), s, v, join };
+  const s = story(a, { ...setup, joins: [join] });
+  return { before, after: buildTimeline(s, new Map(), 0, new Map([[s.joiners[0]!, v]])), s, v, join };
 }
 
 const shownBy = (tl: Timeline, v: number): string[] =>
@@ -102,7 +102,7 @@ describe('a card dropped in during a run', () => {
   });
 
   it('a dropped-in trace flags the hops it finds', () => {
-    expect(dropped('page', 'trace', 0.2).after.joinReadout.flags.map((f) => f.device)).toEqual(['home', 'isp', 'server']);
+    expect(dropped('page', 'trace', 0.2).after.joinReadouts[0]!.readout.flags.map((f) => f.device)).toEqual(['home', 'isp', 'server']);
   });
 
   it('a ping dropped into a ping at the last moment leaves the first as it was', () => {
@@ -156,14 +156,14 @@ describe('a card dropped in during a run', () => {
 
   it("the first device's photo stays a photo whoever the server answers first", () => {
     for (const setup of [{ https: true }, { cold: true }]) {
-      const s = story('photo', { ...setup, join: { job: 'page', at: 0.002 } });
+      const s = story('photo', { ...setup, joins: [{ job: 'page', at: 0.002 }] });
       expect(s.image).toMatch(/^data:image\/jpeg/);
     }
   });
 
   it("the resolver's walk for the other device is no resend", () => {
     for (const at of [0.008, 0.015, 0.03]) {
-      const s = story('page', { cold: true, join: { job: 'page', at } });
+      const s = story('page', { cold: true, joins: [{ job: 'page', at }] });
       expect(s.trips.flatMap(everyPacket).filter((t) => t.chapter === 'dns' && t.timedOut)).toEqual([]);
     }
   });
@@ -182,7 +182,7 @@ describe('a card dropped in during a run', () => {
             const v = dropV + (after.total - dropV) * share;
             const seen = seenSoFar(after, v, line);
             const faults: { decided: Record<string, boolean>; cuts: Cut[]; manual: ManualFault[] } = { decided: seen.decided, cuts: [{ link: line, from: seen.now }], manual: [] };
-            const cut = buildTimeline(story(a, { join }, faults), new Map(), 0, dropV);
+            const cut = buildTimeline(story(a, { joins: [join] }, faults), new Map(), 0, new Map([['phone', dropV]]));
             // A packet that will never hear its reply may set off sooner, but nothing that was there goes or moves.
             expect(shownBy(cut, v), `${b} into ${a}, ${line} cut at ${share}`).toEqual(expect.arrayContaining(shownBy(after, v)));
           }
@@ -215,12 +215,12 @@ describe('a card dropped in during a run', () => {
   });
 
   it('a ping or trace dropped in prints its own results, on its own terminal', () => {
-    const ping = dropped('page', 'ping', 0.2).after.joinReadout.screens.at(-1)!.lines;
+    const ping = dropped('page', 'ping', 0.2).after.joinReadouts[0]!.readout.screens.at(-1)!.lines;
     expect(ping).toContain('4 sent, 4 received, 12 ms');
     const both = dropped('ping', 'trace', 0.2).after;
     expect(both.readout.screens.at(-1)!.lines[0]).toBe('ping example.com');
-    expect(both.joinReadout.screens.at(-1)!.lines[0]).toBe('traceroute example.com');
-    expect(both.joinReadout.screens.at(-1)!.lines.at(-1)).toBe('reached in 3 hops');
+    expect(both.joinReadouts[0]!.readout.screens.at(-1)!.lines[0]).toBe('traceroute example.com');
+    expect(both.joinReadouts[0]!.readout.screens.at(-1)!.lines.at(-1)).toBe('reached in 3 hops');
   });
 
   it('a device shows up the moment anything crosses to or from it, in the order a packet reaches them', () => {

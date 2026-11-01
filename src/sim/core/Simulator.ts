@@ -25,7 +25,7 @@ export interface PacketInfo {
   kind: PacketKind;
   label: string;
   createdAt: number;
-  /** The job that set it off: 0 for the run's own, 1 for one dropped in on the other device. Replies count too. */
+  /** The job that set it off: 0 for the run's own, then one for each attacker and each job added on another device. Replies count too. */
   job: number;
   retransmitOf?: string;
   /** For TCP: which connection and direction; relative seq/ack are handy for display. */

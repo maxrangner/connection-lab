@@ -17,8 +17,8 @@ import { buildTimeline, chapterAt, formatWait, joinAt, MAX_STRETCH, pduAt, realA
 /**
  * Connection Lab. Drag a card onto the laptop or the phone. The bar below holds the playback buttons, and popups for the
  * speed, the tools you click lines with, the setup of the next run, and the attackers on the table.
- * Tap a packet to pop it open. When a run ends the card comes back. During a run the cards wait down the side of the
- * screen: drag one onto the other device and it joins in.
+ * Tap a packet to pop it open. When a run ends the card comes back. During a run every device with nothing to do has a
+ * "+ action" button, which starts something on it alongside.
  */
 
 /** Seconds the finished picture stays before the card comes back. */
@@ -64,9 +64,8 @@ let cuts: Cut[] = [];
 let warmArp = false;
 let story: Story;
 let tl: Timeline;
-type Client = 'laptop' | 'phone';
 /** Which device the card was dropped on: the laptop (Ethernet cable) or the phone (Wi-Fi). */
-let client: Client = 'laptop';
+let client = 'laptop';
 /** What each device still remembers from an earlier visit, until the DNS record's real TTL runs out. */
 const known = new Map<string, { site: string; ip: string; until: number }>();
 /** This run is a second visit: the address is remembered, so there is nothing to look up. */
@@ -90,22 +89,25 @@ let stretch = 0;
 /** The Wi-Fi has been shaken: this share of its frames is lost to interference, and the radio sends them again. */
 let noise = 0;
 const NOISY = 0.4;
-/** A second action added during this run: what it asks for, and when in sim time and in visual time. */
-let joined: { job: Wanted; at: number; v: number } | null = null;
+/** Actions added during this run, each on a device of its own: what it asks for, and when in sim time and in visual time. */
+let joined: { device: string; job: Wanted; at: number; v: number }[] = [];
+const drops = (): Map<string, number> => new Map(joined.map((j) => [j.device, j.v]));
 /** The attackers on the table. They stay from run to run, until they are switched off. */
 const attacks = new Set<Attack>();
 function simulate(): void {
+  const knownIp = revisit ? known.get(client)?.ip : undefined;
   const scenario = fetchWebPage({
     // A ping or a trace goes to example.com's server, whatever page the Setup would fetch.
     site: isProbe(carried) ? 'example.com' : siteName(),
     ...(carried === 'ping' ? { probe: 'ping' as const } : carried === 'trace' ? { probe: 'traceroute' as const } : {}),
     revisit,
+    ...(knownIp ? { knownIp } : {}),
     slow: features.slow,
     vpn: features.vpn,
     https: features.https,
     from: client,
     warmArp,
-    ...(joined ? { join: { job: joined.job, at: joined.at } } : {}),
+    joins: joined,
     ...(attacks.size ? { attacks: [...attacks] } : {}),
     dhcp: features.dhcp,
     cold: features.cold,
@@ -117,7 +119,7 @@ function simulate(): void {
   const plan = { randomLoss: 0, decided, cuts, manual: faults };
   // Long enough for TCP to give up on a dead line (15 resends, backing off to a minute apart).
   story = buildStory(runScenario(scenario, { seed: runSeed, faults: plan, maxTime: 1000 }), { arp: features.arp });
-  tl = buildTimeline(story, knocks, stretch, joined?.v);
+  tl = buildTimeline(story, knocks, stretch, drops());
 }
 simulate();
 
@@ -195,7 +197,7 @@ scene.setOnTable([{ sx: home.sx - 110, sy: home.sy + STACK_TOP }, { sx: home.sx 
 /** A setting changed before a run: show the network it will use, with a clean screen. */
 function preview(): void {
   remember();
-  joined = null;
+  joined = [];
   idleV = -1;
   revisit = remembers();
   simulate();
@@ -466,16 +468,16 @@ const ACTIONS: Record<Wanted, { label: string; draw: (g: SVGGElement) => void }>
   trace: { label: 'Trace', draw: (g) => drawTrace(el('g', { transform: 'scale(0.42)' }, g)) },
 };
 // A device with nothing to do has a button of its own during a run, opening what it can do.
-const deviceActions = (['laptop', 'phone'] as const).map((device) => {
+const deviceActions = story!.devices.filter((d) => d.actions.length).map(({ id: device, actions }) => {
   const menu = new Menu<Wanted>(
     root,
     root,
     '+ action',
     `Add an action on the ${device}`,
-    WANTED.map((id) => ({ id, label: ACTIONS[id].label, span: 16, draw: (g) => ACTIONS[id].draw(el('g', { class: 'site-card-globe' }, g)) })),
+    actions.map((id) => ({ id, label: ACTIONS[id].label, span: 16, draw: (g) => ACTIONS[id].draw(el('g', { class: 'site-card-globe' }, g)) })),
     (id) => {
       menu.setOpen(false);
-      joinIn(id);
+      joinIn(device, id);
     },
   );
   menu.mark('action-menu');
@@ -618,13 +620,13 @@ controls.appendChild(Object.assign(document.createElement('span'), { className: 
 controls.appendChild(aboutBtn);
 root.appendChild(controls);
 
-/** The other device starts on this job now: what has been shown stays, and from the next step on everything runs at once. */
-function joinIn(job: Wanted): void {
+/** This device starts on this job now: what has been shown stays, and from the next step on everything runs at once. */
+function joinIn(device: string, job: Wanted): void {
   const seen = seenSoFar(tl, v);
   decided = { ...decided, ...seen.decided };
-  joined = { job, at: joinAt(tl, v), v };
+  joined = [...joined, { device, job, at: joinAt(tl, v), v }];
   // A device joining in looks everything up afresh: it remembers nothing from before.
-  known.delete(client === 'laptop' ? 'phone' : 'laptop');
+  known.delete(device);
   seek = null;
   camFree = false;
   simulate();
@@ -726,6 +728,7 @@ function dropTarget(): { id: string; sx: number; sy: number } | null {
   let best: { id: string; sx: number; sy: number } | null = null;
   let bestD = 85;
   for (const d of scene.dropPoints()) {
+    if (!d.actions.includes(carried)) continue;
     const dist = Math.hypot(cardPos.sx - d.sx, cardPos.sy - d.sy);
     if (dist < bestD) {
       best = d;
@@ -738,7 +741,7 @@ function dropCard(): void {
   if (mode !== 'drag') return;
   CARDS[carried].classList.remove('held', 'over');
   const drop = dropTarget();
-  if (drop) client = drop.id === 'phone' ? 'phone' : 'laptop';
+  if (drop) client = drop.id;
   anim = { from: { ...cardPos }, to: drop ?? { ...HOMES[carried] }, t: 0, dur: drop ? 0.35 : 0.5 };
   mode = drop ? 'drop' : 'spring';
   if (drop) {
@@ -850,7 +853,7 @@ svg.addEventListener('pointermove', (e) => {
     const next = Math.round(Math.max(0, Math.min(MAX_STRETCH, stretchPress.from + tiles)));
     if (next !== stretch) {
       stretch = next;
-      tl = buildTimeline(story, knocks, stretch, joined?.v);
+      tl = buildTimeline(story, knocks, stretch, drops());
       scene.setStory(story, tl);
     }
     return;
@@ -1019,7 +1022,7 @@ function beginRun(): void {
   cuts = [...cutLines].map((link) => ({ link, from: 0 }));
   warmArp = cutLines.size > 0;
   revisit = remembers();
-  joined = null;
+  joined = [];
   // Every run starts from your own devices and finds the network again.
   scene.setRevealed([]);
   simulate();
@@ -1121,7 +1124,7 @@ function frame(now: number): void {
 
   // The camera eases between the whole network (between runs) and a close follow of the packet,
   // unless the viewer has taken it over. More than one action at a time needs the whole network.
-  const wide = mode === 'play' && (!!joined || story.attackers.length > 0);
+  const wide = mode === 'play' && (joined.length > 0 || story.attackers.length > 0);
   if (!camFree) {
     const target = wide ? scene.busyCamera() : mode === 'play' ? scene.followCamera(v) : showAll || attacks.size ? scene.wholeCamera() : scene.overviewCamera();
     const ease = snapCamera ? 1 : Math.min(1, dt * (seek ? 6 : 3.5));
@@ -1131,7 +1134,7 @@ function frame(now: number): void {
   scene.applyCamera(cam);
   for (const { device, menu } of deviceActions) {
     // It needs something left to run alongside. Closed first: the popup hands focus back to the button.
-    const free = mode === 'play' && !joined && v < tl.total && device !== client;
+    const free = mode === 'play' && v < tl.total && device !== client && !joined.some((j) => j.device === device);
     if (!free) menu.setOpen(false);
     menu.button.hidden = !free;
     // Open, it stays put: the run goes on, and what you are aiming for must not move.
@@ -1224,9 +1227,10 @@ if (import.meta.env.DEV) {
       attack(id: Attack, on = true): void {
         setAttack(id, on);
       },
-      /** Start an action on the other device, as its "+ action" does. */
+      /** Start an action on the next device with nothing to do, as its "+ action" does. */
       join(job: Wanted): void {
-        joinIn(job);
+        const free = deviceActions.find((a) => a.device !== client && !joined.some((j) => j.device === a.device));
+        if (free) joinIn(free.device, job);
       },
       /** Cut a cable or mend it, as the scissors do. */
       cut(line: string): void {
@@ -1252,7 +1256,7 @@ if (import.meta.env.DEV) {
         return tl.reactions;
       },
       /** Start a run straight away with these things on the table (for screenshots). */
-      start(f: Partial<Features> & { photo?: boolean; call?: boolean; ping?: boolean; trace?: boolean; spy?: string; cut?: string | string[]; slow?: boolean; vpn?: boolean; again?: boolean; from?: Client; noise?: number }): void {
+      start(f: Partial<Features> & { photo?: boolean; call?: boolean; ping?: boolean; trace?: boolean; spy?: string; cut?: string | string[]; slow?: boolean; vpn?: boolean; again?: boolean; from?: string; noise?: number }): void {
         client = f.from ?? 'laptop';
         if (f.noise !== undefined) noise = f.noise;
         carried = f.call ? 'call' : f.ping ? 'ping' : f.trace ? 'trace' : f.photo ? 'photo' : 'page';

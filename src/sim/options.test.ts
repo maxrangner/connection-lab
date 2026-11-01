@@ -250,7 +250,7 @@ describe('noisy Wi-Fi: 802.11 Acks and link-layer retries', () => {
     const photo = noisy({ site: 'httpbin.org' });
     expect(of(photo, 'app').find((e) => e.action === 'done')?.info?.bytes).toBe(fromBase64(PHOTO_HTTP_RESPONSE_BASE64).length);
     expect(of(photo, 'wifi:retry').length).toBeGreaterThan(0);
-    const both = noisy({ join: {} });
+    const both = noisy({ joins: [{}] });
     expect(of(both, 'app').filter((e) => e.action === 'done').map((e) => e.deviceId).sort()).toEqual(['laptop', 'phone']);
     const walk = (fs: Field[]): Field[] => fs.flatMap((f) => [f, ...walk(f.children ?? [])]);
     let seen = 0;
@@ -914,7 +914,7 @@ describe('a voice call (RTP over UDP)', () => {
     }
     expect(actions(run({ call: true, revisit: true }))).toContain('laptop:dns-cache-hit');
     expect(actions(run({ call: true, from: 'phone' }))).toContain('phone:call-done');
-    expect(of(run({ call: true, join: {} }), 'app').filter((e) => e.action === 'done' || e.action === 'call-done')).toHaveLength(3);
+    expect(of(run({ call: true, joins: [{}] }), 'app').filter((e) => e.action === 'done' || e.action === 'call-done')).toHaveLength(3);
   });
 
   it('every RTP field is explained and every checksum checks out; the friend is in every run and silent otherwise', () => {
