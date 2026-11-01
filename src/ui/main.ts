@@ -76,6 +76,8 @@ let knownIp: string | undefined;
 const isProbe = (w: Job): boolean => w === 'ping' || w === 'trace';
 /** This run is the sensor taking a reading, not a card on a device. */
 let reading = false;
+/** The smart home's broker is out on the internet instead of at home. */
+let cloud = false;
 /** The card picked up last. */
 let carried: Job = 'page';
 const pageSite = (): 'info.cern.ch' | 'example.com' => (features.big ? 'info.cern.ch' : 'example.com');
@@ -119,6 +121,7 @@ function simulate(): void {
     cold: features.cold && !reading,
     thin: features.thin,
     smart: features.smart,
+    cloud,
     call: carried === 'call' && !reading,
     ...(stretch > 0 ? { wanDelay: wanDelayFor(stretch) } : {}),
     ...(noise > 0 ? { noise } : {}),

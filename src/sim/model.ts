@@ -162,6 +162,11 @@ export interface DeviceSpec {
   actions?: Action[];
   /** Its colour, once several devices' packets are on the table at once. */
   color?: string;
+  /**
+   * A home router is a switch as well: frames for these MACs go straight out of the port they are on, as they are, without
+   * touching IP. Left out it only routes. A real switch learns the table from the frames it sees; this one knows it.
+   */
+  bridge?: Record<Mac, string>;
   /** Map position for the UI, in scene units. */
   layout: { x: number; y: number };
   /** Send everything through a WireGuard tunnel to this server, using this inner address. */

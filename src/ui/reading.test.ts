@@ -5,7 +5,7 @@ import { buildTimeline, crossings, realAt, seenSoFar, type Timeline } from './ti
 import { buildSpeech } from './speech';
 
 const CLEAN = { randomLoss: 0, manual: [] };
-const sim = (opts: object = {}, faults: object = {}, seed = 1): SimResult => runScenario(fetchWebPage({ reading: true, ...opts }), { seed, faults: { ...CLEAN, ...faults }, maxTime: 1000 });
+const sim = (opts: object = {}, faults: object = {}, seed = 1): SimResult => runScenario(fetchWebPage({ reading: true, cloud: true, ...opts }), { seed, faults: { ...CLEAN, ...faults }, maxTime: 1000 });
 const run = (opts: object = {}, faults: object = {}): { s: Story; tl: Timeline } => {
   const s = buildStory(sim(opts, faults));
   return { s, tl: buildTimeline(s) };
@@ -130,7 +130,7 @@ describe('a smart home with nothing to report', () => {
   it('has the sensor and the broker on the table, and a page runs as ever', () => {
     const plain = buildStory(runScenario(fetchWebPage({}), { seed: 1, faults: CLEAN }));
     const smart = buildStory(runScenario(fetchWebPage({ smart: true }), { seed: 1, faults: CLEAN }));
-    expect(smart.devices.map((d) => d.id)).toEqual(expect.arrayContaining(['sensor', 'broker']));
+    expect(smart.devices.map((d) => d.id)).toEqual(expect.arrayContaining(['sensor', 'local-broker']));
     expect(plain.devices.map((d) => d.id)).not.toContain('sensor');
     expect(smart.trips.map((t) => t.card ?? t.l4Label)).toEqual(plain.trips.map((t) => t.card ?? t.l4Label));
   });
@@ -138,5 +138,63 @@ describe('a smart home with nothing to report', () => {
   it('a card cannot go on the sensor: it only takes readings', () => {
     const smart = buildStory(runScenario(fetchWebPage({ smart: true }), { seed: 1, faults: CLEAN }));
     expect(smart.devices.find((d) => d.id === 'sensor')!.actions).toEqual(['reading']);
+  });
+});
+
+describe('a broker at home', () => {
+  const home = (opts: object = {}, faults: object = {}): SimResult => runScenario(fetchWebPage({ reading: true, ...opts }), { seed: 1, faults: { ...CLEAN, ...faults }, maxTime: 1000 });
+  const trips = (opts: object = {}): Trip[] => readings(buildStory(home(opts)).trips);
+  const links = (t: Trip): string[] => t.steps.flatMap((x) => (x.kind === 'travel' ? [x.link] : []));
+
+  it('the reading goes to the broker, and from it to each app, and never leaves the house', () => {
+    const r = home();
+    expect(told(r).map((x) => x.split(':')[0])).toEqual(['laptop', 'phone']);
+    expect(trips().map(links)).toEqual([['wlan2', 'lan2'], ['lan2', 'lan'], ['lan2', 'wlan']]);
+    expect(r.events.some((e) => e.type === 'tx' && e.linkId === 'wan')).toBe(false);
+  });
+
+  it('the router only switches: no NAT, no route, the TTL as it was', () => {
+    const r = home();
+    const after = r.events.filter((e) => 't' in e && e.t >= READING_AT);
+    expect(after.some((e) => e.type === 'nat:translate')).toBe(false);
+    expect(after.some((e) => e.type === 'forward' && e.deviceId === 'home')).toBe(false);
+    const ttl = (link: string): string[] =>
+      r.events.flatMap((e) => (e.type === 'tx' && e.linkId === link && r.packets.get(e.packetId)!.label === 'MQTT PUBLISH' ? [r.pdus.get(e.frameId)!.layers.find((l) => l.protocol === 'ipv4')!.fields.find((f) => f.key === 'ipv4.ttl')!.display] : []));
+    expect(new Set([...ttl('wlan2'), ...ttl('lan2')]).size).toBe(1);
+  });
+
+  it('a frame keeps the sender\'s and the receiver\'s hardware addresses as the router passes it on', () => {
+    const r = home();
+    const macs = (link: string): string[] => {
+      const e = r.events.find((x) => x.type === 'tx' && x.linkId === link && r.packets.get(x.packetId)!.label === 'MQTT PUBLISH');
+      const frame = e?.type === 'tx' ? r.pdus.get(e.frameId)! : undefined;
+      return frame!.layers[0]!.fields.filter((f) => /eth\.(src|dst)/.test(f.key)).map((f) => f.display.split(' ')[0]!);
+    };
+    expect(macs('lan2')).toEqual(['dc:a6:32:5e:7b:10', '84:f3:eb:2c:41:9e']);
+  });
+
+  it('every frame on the way still checks out', () => {
+    const r = home();
+    for (const e of r.events) if (e.type === 'drop' && e.t >= READING_AT) expect(e.reason).not.toBe('bad-checksum');
+  });
+
+  it('nothing shows the broker before the run needs it, and it is not one of your own', () => {
+    const s = buildStory(home());
+    expect(s.devices.find((d) => d.id === 'local-broker')!.actions).toEqual([]);
+    expect(s.clients).toEqual(['sensor', 'laptop', 'phone']);
+  });
+
+  it('a stranger on the Wi-Fi still hears it', () => {
+    expect(buildStory(home({ attacks: ['listen'] })).heard.length).toBeGreaterThan(0);
+  });
+
+  it('a page goes out by the router as ever with a smart home on', () => {
+    const plain = buildStory(runScenario(fetchWebPage({}), { seed: 1, faults: CLEAN }));
+    const smart = buildStory(runScenario(fetchWebPage({ smart: true }), { seed: 1, faults: CLEAN }));
+    expect(smart.trips.map((t) => t.card ?? t.l4Label)).toEqual(plain.trips.map((t) => t.card ?? t.l4Label));
+  });
+
+  it('runs on a noisy Wi-Fi too', () => {
+    expect(told(home({ noise: 0.4 }))).toHaveLength(2);
   });
 });

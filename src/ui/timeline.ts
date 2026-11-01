@@ -162,6 +162,8 @@ const POS: Record<string, { x: number; y: number }> = {
   laptop: { x: 0, y: 0 },
   // The phone sits in front of the home router, talking to it over Wi-Fi.
   phone: { x: 8, y: 8 },
+  // A broker at home, on its own cable from the router, on the far side from your own things.
+  'local-broker': { x: 12, y: 3 },
   // The sensor is on the wall well behind the cable to the router, so the button under it stays clear of the router.
   sensor: { x: 1, y: -9 },
   'home-router': { x: 8, y: 0 },
