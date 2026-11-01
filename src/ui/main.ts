@@ -3,7 +3,7 @@ import { fetchWebPage, runScenario, ulawDecodeAll, type Attack, type Cut, type J
 import { el } from './svg';
 import { clamp01, easeInOut, easeOutBack, iso, ISO_X, ISO_Y, lerp, U } from './project';
 import { HexCard } from './hexCard';
-import { drawDoor, drawEar, drawHandset, drawHush, drawPadlock, drawPage, drawPing, drawPipe, drawQuestion, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawSwarm, drawTag, drawTrace } from './icons';
+import { drawDoor, drawEar, drawHandset, drawHush, drawMoon, drawPadlock, drawPage, drawPing, drawPipe, drawQuestion, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawSun, drawSwarm, drawTag, drawTrace } from './icons';
 import { Menu } from './menus';
 import { NetworkScene, type Camera } from './NetworkScene';
 import { screenAt } from './readout';
@@ -477,6 +477,32 @@ const soundBtn = button('♪', 'Mute', () => {
   }
 });
 soundBtn.classList.add('sound-button');
+/** Dark as the system is, until the viewer chooses. */
+const savedTheme = ((): string | null => {
+  try {
+    return localStorage.getItem('net.theme');
+  } catch {
+    return null;
+  }
+})();
+let dark = savedTheme ? savedTheme === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+const showTheme = (): void => {
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  themeBtn.setAttribute('aria-label', dark ? 'Light theme' : 'Dark theme');
+  const icon = el('svg', { viewBox: '-12 -12 24 24', width: 24, height: 24, 'aria-hidden': 'true' });
+  (dark ? drawSun : drawMoon)(el('g', {}, icon));
+  themeBtn.replaceChildren(icon);
+};
+const themeBtn = button('', 'Dark theme', () => {
+  dark = !dark;
+  showTheme();
+  try {
+    localStorage.setItem('net.theme', dark ? 'dark' : 'light');
+  } catch {
+    // Not remembered; fine.
+  }
+});
+showTheme();
 button('↺', 'Reset', reset);
 // On a narrow screen the bar breaks into two rows here (see app.css).
 controls.appendChild(Object.assign(document.createElement('span'), { className: 'bar-break' }));
