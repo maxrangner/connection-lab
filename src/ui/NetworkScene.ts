@@ -1,6 +1,6 @@
 import type { Action } from '../sim';
 import { el, setAttr, setText } from './svg';
-import { box, cylinder, groundShadow, line, panel, rbox, slab, tile, tiles } from './prims';
+import { box, groundShadow, line, panel, rbox, slab, tile, tiles } from './prims';
 import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, easeOutBounce, iso, isoV, lerp, U, unproject, v3, type Pt, type Vec3 } from './project';
 import { drawSatellite, drawScissors, drawShield, drawSpyglass } from './icons';
 import { shade } from './shade';
@@ -11,10 +11,12 @@ import { drawBook, drawShelf, SERVER } from './stations';
 import { addressBefore, ATTACKER_KINDS, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, LEVEL, lockPose, NO_LOCK, NOTE_LIFE, namedAcks, packetPos, packetPose, pageParts, segAt, swapLanding, swapMoment, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowHop, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
 
 export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', vpn: '#2e5e6e', eth: '#e08b33', wifi: '#2a9d8f' } as const;
-const DEVICE = '#d9d0c2';
-/** The first device in the bold-outline style: a warmer, lighter body, and glass that is blue until it shows something. */
-const LAPTOP_BODY = '#f2ebdd';
-const LAPTOP_GLASS = '#5b8ec4';
+/** The bold-outline style: a warm light body, a blue that goes with it, and glass that is blue until it shows something. */
+const DEVICE = '#f2ebdd';
+const DEVICE_BLUE = '#5b8ec4';
+const GLASS = '#5b8ec4';
+const DARK_GLASS = '#3b4049';
+const BOOK = '#b0824f';
 /** Everything an attacker brings to the table. */
 const ATTACKER = '#d23b3b';
 /** A locked (encrypted) card: dark, under a padlock. */
@@ -478,7 +480,7 @@ export class NetworkScene {
         for (const [end, foot] of [[a, footA], [b, footB]] as const) {
           line(g, end, v3(foot.x, foot.y, 0), { class: 'cable' });
           line(g, foot, top, { class: 'beam' });
-          cylinder(g, { x: foot.x, y: foot.y, z: 0, r: 0.35, h: 0.3, color: DEVICE });
+          slab(g, { x: foot.x - 0.35, y: foot.y - 0.35, z: 0, w: 0.7, d: 0.7, h: 0.3, r: 0.35, color: DEVICE });
         }
         const sat = iso(top.x, top.y, top.z);
         drawSatellite(el('g', { transform: `translate(${sat.sx.toFixed(1)} ${sat.sy.toFixed(1)})` }, g));
@@ -923,15 +925,15 @@ export class NetworkScene {
    * A screen on a vertical face at world point `a` (its top-left corner, face looking towards +y), `w` × `h` px.
    * Content is laid out for the laptop's 66 × 37 px screen and scaled to fit.
    */
-  private buildScreen(g: SVGGElement, a: { sx: number; sy: number }, w: number, h: number, glass = '#3b4049', lean = 0): Screen {
+  private buildScreen(g: SVGGElement, a: { sx: number; sy: number }, w: number, h: number, glass = GLASS, lean = 0): Screen {
     const face = el('g', { class: 'dev-screen', transform: faceTf(a, '+y', lean) }, g);
-    el('rect', { x: 0, y: 0, width: w, height: h, rx: glass === LAPTOP_GLASS ? 3 : 0, fill: glass }, face);
-    if (glass === LAPTOP_GLASS) el('path', { d: `M${w * 0.5} 0H${w * 0.82}L${w * 0.4} ${h}H${w * 0.08}Z`, class: 'dev-glare' }, face);
+    el('rect', { x: 0, y: 0, width: w, height: h, rx: 3, fill: glass }, face);
+    el('path', { d: `M${w * 0.5} 0H${w * 0.82}L${w * 0.4} ${h}H${w * 0.08}Z`, class: 'dev-glare' }, face);
     const W = 2.36 * U;
     const H = 1.32 * U;
     const k = Math.min(w / W, h / H);
     const page = el('g', { class: 'page', opacity: 0 }, face);
-    el('rect', { x: 0, y: 0, width: w, height: h, fill: '#fbf8f2' }, page);
+    el('rect', { x: 0, y: 0, width: w, height: h, rx: 3, fill: '#fbf8f2' }, page);
     const content = (parent: SVGGElement): SVGGElement =>
       el('g', { transform: `translate(${((w - W * k) / 2).toFixed(2)} ${((h - H * k) / 2).toFixed(2)}) scale(${k.toFixed(3)})` }, parent);
     const dns = el('g', { class: 'screen-dns', opacity: 0 }, face);
@@ -947,92 +949,151 @@ export class NetworkScene {
     }
     const fail = el('text', { x: w / 2, y: h / 2, dy: '0.35em', class: 'screen-fail', 'text-anchor': 'middle', opacity: 0 }, face);
     fail.textContent = '✗';
-    if (glass === LAPTOP_GLASS) el('rect', { x: 0, y: 0, width: w, height: h, rx: 3, class: 'dev-line dev-glass-line' }, face);
+    el('rect', { x: 0, y: 0, width: w, height: h, rx: 3, class: 'dev-line dev-glass-line' }, face);
     return { face, page, title, dns, dnsName: name, dnsAddr, fail, photo };
   }
 
+  /** A rounded plate on a device's face, or a hole in it: `at` is its top corner on the left, seen from in front of that face. */
+  private plate(g: SVGGElement, face: '+y' | '+x', at: Vec3, w: number, h: number, cls: string): void {
+    el('rect', { x: 0, y: 0, width: w * U, height: h * U, rx: Math.min(3, (h * U) / 2), class: cls, transform: faceTf(isoV(at), face) }, g);
+  }
+
+  /** A round thing on a device's face: a light, a lens. */
+  private stud(g: SVGGElement, face: '+y' | '+x', at: Vec3, r: number, cls: string): void {
+    el('circle', { cx: 0, cy: 0, r, class: cls, transform: faceTf(isoV(at), face) }, g);
+  }
+
+  /** Air slots down the right side of a case: `x` is that side. */
+  private vents(g: SVGGElement, x: number, y: number, zs: number[], half: number): void {
+    for (const z of zs) line(g, v3(x, y + half, z), v3(x, y - half, z), { class: 'dev-vent' });
+  }
+
+  /** A low cabinet, the base of everything that looks things up. */
+  private cabinet(g: SVGGElement, x: number, y: number, color: string): void {
+    groundShadow(g, { x: x - 0.65, y: y - 1.0, w: 2.0, d: 1.6, r: 0.2 });
+    slab(g, { x: x - 1.0, y: y - 0.8, z: 0, w: 2.0, d: 1.6, h: 0.75, r: 0.14, color });
+    for (const z of [0.62, 0.34]) this.plate(g, '+y', v3(x - 0.82, y + 0.8, z), 1.64, 0.2, 'dev-row');
+    this.stud(g, '+y', v3(x + 0.68, y + 0.8, 0.52), 2, 'dev-led');
+  }
+
+  /** A closed book lying on a cabinet: two covers with the pages between them. */
+  private book(g: SVGGElement, x: number, y: number, h: number, cover: string): void {
+    slab(g, { x: x - 0.7, y: y - 0.55, z: 0.75, w: 1.4, d: 1.1, h: 0.05, r: 0.05, color: cover });
+    slab(g, { x: x - 0.62, y: y - 0.5, z: 0.8, w: 1.26, d: 1.0, h: h - 0.1, r: 0.03, color: '#fff8ea' });
+    slab(g, { x: x - 0.7, y: y - 0.55, z: 0.7 + h, w: 1.4, d: 1.1, h: 0.05, r: 0.05, color: cover });
+  }
+
+  /** A phone standing up. The face is at y + 0.1. */
+  private standingPhone(g: SVGGElement, x: number, y: number, color: string): void {
+    groundShadow(g, { x: x - 0.45, y: y - 0.7, w: 1.6, d: 0.8, r: 0.2 });
+    panel(g, { x: x - 0.7, y: y + 0.1, z: 0, w: 1.4, h: 2.3, t: 0.22, r: 0.18, lean: 0, color });
+    line(g, v3(x + 0.7, y - 0.01, 1.75), v3(x + 0.7, y - 0.01, 1.3), { class: 'dev-port' });
+  }
+
   private buildDevice(g: SVGGElement, kind: string, x: number, y: number): Screen | null {
-    const neutral = { color: ATTACKER_KINDS.has(kind) ? ATTACKER : DEVICE, cls: 'dev-body' };
+    const color = ATTACKER_KINDS.has(kind) ? ATTACKER : DEVICE;
     switch (kind) {
       case 'stranger':
       case 'scanner':
       case 'laptop': {
-        const body = kind === 'laptop' ? LAPTOP_BODY : neutral.color;
         groundShadow(g, { x: x - 0.9, y: y - 1.3, w: 3.2, d: 2.2, r: 0.3 });
-        panel(g, { x: x - 1.3, y: y - 0.9, z: 0.14, w: 2.6, h: LID.long, t: 0.1, r: 0.14, lean: LID.lean, color: body });
-        slab(g, { x: x - 1.3, y: y - 0.9, z: 0, w: 2.6, d: 1.8, h: 0.14, r: 0.16, color: body });
+        panel(g, { x: x - 1.3, y: y - 0.9, z: 0.14, w: 2.6, h: LID.long, t: 0.1, r: 0.14, lean: LID.lean, color });
+        slab(g, { x: x - 1.3, y: y - 0.9, z: 0, w: 2.6, d: 1.8, h: 0.14, r: 0.16, color });
         const keys = Array.from({ length: 4 * 11 }, (_, i) => ({ x: x - 1.08 + (i % 11) * 0.198, y: y - 0.74 + Math.floor(i / 11) * 0.2, w: 0.16, d: 0.15 }));
         tiles(g, keys, 0.14, { class: 'dev-keys' });
         tiles(g, [{ x: x - 0.42, y: y + 0.14, w: 0.84, d: 0.56 }], 0.14, { class: 'dev-pad' });
         line(g, v3(x + 1.3, y + 0.28, 0.07), v3(x + 1.3, y + 0.5, 0.07), { class: 'dev-port' });
         // Screen glass on the face towards the viewer; what it shows changes as the story goes on.
         const corner = iso(x - 1.18, y - 0.9 - LID_SCREEN.to * Math.sin(LID.lean), 0.14 + LID_SCREEN.to * Math.cos(LID.lean));
-        return this.buildScreen(g, corner, 2.36 * U, (LID_SCREEN.to - LID_SCREEN.from) * U, kind === 'laptop' ? LAPTOP_GLASS : undefined, LID.lean);
+        return this.buildScreen(g, corner, 2.36 * U, (LID_SCREEN.to - LID_SCREEN.from) * U, kind === 'laptop' ? GLASS : DARK_GLASS, LID.lean);
       }
       case 'phone': {
-        // A phone standing on a little stand, screen towards the viewer.
-        box(g, { x: x - 0.5, y: y - 0.6, z: 0, w: 1.0, d: 0.5, h: 0.25, ...neutral });
-        box(g, { x: x - 0.7, y: y - 0.12, z: 0, w: 1.4, d: 0.22, h: 2.3, ...neutral });
-        return this.buildScreen(g, iso(x - 0.6, y + 0.1, 2.18), 1.2 * U, 2.0 * U);
+        this.standingPhone(g, x, y, color);
+        const screen = this.buildScreen(g, iso(x - 0.6, y + 0.1, 2.18), 1.2 * U, 2.0 * U);
+        this.plate(g, '+y', v3(x - 0.16, y + 0.1, 2.13), 0.32, 0.07, 'dev-notch');
+        return screen;
       }
       case 'peer': {
-        // The friend's phone, far away: the same phone with a dark screen.
-        box(g, { x: x - 0.5, y: y - 0.6, z: 0, w: 1.0, d: 0.5, h: 0.25, ...neutral });
-        box(g, { x: x - 0.7, y: y - 0.12, z: 0, w: 1.4, d: 0.22, h: 2.3, ...neutral });
-        const a = iso(x - 0.6, y + 0.1, 2.18);
-        el('rect', { x: 0, y: 0, width: 1.2 * U, height: 2.0 * U, fill: '#3b4049', transform: faceTf(a, '+y') }, g);
+        // The friend's phone, far away: the same phone with nothing on its screen.
+        this.standingPhone(g, x, y, color);
+        this.plate(g, '+y', v3(x - 0.6, y + 0.1, 2.18), 1.2, 2.0, 'dev-glass');
+        this.plate(g, '+y', v3(x - 0.16, y + 0.1, 2.13), 0.32, 0.07, 'dev-notch');
         return null;
       }
       case 'sensor': {
-        // A small box on the wall, with a round grille.
-        box(g, { x: x - 0.6, y: y - 0.6, z: 0, w: 1.2, d: 1.2, h: 0.9, ...neutral });
-        const c = iso(x, y + 0.6, 0.45);
-        el('circle', { cx: c.sx.toFixed(1), cy: c.sy.toFixed(1), r: 7, class: 'sensor-eye' }, g);
+        // A little box on the shelf: a lens, a light, and slots for the air it measures.
+        groundShadow(g, { x: x - 0.3, y: y - 0.8, w: 1.2, d: 1.2, r: 0.2 });
+        slab(g, { x: x - 0.6, y: y - 0.6, z: 0, w: 1.2, d: 1.2, h: 0.9, r: 0.18, color });
+        this.stud(g, '+y', v3(x, y + 0.6, 0.5), 8, 'dev-lens');
+        this.stud(g, '+y', v3(x - 0.08, y + 0.6, 0.58), 2.4, 'dev-shine');
+        this.stud(g, '+y', v3(x, y + 0.6, 0.16), 2, 'dev-led');
+        for (const dy of [0.3, 0.1, -0.1, -0.3]) line(g, v3(x + 0.6, y + dy, 0.62), v3(x + 0.6, y + dy, 0.28), { class: 'dev-vent' });
         return null;
       }
       case 'mqtt-broker': {
-        // A server box, with a row of ports: it is all connections.
-        box(g, { x: x - 0.9, y: y - 0.9, z: 0, w: 1.8, d: 1.8, h: 1.5, ...neutral });
-        for (const [i, dx] of [-0.5, 0, 0.5].entries()) {
-          const c = iso(x + dx, y + 0.9, 0.75 + (i % 2) * 0.1);
-          el('circle', { cx: c.sx.toFixed(1), cy: c.sy.toFixed(1), r: 3.6, class: 'sensor-eye' }, g);
-        }
+        // A box of ports, like a network switch: it is all connections.
+        groundShadow(g, { x: x - 0.55, y: y - 1.1, w: 1.8, d: 1.8, r: 0.2 });
+        slab(g, { x: x - 0.9, y: y - 0.9, z: 0, w: 1.8, d: 1.8, h: 1.5, r: 0.14, color: DEVICE_BLUE });
+        this.plate(g, '+y', v3(x - 0.76, y + 0.9, 1.34), 1.52, 1.18, 'dev-face');
+        for (let row = 0; row < 2; row++) for (let i = 0; i < 4; i++) this.plate(g, '+y', v3(x - 0.62 + i * 0.33, y + 0.9, 1.16 - row * 0.42), 0.24, 0.26, 'dev-hole');
+        this.stud(g, '+y', v3(x + 0.6, y + 0.9, 0.34), 2, 'dev-led');
+        this.vents(g, x + 0.9, y, [1.1, 0.85, 0.6], 0.45);
         return null;
       }
       case 'bot': {
-        box(g, { x: x - 0.7, y: y - 0.7, z: 0, w: 1.4, d: 1.4, h: 1.8, ...neutral });
-        for (const z of [1.4, 1.0, 0.6]) line(g, v3(x - 0.5, y + 0.7, z), v3(x + 0.5, y + 0.7, z), { class: 'slot' });
+        groundShadow(g, { x: x - 0.35, y: y - 0.9, w: 1.4, d: 1.4, r: 0.2 });
+        slab(g, { x: x - 0.7, y: y - 0.7, z: 0, w: 1.4, d: 1.4, h: 1.8, r: 0.12, color });
+        for (const z of [1.5, 1.05, 0.6]) this.plate(g, '+y', v3(x - 0.5, y + 0.7, z), 1.0, 0.3, 'dev-row');
+        this.vents(g, x + 0.7, y, [1.4, 1.15, 0.9], 0.35);
         return null;
       }
       case 'home-router': {
-        box(g, { x: x - 1.1, y: y - 0.7, z: 0, w: 2.2, d: 1.4, h: 0.55, ...neutral });
-        for (const ax of [x - 0.8, x + 0.8]) line(g, v3(ax, y - 0.55, 0.55), v3(ax, y - 0.55, 1.6), { class: 'antenna' });
-        for (let i = 0; i < 4; i++) {
-          const p = iso(x - 0.6 + i * 0.4, y + 0.7, 0.3);
-          el('circle', { cx: p.sx, cy: p.sy, r: 2.2, fill: '#6fb37f' }, g);
+        for (const ax of [x - 0.8, x + 0.8]) {
+          line(g, v3(ax, y - 0.55, 0.5), v3(ax, y - 0.55, 1.6), { class: 'dev-aerial-line' });
+          line(g, v3(ax, y - 0.55, 0.5), v3(ax, y - 0.55, 1.6), { class: 'dev-aerial' });
         }
+        groundShadow(g, { x: x - 0.75, y: y - 0.9, w: 2.2, d: 1.4, r: 0.24 });
+        slab(g, { x: x - 1.1, y: y - 0.7, z: 0, w: 2.2, d: 1.4, h: 0.14, r: 0.24, color: DEVICE_BLUE });
+        slab(g, { x: x - 1.1, y: y - 0.7, z: 0.12, w: 2.2, d: 1.4, h: 0.43, r: 0.24, color });
+        for (let i = 0; i < 5; i++) this.stud(g, '+y', v3(x - 0.72 + i * 0.36, y + 0.7, 0.32), 2.2, i ? 'dev-led dev-led-on' : 'dev-led');
         return null;
       }
-      case 'router':
-        cylinder(g, { x, y, z: 0, r: 1.15, h: 0.8, ...neutral });
+      case 'router': {
+        // A router's old sign: a drum with arrows on top, going every way.
+        groundShadow(g, { x: x - 0.85, y: y - 1.45, w: 2.3, d: 2.3, r: 1.15 });
+        slab(g, { x: x - 1.15, y: y - 1.15, z: 0, w: 2.3, d: 2.3, h: 0.8, r: 1.15, color });
+        const c = iso(x, y, 0.8);
+        el('ellipse', { cx: c.sx.toFixed(1), cy: c.sy.toFixed(1), rx: (0.86 * Math.SQRT2 * U).toFixed(1), ry: ((0.86 * Math.SQRT2 * U) / 2).toFixed(1), class: 'dev-disc' }, g);
+        const toward = (along: number, across: number, d: [number, number]): Pt => iso(x + d[0] * along - d[1] * across, y + d[1] * along + d[0] * across, 0.8);
+        const arrows = ([[1, 0], [-1, 0], [0, 1], [0, -1]] as [number, number][]).map((d) => {
+          const [a, b, l, r] = [toward(0.16, 0, d), toward(0.66, 0, d), toward(0.46, 0.17, d), toward(0.46, -0.17, d)];
+          return `M${a.sx.toFixed(1)} ${a.sy.toFixed(1)}L${b.sx.toFixed(1)} ${b.sy.toFixed(1)}M${l.sx.toFixed(1)} ${l.sy.toFixed(1)}L${b.sx.toFixed(1)} ${b.sy.toFixed(1)}L${r.sx.toFixed(1)} ${r.sy.toFixed(1)}`;
+        });
+        el('path', { d: arrows.join(''), class: 'dev-arrow' }, g);
         return null;
+      }
       case 'vpn-server': {
-        box(g, { x: x - 1.0, y: y - 0.8, z: 0, w: 2.0, d: 1.6, h: 1.3, ...neutral });
-        for (let i = 0; i < 3; i++) line(g, v3(x - 0.7, y + 0.8, 1.0 - i * 0.3), v3(x + 0.7, y + 0.8, 1.0 - i * 0.3), { class: 'slot' });
+        groundShadow(g, { x: x - 0.65, y: y - 1.0, w: 2.0, d: 1.6, r: 0.2 });
+        slab(g, { x: x - 1.0, y: y - 0.8, z: 0, w: 2.0, d: 1.6, h: 1.3, r: 0.14, color });
+        this.plate(g, '+y', v3(x - 0.84, y + 0.8, 1.16), 1.68, 1.02, 'dev-bay');
+        for (let i = 0; i < 3; i++) this.plate(g, '+y', v3(x - 0.74, y + 0.8, 1.08 - i * 0.3), 1.48, 0.24, 'dev-row');
+        this.vents(g, x + 1.0, y, [1.0, 0.75, 0.5], 0.4);
         const top = iso(x, y, 2.2);
         drawShield(el('g', { transform: `translate(${top.sx.toFixed(1)} ${top.sy.toFixed(1)})` }, g));
         return null;
       }
       case 'dns-resolver': {
         // A squat cabinet with a fat address book on top.
-        box(g, { x: x - 1.0, y: y - 0.8, z: 0, w: 2.0, d: 1.6, h: 0.75, ...neutral });
-        box(g, { x: x - 0.7, y: y - 0.55, z: 0.75, w: 1.4, d: 1.1, h: 0.35, color: '#c9b79c', cls: 'dev-body' });
+        this.cabinet(g, x, y, color);
+        this.book(g, x, y, 0.35, BOOK);
         return null;
       }
       case 'root-server': {
         // The top of the tree: a cabinet with a globe on it.
-        box(g, { x: x - 1.0, y: y - 0.8, z: 0, w: 2.0, d: 1.6, h: 0.75, ...neutral });
+        this.cabinet(g, x, y, color);
+        slab(g, { x: x - 0.14, y: y - 0.14, z: 0.75, w: 0.28, d: 0.28, h: 0.16, r: 0.14, color: BOOK });
         const top = iso(x, y, 1.3);
+        el('circle', { cx: top.sx, cy: top.sy, r: 12, class: 'dev-globe' }, g);
         el('circle', { cx: top.sx, cy: top.sy, r: 12, class: 'root-globe' }, g);
         el('ellipse', { cx: top.sx, cy: top.sy, rx: 5, ry: 12, class: 'root-globe' }, g);
         el('line', { x1: top.sx - 12, y1: top.sy, x2: top.sx + 12, y2: top.sy, class: 'root-globe' }, g);
@@ -1041,13 +1102,21 @@ export class NetworkScene {
       case 'tld-server':
       case 'auth-server': {
         // Cabinets like the resolver's, each with its own thinner book.
-        box(g, { x: x - 1.0, y: y - 0.8, z: 0, w: 2.0, d: 1.6, h: 0.75, ...neutral });
-        box(g, { x: x - 0.7, y: y - 0.55, z: 0.75, w: 1.4, d: 1.1, h: 0.2, color: kind === 'tld-server' ? '#b9c6a8' : '#c9b79c', cls: 'dev-body' });
+        this.cabinet(g, x, y, color);
+        this.book(g, x, y, 0.2, kind === 'tld-server' ? '#7f9b67' : BOOK);
         return null;
       }
       default: {
-        box(g, { x: x - SERVER.half, y: y - SERVER.half, z: 0, w: SERVER.half * 2, d: SERVER.half * 2, h: SERVER.height, ...neutral });
-        for (const z of SERVER.slots) line(g, v3(x - SERVER.slotHalf, y + SERVER.half, z), v3(x + SERVER.slotHalf, y + SERVER.half, z), { class: 'slot' });
+        // The web server: a tower, its shelves the ones the page is looked up on.
+        const front = y + SERVER.half;
+        groundShadow(g, { x: x - 0.45, y: y - 1.0, w: SERVER.half * 2, d: SERVER.half * 2, r: 0.2 });
+        slab(g, { x: x - SERVER.half, y: y - SERVER.half, z: 0, w: SERVER.half * 2, d: SERVER.half * 2, h: SERVER.height, r: 0.14, color });
+        this.plate(g, '+y', v3(x - 0.66, front, 2.5), 1.32, 2.0, 'dev-bay');
+        for (const z of SERVER.slots) {
+          this.plate(g, '+y', v3(x - SERVER.slotHalf, front, z + 0.17), SERVER.slotHalf * 2, 0.34, 'dev-row');
+          this.stud(g, '+y', v3(x + SERVER.slotHalf - 0.14, front, z), 2, 'dev-led');
+        }
+        this.vents(g, x + SERVER.half, y, [2.1, 1.85, 1.6, 1.35, 1.1], 0.42);
         return null;
       }
     }

@@ -99,6 +99,90 @@ body {
   stroke-width: 1.8;
 }
 
+.dev-glass {
+  fill: #5b8ec4;
+  stroke: #1f2633;
+  stroke-width: 1.8;
+}
+
+.dev-notch,
+.dev-bay {
+  fill: #1f2633;
+}
+
+.dev-row {
+  fill: #2f3f5a;
+  stroke: #1f2633;
+  stroke-width: 1;
+}
+
+.dev-face {
+  fill: #f2ebdd;
+  stroke: #1f2633;
+  stroke-width: 1.4;
+}
+
+.dev-hole {
+  fill: #2f3f5a;
+}
+
+.dev-led {
+  fill: #f0a81e;
+  stroke: #1f2633;
+  stroke-width: 0.9;
+}
+
+.dev-led-on {
+  fill: #58b36f;
+}
+
+.dev-lens {
+  fill: #2f4a73;
+  stroke: #1f2633;
+  stroke-width: 2.2;
+}
+
+.dev-shine {
+  fill: #fff;
+  opacity: 0.6;
+}
+
+.dev-vent {
+  stroke: #1f2633;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+}
+
+.dev-aerial-line {
+  stroke: #1f2633;
+  stroke-width: 9;
+  stroke-linecap: round;
+}
+
+.dev-aerial {
+  stroke: #5b8ec4;
+  stroke-width: 5;
+  stroke-linecap: round;
+}
+
+.dev-disc {
+  fill: #5b8ec4;
+  stroke: #1f2633;
+  stroke-width: 2;
+}
+
+.dev-arrow {
+  fill: none;
+  stroke: #f2ebdd;
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.dev-globe {
+  fill: #5b8ec4;
+}
+
 .dev-rim {
   fill: none;
   stroke: var(--rim);
@@ -140,18 +224,6 @@ body {
 .cable {
   stroke: var(--cable);
   stroke-width: 5;
-  stroke-linecap: round;
-}
-
-.antenna {
-  stroke: #a99e8e;
-  stroke-width: 3;
-  stroke-linecap: round;
-}
-
-.slot {
-  stroke: #a99e8e;
-  stroke-width: 2;
   stroke-linecap: round;
 }
 
@@ -1235,11 +1307,6 @@ button.action-menu[hidden] {
   content: none;
 }
 
-.sensor-eye {
-  fill: var(--app);
-  stroke: #3d7a52;
-}
-
 /* Small to look at, big to hit: 48px high however small the phone or far back the camera */
 button.action-menu::before {
   content: '';
@@ -1673,8 +1740,8 @@ button.action-menu[data-points='right']::after {
 /* The root server's globe */
 .root-globe {
   fill: none;
-  stroke: #7d5a10;
-  stroke-width: 1.5;
+  stroke: #1f2633;
+  stroke-width: 1.8;
 }
 
 /* The ping and trace cards */

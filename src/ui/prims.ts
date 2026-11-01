@@ -85,6 +85,7 @@ export function rbox(parent: Element | null, s: RBoxSpec): SVGGElement {
 /** The points around a rectangle of this size with rounded corners, its corner at the origin, going round one way. */
 function roundedRect(w: number, h: number, r: number): [number, number][] {
   const out: [number, number][] = [];
+  const steps = Math.max(5, Math.ceil(r * 12));
   const corners: [number, number, number][] = [
     [w - r, r, -90],
     [w - r, h - r, 0],
@@ -92,13 +93,19 @@ function roundedRect(w: number, h: number, r: number): [number, number][] {
     [r, r, 180],
   ];
   for (const [cx, cy, from] of corners) {
-    for (let i = 0; i <= 5; i++) {
-      const a = ((from + i * 18) * Math.PI) / 180;
-      out.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+    for (let i = 0; i <= steps; i++) {
+      const a = ((from + (i * 90) / steps) * Math.PI) / 180;
+      const p: [number, number] = [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+      // All corner, as a disc is: two corners meet at one point.
+      const last = out[out.length - 1];
+      if (!last || Math.hypot(last[0] - p[0], last[1] - p[1]) > 1e-6) out.push(p);
     }
   }
   return out;
 }
+
+/** How the sides of a rounded thing fall off: gentler than a box's, the outline does the rest. */
+const ROUNDED = { left: 0.92, right: 0.76 };
 
 const pathOf = (pts: Pt[]): string => `M${pts.map((p) => `${p.sx.toFixed(2)} ${p.sy.toFixed(2)}`).join('L')}Z`;
 
@@ -137,7 +144,7 @@ export function slab(parent: Element, s: { x: number; y: number; z: number; w: n
     const flip = (b.y - a.y) * ((a.x + b.x) / 2 - mx) - (b.x - a.x) * ((a.y + b.y) / 2 - my) < 0 ? -1 : 1;
     const n = { x: (flip * (b.y - a.y)) / Math.hypot(b.x - a.x, b.y - a.y), y: (flip * (a.x - b.x)) / Math.hypot(b.x - a.x, b.y - a.y) };
     if (n.x + n.y <= 0) return;
-    const color = shade(s.color, FACE.left * Math.max(0, n.y) ** 2 + FACE.right * Math.max(0, n.x) ** 2);
+    const color = shade(s.color, ROUNDED.left * Math.max(0, n.y) ** 2 + ROUNDED.right * Math.max(0, n.x) ** 2);
     el('path', { d: pathOf([iso(a.x, a.y, s.z + s.h), iso(b.x, b.y, s.z + s.h), iso(b.x, b.y, s.z), iso(a.x, a.y, s.z)]), fill: color, stroke: color, 'stroke-width': 0.7 }, parent);
   });
   const top = foot.map((p) => iso(p.x, p.y, s.z + s.h));
@@ -158,11 +165,11 @@ export function panel(parent: Element, s: { x: number; y: number; z: number; w: 
     const flip = (bb - ab) * ((ax + bx) / 2 - s.w / 2) - (bx - ax) * ((ab + bb) / 2 - s.h / 2) < 0 ? -1 : 1;
     const n = { x: (flip * (bb - ab)) / Math.hypot(bx - ax, bb - ab), up: (flip * (ax - bx)) / Math.hypot(bx - ax, bb - ab) };
     if (n.x + n.up <= 0) return;
-    const color = shade(s.color, FACE.top * Math.max(0, n.up) ** 2 + FACE.right * Math.max(0, n.x) ** 2);
+    const color = shade(s.color, FACE.top * Math.max(0, n.up) ** 2 + ROUNDED.right * Math.max(0, n.x) ** 2);
     el('path', { d: pathOf([on(ax, ab, 0), on(bx, bb, 0), on(bx, bb, s.t), on(ax, ab, s.t)]), fill: color, stroke: color, 'stroke-width': 0.7 }, parent);
   });
   const face = edge.map(([a, b]) => on(a, b, 0));
-  el('path', { d: pathOf(face), fill: shade(s.color, FACE.left) }, parent);
+  el('path', { d: pathOf(face), fill: shade(s.color, ROUNDED.left) }, parent);
   outline(parent, [...face, ...edge.map(([a, b]) => on(a, b, s.t))]);
 }
 
