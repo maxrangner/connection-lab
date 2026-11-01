@@ -119,8 +119,8 @@ export interface Timeline {
   notes: Note[];
   /** What ping or traceroute has printed, and the hops it has found. */
   readout: Readout;
-  /** The same for one dropped in on the other device. */
-  joinReadout: Readout;
+  /** The same for each added on another device. */
+  joinReadouts: { device: string; readout: Readout }[];
   /** What the attackers print: what the stranger overhears, and what a scan finds. */
   attackReadouts: { device: string; readout: Readout }[];
   /** What the devices say as packets set off, in plain words. */
@@ -186,7 +186,6 @@ export const UPSTREAM_KINDS = new Set(['root-server', 'tld-server', 'auth-server
 /** The attackers switched on from the Attack popup. */
 export const ATTACKER_KINDS = new Set(['stranger', 'scanner', 'bot']);
 /** What is yours, and on the table from the start. The rest of the network shows up as packets reach it. */
-export const PERSONAL_KINDS = new Set(['laptop', 'phone']);
 /** Seconds before the first packet sets off over a cable: it is laid over the first two, and the device at its end springs up over the second two. */
 const LAY_FROM = 1.3;
 const LAID_BY = 0.7;
@@ -232,6 +231,8 @@ const PROBE_PACE = 0.55;
 const PING_PACE = 0.4;
 /** Seconds per cable of a repeated echo or probe. */
 const PROBE_HOP = 0.4;
+/** How many ACKs of a stream carry their name. */
+const NAMED_ACKS = 3;
 /** Seconds per cable once a card has been dropped in. */
 const TRAFFIC_HOP = 0.8;
 
@@ -250,10 +251,11 @@ const unrolled = (t: Trip): Trip[] => (t.steps.some((s) => s.kind === 'flow') ? 
 const crosses = (t: Trip): boolean => t.steps.some((s) => s.kind === 'travel' || s.kind === 'lost');
 
 /**
- * `mix` is the visual second a card was dropped in, if one was. What was on screen by then stays as it was. The step under way
- * finishes, and everything left of every job then runs at once as small blocks.
+ * `drops` has the visual second each device had an action added, if any did. What was on screen by the first of them stays as
+ * it was. The step under way finishes, and everything left of every job then runs at once as small blocks.
  */
-export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> = new Map(), stretch = 0, mix = Infinity): Timeline {
+export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> = new Map(), stretch = 0, drops: ReadonlyMap<string, number> = new Map()): Timeline {
+  const mix = Math.min(Infinity, ...drops.values());
   const kind = new Map(story.devices.map((d) => [d.id, d.kind]));
   // An attacker is already at it when the run starts, so nothing runs by itself.
   const alone = story.attackers.length ? 0 : mix;
@@ -422,7 +424,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
     const trip: Trip = { ...traffic[0]!, chapter: 'traffic', part: undefined, retry: false, timedOut: false, lost: false, steps: [step] };
     const p = at(story.client, LEVEL.eth);
     // A page in parts carries on from what has landed so far, whether those parts came as a stream or one by one.
-    const { packets, waits } = planFlow(traffic, t, story, knocks, linkPace, cues, reactions, TRAFFIC_HOP, notes, { ...(cutShort ?? { ...newFlow(), filled }), queued: true, dropped: Number.isFinite(mix) ? mix : 0 });
+    const { packets, waits } = planFlow(traffic, t, story, knocks, linkPace, cues, reactions, TRAFFIC_HOP, notes, { ...(cutShort ?? { ...newFlow(), filled }), queued: true, dropped: drops });
     const end = Math.max(t, ...packets.map((x) => x.t1), ...waits.map((w) => w.t1));
     segs.push({ step, trip, t0: t, t1: end, p0: p, p1: p, flow: packets, waits });
     t = end + (notes.length ? NOTE_LIFE : 0.5);
@@ -452,18 +454,18 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   for (const s of segs) if (s.trip.keyShare && (s.step.kind === 'appear' || s.step.kind === 'read') && !halves.has(s.step.device)) halves.set(s.step.device, s.t0);
   const { reveals, laid } = entrances(segs, Number.isFinite(mix) ? mix : 0);
   const times = timing(segs);
-  const readout = buildReadout(story, times, t);
-  const joinReadout = buildReadout(story, times, t, true);
+  const readout = buildReadout(story, story.client, story.probe, times, t);
+  const joinReadouts = story.joinProbes.map(({ device, probe }) => ({ device, readout: buildReadout(story, device, probe, times, t) }));
   // The stranger reads a frame as it goes by, a quarter of the way along, like a spyglass.
   const heardAt = new Map<string, number>();
-  for (const c of crossings({ segs })) if (c.link === 'wlan' && !heardAt.has(c.trip.packetId)) heardAt.set(c.trip.packetId, c.t0 + (c.t1 - c.t0) * 0.25);
+  for (const c of crossings({ segs })) if (air.has(c.link) && !heardAt.has(c.trip.packetId)) heardAt.set(c.trip.packetId, c.t0 + (c.t1 - c.t0) * 0.25);
   const attackReadouts = [
     ...(story.listener ? [{ device: story.listener, readout: listenReadout(story, heardAt, t) }] : []),
     ...(story.scan ? [{ device: story.scan.device, readout: scanReadout(story.scan, times, t) }] : []),
   ];
-  for (const f of [...readout.flags, ...joinReadout.flags]) cues.push({ t: f.t, sound: 'found' });
+  for (const f of [...readout.flags, ...joinReadouts.flatMap((x) => x.readout.flags)]) cues.push({ t: f.t, sound: 'found' });
   const speech = [...buildSpeech(story, segs), ...(story.listener ? listenerSpeech(story.listener, story.heard, heardAt) : [])];
-  return { segs, reactions, notes, readout, joinReadout, attackReadouts, speech, keys, halves, real: realClock(segs, story), cues, total: t, pos, kind, trayZ, isRouter, sky, air, client: story.client, pages, answers, reveals, laid, stretch };
+  return { segs, reactions, notes, readout, joinReadouts, attackReadouts, speech, keys, halves, real: realClock(segs, story), cues, total: t, pos, kind, trayZ, isRouter, sky, air, client: story.client, pages, answers, reveals, laid, stretch };
 }
 
 /**
@@ -550,6 +552,9 @@ export function formatWait(s: number): string {
   return ms >= 1000 ? `${Number(s.toFixed(1))} s` : `${ms} ms`;
 }
 
+/** The small blocks that say what they are: the first few plain ACKs of a stream. A SYN or a reset has no data either, and is no ACK. */
+export const namedAcks = (flow: FlowPacket[]): FlowPacket[] => flow.filter((p) => p.trip.l4Label === 'ACK').slice(0, NAMED_ACKS);
+
 /** What a stream has heard and sent so far. Traffic carries on from a stream that a dropped card cut short. */
 interface FlowState {
   heard: { client: string; sim: number; v: number }[];
@@ -564,10 +569,10 @@ interface FlowState {
   onCable: Map<string, number[]>;
   /** Blocks of different jobs take turns on a cable. One job's already keep their distance. */
   queued: boolean;
-  /** The visual second a card was dropped in: nothing of its job goes before that, also when the traffic began earlier. */
-  dropped: number;
+  /** The visual second each device had an action added: nothing of its job goes before that, also when the traffic began earlier. */
+  dropped: ReadonlyMap<string, number>;
 }
-const newFlow = (): FlowState => ({ heard: [], lastSent: new Map(), filled: new Set(), sent: new Map(), expected: new Map(), puzzled: false, onCable: new Map(), queued: false, dropped: 0 });
+const newFlow = (): FlowState => ({ heard: [], lastSent: new Map(), filled: new Set(), sent: new Map(), expected: new Map(), puzzled: false, onCable: new Map(), queued: false, dropped: new Map() });
 
 /**
  * The first moment from `wanted` on with a free place on this cable. A block takes any gap rather than going to the back of
@@ -691,7 +696,7 @@ function planFlow(
   for (const trip of packets) {
     const sender = `${trip.client}|${trip.origin}`;
     const chain = trip.chapter === 'call' ? sender : trip.client;
-    let t = Math.max(from, (lastSent.get(sender) ?? -Infinity) + FLOW_GAP, trip.client === story.joiner ? state.dropped : -Infinity);
+    let t = Math.max(from, (lastSent.get(sender) ?? -Infinity) + FLOW_GAP, state.dropped.get(trip.client) ?? -Infinity);
     // In a call each side's first word still waits for what it answers (the friend speaks only once called); after that
     // a side talks on its own clock. An attacker's junk and knocks answer nothing either, and go at their own pace.
     const ownClock = trip.chapter === 'call' ? trip.part?.n !== 1 : trip.chapter === 'attack' && trip.outward && !trip.l4Label.includes('RST');

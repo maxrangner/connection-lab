@@ -27,9 +27,7 @@ const packetsOf = (trips: Trip[]): Trip[] =>
     return flow?.kind === 'flow' ? flow.packets : [t];
   });
 
-export function buildReadout(story: Story, timing: Timing, total: number, joined = false): Readout {
-  const probe = joined ? story.joinProbe : story.probe;
-  const client = joined ? story.joiner : story.client;
+export function buildReadout(story: Story, client: string, probe: Probe | undefined, timing: Timing, total: number): Readout {
   if (!probe) return { screens: [], flags: [] };
   const title = `${probe.kind} ${probe.to}`;
   const trips = packetsOf(story.trips).filter((t) => t.client === client);

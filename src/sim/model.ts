@@ -1,6 +1,9 @@
 import type { Ip4, Mac } from './bytes/addr';
 import type { TlsSession } from './proto/tls';
 
+/** What a card asks a device to do. */
+export type Job = 'page' | 'photo' | 'call' | 'ping' | 'trace';
+
 export type DeviceKind = 'laptop' | 'phone' | 'home-router' | 'router' | 'dns-resolver' | 'web-server' | 'vpn-server' | 'root-server' | 'tld-server' | 'auth-server' | 'peer' | 'stranger' | 'bot' | 'scanner';
 
 export interface IfaceSpec {
@@ -146,6 +149,8 @@ export interface DeviceSpec {
   /** A DHCP server on a router: which interfaces it serves and what it hands out. */
   dhcp?: DhcpServerSpec;
   apps: AppSpec[];
+  /** What the viewer can start on this device. Only the viewer's own devices have any. */
+  actions?: Job[];
   /** Map position for the UI, in scene units. */
   layout: { x: number; y: number };
   /** Send everything through a WireGuard tunnel to this server, using this inner address. */
@@ -170,8 +175,8 @@ export interface Scenario {
   tcp: TcpSettings;
   /** Device whose browser app starts at t = 0. */
   startDevice: string;
-  /** A second device whose job starts at this time, so both share the home router at once. */
-  companion?: { device: string; at: number };
-  /** Attackers and when each starts. Each is a job of its own, numbered after the first and before the companion. */
+  /** Other devices whose jobs start during the run, each at its own time, so they all share the home router at once. */
+  companions?: { device: string; at: number }[];
+  /** Attackers and when each starts. Each is a job of its own, numbered after the first and before the companions. */
   attackers?: { device: string; at: number }[];
 }

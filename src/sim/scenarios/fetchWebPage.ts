@@ -1,5 +1,5 @@
 import { ascii, fromBase64 } from '../bytes/bytes';
-import type { AppSpec, DeviceSpec, IfaceSpec, LinkSpec, RouteSpec, Scenario } from '../model';
+import type { AppSpec, DeviceKind, DeviceSpec, IfaceSpec, Job, LinkSpec, RouteSpec, Scenario } from '../model';
 import { dnsAddresses, parseDns } from '../proto/dns';
 import { DNS_TRACES } from './dnsTraceCapture';
 import {
@@ -72,6 +72,11 @@ export interface FetchWebPageOptions {
    */
   revisit?: boolean;
   /**
+   * On a revisit, the address the first visit found. It can be another of the site's addresses than the usual one (a cold
+   * walk ends where it ends), and a device goes back to the address it remembers. The usual one if left out.
+   */
+  knownIp?: string;
+  /**
    * Satellite internet: the line from the home router to the ISP goes up to a geostationary satellite and back,
    * about 36 000 km each way, so it takes about 280 ms one way (and is slower, 25 Mbit/s).
    */
@@ -86,13 +91,15 @@ export interface FetchWebPageOptions {
   vpn?: boolean;
   /** The device and its home router already know each other's MAC addresses (ARP caches stay warm for a while). */
   warmArp?: boolean;
-  /** Which device opens the page: the laptop on its Ethernet cable, or the phone over Wi-Fi. */
-  from?: 'laptop' | 'phone';
+  /** Your own devices on the table: `HOME_DEVICES` unless told. */
+  home?: HomeDevice[];
+  /** Which of them opens the page: by default the first, the laptop on its Ethernet cable. The phone goes over Wi-Fi. */
+  from?: string;
   /**
-   * A job on the other device as well, from `at` seconds on (a card dropped in during the run): with no VPN and nothing
-   * remembered, so the home router has two conversations to tell apart at once. A plain page a moment later by default.
+   * Jobs on other devices as well, each from its `at` seconds on (added during the run): with no VPN and nothing
+   * remembered, so the home router has several conversations to tell apart at once.
    */
-  join?: { job?: Job; at?: number };
+  joins?: Join[];
   /**
    * The device starts with no address at all (0.0.0.0, no routes, no resolver) and gets everything from the home
    * router by DHCP first: DISCOVER, OFFER, REQUEST, ACK. The lease hands out the same addresses the scenario uses.
@@ -109,7 +116,7 @@ export interface FetchWebPageOptions {
   /**
    * A voice call instead of a page: the device looks up the friend's name (sam.example) and streams one second of
    * voice to the friend's phone as RTP over UDP, a 20 ms packet at a time; the friend talks back the same way. Nothing
-   * lost is ever sent again. No page is fetched; `join` still runs the other device's job.
+   * lost is ever sent again. No page is fetched; `joins` still run on the other devices.
    */
   call?: boolean;
   /**
@@ -129,7 +136,7 @@ export interface FetchWebPageOptions {
    * Noisy Wi-Fi: the chance (0..1) that any one frame on the air between the phone and the home router is lost to
    * interference, data frames and Acks alike. With it the Wi-Fi is a real 802.11 radio: every unicast frame is answered by
    * a 14-byte Ack after SIFS, and a frame with no Ack within the Ack timeout goes again with the Retry bit, up to 7 times,
-   * without TCP or DNS ever knowing. Only the phone is on Wi-Fi, so it only shows with `from: 'phone'` (or a `join` on the phone).
+   * without TCP or DNS ever knowing. Only the phone is on Wi-Fi, so it only shows with `from: 'phone'` (or a job added on it).
    * Off (0, the default) the Wi-Fi is a perfect cable through the air and no Acks are sent.
    */
   noise?: number;
@@ -172,11 +179,64 @@ const FLOODED_LINE_BPS = 280e3;
 /** Ports a scan tries, and those the server has open besides its web server: the usual doors anyone knocks on. */
 const SCAN = { ports: [21, 22, 23, 25, 80, 443, 3306, 8080], open: [22, 443], gap: 0.01 };
 
-/** What a card asks a device to do. */
-export type Job = 'page' | 'photo' | 'call' | 'ping' | 'trace';
+export type { Job };
 
-/** How long after the first device the other one starts unless told, in seconds: close enough that their packets interleave. */
+/** How long after the first device another one starts unless told, in seconds: close enough that their packets interleave. */
 export const COMPANION_DELAY = 0.004;
+
+/** A job added on another device: on the first one with nothing to do and a plain page a moment later, unless told. */
+export interface Join {
+  device?: string;
+  job?: Job;
+  at?: number;
+}
+
+/**
+ * A device of your own on the home network: how it connects and what it can do. An entry here, a place in `timeline.ts#POS`
+ * and a shape in `NetworkScene#buildDevice` put another one on the table.
+ */
+export interface HomeDevice {
+  id: string;
+  label: string;
+  kind: DeviceKind;
+  layout: { x: number; y: number };
+  ip: string;
+  mac: string;
+  iface: Pick<IfaceSpec, 'name' | 'wifi'>;
+  /** The home router's end of its link. The first device's port holds the home network's route. */
+  port: Pick<IfaceSpec, 'id' | 'name' | 'ip' | 'mac' | 'wifi'>;
+  link: Pick<LinkSpec, 'id' | 'bitsPerSecond' | 'delay' | 'label' | 'name'>;
+  actions: Job[];
+}
+
+const EVERY_JOB: Job[] = ['page', 'photo', 'call', 'ping', 'trace'];
+
+export const HOME_DEVICES: HomeDevice[] = [
+  {
+    id: 'laptop',
+    label: 'Laptop',
+    kind: 'laptop',
+    layout: { x: 160, y: 470 },
+    ...ADDR.laptop,
+    iface: { name: 'eth0' },
+    port: { id: 'home.lan', name: 'lan', ...ADDR.homeLan },
+    link: { id: 'lan', bitsPerSecond: 1e9, delay: 5e-8, label: 'Ethernet cable · 1 Gbit/s', name: 'the Ethernet cable' },
+    actions: EVERY_JOB,
+  },
+  {
+    id: 'phone',
+    label: 'Phone',
+    kind: 'phone',
+    layout: { x: 600, y: 700 },
+    ...ADDR.phone,
+    iface: { name: 'wlan0', wifi: 'station' },
+    // The built-in Wi-Fi access point. Real home routers bridge Wi-Fi and the Ethernet ports into one network
+    // with one address; here that bridge is two interfaces sharing 192.168.1.1, with a route to the phone.
+    port: { id: 'home.wlan', name: 'wlan', ...ADDR.homeWlan, wifi: 'ap' },
+    link: { id: 'wlan', bitsPerSecond: 300e6, delay: 3e-8, label: 'Wi-Fi · 300 Mbit/s', name: 'the Wi-Fi' },
+    actions: EVERY_JOB,
+  },
+];
 
 /** What the scenario needs to know about each real site. */
 const SITES = {
@@ -256,12 +316,16 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
   const upstream = nameServers(host);
   const cold = !!opts.cold && !!upstream.answer;
   // Cold, the site's address is whatever its own name server answered on the day of the walk.
-  const server = { ip: cold ? upstream.answer! : site.ip, mac: ADDR.server.mac };
   const revisit = !!opts.revisit;
+  const knownIp = revisit && !opts.call ? opts.knownIp : undefined;
+  const server = { ip: knownIp ?? (cold ? upstream.answer! : site.ip), mac: ADDR.server.mac };
   const tls = opts.https ? { host: site.tls.TLS_HOST, flights: site.tls.TLS_FLIGHTS, secrets: site.tls.TLS_SECRETS } : undefined;
   const url = opts.https ? site.url.replace(/^http:/, 'https:') : site.url;
   const warm = revisit || !!opts.warmArp;
-  const from = opts.from ?? 'laptop';
+  const homes = opts.home ?? HOME_DEVICES;
+  const from = opts.from ?? homes[0]!.id;
+  const idle = homes.map((d) => d.id).filter((id) => id !== from && !opts.joins?.some((j) => j.device === id));
+  const joins = (opts.joins ?? []).map((j) => ({ device: j.device ?? idle.shift()!, job: j.job ?? 'page', at: j.at ?? COMPANION_DELAY }));
   const dhcp = !!opts.dhcp;
   const browser = (gateway: { ip: string; mac: string }) => ({
     ...(opts.vpn ? { tunnel: { ip: ADDR.vpn.tunnelIp, server: ADDR.vpn.ip } } : {}),
@@ -286,21 +350,20 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
             url,
             ...(dhcp ? {} : { resolver: ADDR.resolver.ip }),
             request: ascii(opts.https ? site.tls.TLS_REQUEST : site.request),
-            ...(revisit ? { knownAddress: site.ip } : {}),
+            ...(revisit ? { knownAddress: server.ip } : {}),
             ...(tls ? { tls } : {}),
           },
     ],
   });
-  // The other device's job, on its own. The one server holds the addresses of the sites a card can ask for and serves
-  // each by the Host header, as one server hosting several sites does.
-  const other = from === 'phone' ? 'laptop' : 'phone';
+  // The jobs on other devices, each on its own. The one server holds the addresses of the sites a card can ask for and
+  // serves each by the Host header, as one server hosting several sites does.
   const attacks = new Set(opts.attacks);
   const bots = attacks.has('flood')
     ? Array.from({ length: BOTS }, (_, i) => outsider(i + 1, `bot${i + 1}`, `Bot ${i + 1}`, 'bot', [{ kind: 'flood', to: server.ip, port: 80, packets: FLOOD.packets, burst: FLOOD.burst, gap: FLOOD.gap, bytes: FLOOD.bytes }]))
     : [];
   const scanner = attacks.has('scan') ? [outsider(BOTS + 1, 'scanner', 'Scanner', 'scanner', [{ kind: 'port-scan', to: server.ip, ports: SCAN.ports, gap: SCAN.gap }])] : [];
   const outsiders = [...bots, ...scanner];
-  const aliases = opts.join ? [CAPTURED_FROM_IP, PHOTO_IP].filter((ip) => ip !== server.ip) : [];
+  const aliases = joins.length ? [CAPTURED_FROM_IP, PHOTO_IP].filter((ip) => ip !== server.ip) : [];
   const resolver = ADDR.resolver.ip;
   const jobs: Record<Job, () => AppSpec> = {
     page: () => ({ kind: 'browser', url: SITES['example.com'].url, resolver, request: ascii(HTTP_REQUEST) }),
@@ -309,56 +372,51 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
     ping: () => ({ kind: 'ping', to: 'example.com', resolver, count: 4 }),
     trace: () => ({ kind: 'traceroute', to: 'example.com', resolver, maxHops: 8 }),
   };
-  const joined = (gateway: { ip: string; mac: string }) => ({
+  const joined = (job: Job, gateway: { ip: string; mac: string }) => ({
     ...(warm ? { arp: { [gateway.ip]: gateway.mac } } : {}),
-    apps: [jobs[opts.join?.job ?? 'page']()],
+    apps: [jobs[job]()],
   });
-  const appsOf = (device: 'laptop' | 'phone', gateway: { ip: string; mac: string }) =>
-    device === from ? browser(gateway) : opts.join ? joined(gateway) : { apps: [] };
+  const appsOf = (d: HomeDevice) => {
+    const join = joins.find((j) => j.device === d.id);
+    return d.id === from ? browser(d.port) : join ? joined(join.job, d.port) : { apps: [] };
+  };
+  const ifaceOf = (d: HomeDevice): string => `${d.id}.${d.iface.name}`;
   // The device that gets its address by DHCP starts with none: no address, no routes.
-  const addressed = (device: 'laptop' | 'phone', iface: string, ip: string, gateway: string) =>
-    dhcp && from === device
+  const addressed = (d: HomeDevice) =>
+    dhcp && from === d.id
       ? { ip: '0.0.0.0', prefixLen: 0, routes: [] }
       : {
-          ip,
+          ip: d.ip,
           prefixLen: 24,
           routes: [
-            { network: '192.168.1.0', prefixLen: 24, iface },
-            { network: '0.0.0.0', prefixLen: 0, via: gateway, iface },
+            { network: '192.168.1.0', prefixLen: 24, iface: ifaceOf(d) },
+            { network: '0.0.0.0', prefixLen: 0, via: d.port.ip, iface: ifaceOf(d) },
           ],
         };
-  const laptopAddr = addressed('laptop', 'laptop.eth0', ADDR.laptop.ip, ADDR.homeLan.ip);
-  const phoneAddr = addressed('phone', 'phone.wlan0', ADDR.phone.ip, ADDR.homeWlan.ip);
-  // On a revisit the router still remembers whichever device asked last time.
-  const remembered = from === 'phone' ? ADDR.phone : ADDR.laptop;
+  const homeDevice = (d: HomeDevice): DeviceSpec => {
+    const { ip, prefixLen, routes } = addressed(d);
+    return {
+      id: d.id,
+      label: d.label,
+      sublabel: d.ip,
+      kind: d.kind,
+      layout: d.layout,
+      actions: d.actions,
+      ifaces: [{ id: ifaceOf(d), name: d.iface.name, mac: d.mac, ip, prefixLen, ...(d.iface.wifi ? { wifi: d.iface.wifi } : {}) }],
+      routes,
+      ...appsOf(d),
+    };
+  };
+  const macsOf = (ids: string[]) => Object.fromEntries(homes.filter((d) => ids.includes(d.id)).map((d) => [d.ip, d.mac]));
   return {
     id: 'fetch-web-page',
     title: opts.call ? `Call ${ADDR.friend.name}` : opts.probe === 'ping' ? `Ping ${host}` : opts.probe === 'traceroute' ? `Trace the path to ${host}` : `Fetch ${url}`,
     startDevice: from,
-    ...(opts.join ? { companion: { device: other, at: opts.join.at ?? COMPANION_DELAY } } : {}),
+    ...(joins.length ? { companions: joins.map(({ device, at }) => ({ device, at })) } : {}),
     ...(outsiders.length ? { attackers: [...bots.map((b, i) => ({ device: b.device.id, at: i * FLOOD.stagger })), ...scanner.map((s) => ({ device: s.device.id, at: 0 }))] } : {}),
     tcp: { clientMss: opts.vpn ? Math.min(mss, 1380) : mss, serverMss: 1460 },
     devices: [
-      {
-        id: 'laptop',
-        label: 'Laptop',
-        sublabel: ADDR.laptop.ip,
-        kind: 'laptop',
-        layout: { x: 160, y: 470 },
-        ifaces: [{ id: 'laptop.eth0', name: 'eth0', mac: ADDR.laptop.mac, ip: laptopAddr.ip, prefixLen: laptopAddr.prefixLen }],
-        routes: laptopAddr.routes,
-        ...appsOf('laptop', ADDR.homeLan),
-      },
-      {
-        id: 'phone',
-        label: 'Phone',
-        sublabel: ADDR.phone.ip,
-        kind: 'phone',
-        layout: { x: 600, y: 700 },
-        ifaces: [{ id: 'phone.wlan0', name: 'wlan0', mac: ADDR.phone.mac, ip: phoneAddr.ip, prefixLen: phoneAddr.prefixLen, wifi: 'station' }],
-        routes: phoneAddr.routes,
-        ...appsOf('phone', ADDR.homeWlan),
-      },
+      ...homes.map(homeDevice),
       {
         id: 'home',
         label: 'Home router',
@@ -366,29 +424,26 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
         kind: 'home-router',
         layout: { x: 600, y: 470 },
         ifaces: [
-          { id: 'home.lan', name: 'lan', mac: ADDR.homeLan.mac, ip: ADDR.homeLan.ip, prefixLen: 24 },
+          ...homes.map((d) => ({ ...d.port, prefixLen: 24 })),
           { id: 'home.wan', name: 'wan', mac: ADDR.homeWan.mac, ip: ADDR.homeWan.ip, prefixLen: 24 },
-          // The built-in Wi-Fi access point. Real home routers bridge Wi-Fi and the Ethernet ports into one network
-          // with one address; here that bridge is two interfaces sharing 192.168.1.1, with a route to the phone.
-          { id: 'home.wlan', name: 'wlan', mac: ADDR.homeWlan.mac, ip: ADDR.homeWlan.ip, prefixLen: 24, wifi: 'ap' },
         ],
         routes: [
-          { network: '192.168.1.0', prefixLen: 24, iface: 'home.lan' },
-          { network: ADDR.phone.ip, prefixLen: 32, iface: 'home.wlan' },
+          { network: '192.168.1.0', prefixLen: 24, iface: homes[0]!.port.id },
+          ...homes.slice(1).map((d) => ({ network: d.ip, prefixLen: 32, iface: d.port.id })),
           { network: '203.0.113.0', prefixLen: 24, iface: 'home.wan' },
           { network: '0.0.0.0', prefixLen: 0, via: ADDR.ispCustomer.ip, iface: 'home.wan' },
         ],
         arp: {
           [ADDR.ispCustomer.ip]: ADDR.ispCustomer.mac,
-          ...(warm ? { [remembered.ip]: remembered.mac } : {}),
-          ...(warm && opts.join ? { [ADDR[other].ip]: ADDR[other].mac } : {}),
+          // On a revisit the router still remembers whichever device asked last time.
+          ...(warm ? macsOf([from, ...joins.map((j) => j.device)]) : {}),
         },
-        nat: { inside: ['home.lan', 'home.wlan'], outside: 'home.wan' },
+        nat: { inside: homes.map((d) => d.port.id), outside: 'home.wan' },
         // The router's DHCP server is always there; a device only asks it when it starts without an address. Each
         // device gets the address the scenario knows it by, so "where does 192.168.1.23 come from?" has one answer.
         dhcp: {
-          ifaces: ['home.lan', 'home.wlan'],
-          leases: { [ADDR.laptop.mac]: ADDR.laptop.ip, [ADDR.phone.mac]: ADDR.phone.ip },
+          ifaces: homes.map((d) => d.port.id),
+          leases: Object.fromEntries(homes.map((d) => [d.mac, d.ip])),
           mask: '255.255.255.0',
           router: ADDR.homeLan.ip,
           dns: [ADDR.resolver.ip],
@@ -517,7 +572,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
             processing: 0.0005,
             response: fromBase64(site.response),
             ...(tls ? { tls } : {}),
-            ...(opts.join ? { responses: { 'example.com': fromBase64(HTTP_RESPONSE_BASE64), [PHOTO_HOST]: fromBase64(PHOTO_HTTP_RESPONSE_BASE64) } } : {}),
+            ...(joins.length ? { responses: { 'example.com': fromBase64(HTTP_RESPONSE_BASE64), [PHOTO_HOST]: fromBase64(PHOTO_HTTP_RESPONSE_BASE64) } } : {}),
           },
         ],
       },
@@ -552,8 +607,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
         : []),
     ],
     links: [
-      { id: 'lan', a: 'laptop.eth0', b: 'home.lan', bitsPerSecond: 1e9, delay: 5e-8, label: 'Ethernet cable · 1 Gbit/s', name: 'the Ethernet cable' },
-      { id: 'wlan', a: 'phone.wlan0', b: 'home.wlan', bitsPerSecond: 300e6, delay: 3e-8, label: 'Wi-Fi · 300 Mbit/s', name: 'the Wi-Fi', ...(opts.noise ? { noise: opts.noise } : {}), ...(attacks.has('listen') ? { overheardBy: 'stranger' } : {}) },
+      ...homes.map((d) => ({ ...d.link, a: ifaceOf(d), b: d.port.id, ...(d.iface.wifi && opts.noise ? { noise: opts.noise } : {}), ...(d.iface.wifi && attacks.has('listen') ? { overheardBy: 'stranger' } : {}) })),
       opts.slow
         ? { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: 25e6, delay: 0.28, label: 'Satellite to ISP · 25 Mbit/s · 280 ms', name: 'the satellite link' }
         : opts.thin

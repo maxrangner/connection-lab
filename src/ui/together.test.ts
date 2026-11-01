@@ -4,7 +4,7 @@ import { buildStory } from './story';
 import { buildTimeline } from './timeline';
 
 const CLEAN: FaultPlan = { randomLoss: 0, manual: [] };
-const story = buildStory(runScenario(fetchWebPage({ join: {} }), { seed: 1, faults: CLEAN }));
+const story = buildStory(runScenario(fetchWebPage({ joins: [{}] }), { seed: 1, faults: CLEAN }));
 
 describe('two devices fetching at once, in the story', () => {
   it('knows both clients and whose fetch each trip is', () => {
@@ -33,7 +33,7 @@ describe('two devices fetching at once, in the story', () => {
   });
 
   it('the photo streams for the laptop while the phone gets the plain page', () => {
-    const s = buildStory(runScenario(fetchWebPage({ join: {}, site: 'httpbin.org' }), { seed: 1, faults: CLEAN, maxTime: 1000 }));
+    const s = buildStory(runScenario(fetchWebPage({ joins: [{}], site: 'httpbin.org' }), { seed: 1, faults: CLEAN, maxTime: 1000 }));
     const streams = s.trips.filter((t) => t.steps.some((x) => x.kind === 'flow' && x.packets.length > 1));
     expect(streams).toHaveLength(1);
     expect(streams[0]!.client).toBe('laptop');
@@ -46,9 +46,9 @@ describe('two devices fetching at once, in the story', () => {
   });
 
   it('a lost answer for the phone makes the phone wait, not the laptop', () => {
-    const plain = runScenario(fetchWebPage({ join: {} }), { seed: 1, faults: CLEAN });
+    const plain = runScenario(fetchWebPage({ joins: [{}] }), { seed: 1, faults: CLEAN });
     const answer = [...plain.packets.values()].find((p) => p.kind === 'dns' && p.origin === 'resolver' && p.label.includes('example.com') && plain.events.some((e) => e.type === 'tx' && e.packetId === p.id && e.linkId === 'wan' && e.toDevice === 'home' && e.t > 0.004))!;
-    const faulty = buildStory(runScenario(fetchWebPage({ join: {} }), { seed: 1, faults: { randomLoss: 0, manual: [{ packetId: answer.id, linkId: 'wan' }] } }));
+    const faulty = buildStory(runScenario(fetchWebPage({ joins: [{}] }), { seed: 1, faults: { randomLoss: 0, manual: [{ packetId: answer.id, linkId: 'wan' }] } }));
     const lost = faulty.trips.find((t) => t.lost)!;
     expect(lost.client).toBe(buildStory(plain).trips.find((t) => t.packetId === answer.id)!.client);
   });

@@ -5,7 +5,7 @@ import { fetchWebPage, type Job } from './scenarios/fetchWebPage';
 const JOBS: Job[] = ['page', 'photo', 'call', 'ping', 'trace'];
 const CLEAN = { randomLoss: 0, manual: [] };
 const first = { page: {}, photo: { site: 'httpbin.org' }, call: { call: true }, ping: { probe: 'ping' }, trace: { probe: 'traceroute' } } as const;
-const run = (a: Job, b: Job, at: number): SimResult => runScenario(fetchWebPage({ ...first[a], join: { job: b, at } }), { seed: 1, faults: CLEAN, maxTime: 1000 });
+const run = (a: Job, b: Job, at: number): SimResult => runScenario(fetchWebPage({ ...first[a], joins: [{ job: b, at }] }), { seed: 1, faults: CLEAN, maxTime: 1000 });
 const alone = (a: Job): SimResult => runScenario(fetchWebPage(first[a]), { seed: 1, faults: CLEAN, maxTime: 1000 });
 /** The app says it finished. A second call finds the friend busy: it talks, hears nothing and hangs up, which is finished too. */
 const finished = (r: SimResult, device: string): boolean =>
@@ -29,7 +29,7 @@ describe('a job dropped in during a run', () => {
   it('knows whose job every packet is, also a reply, and a frame sent on by a queue the other job was in', () => {
     for (const opts of [{}, { thin: true }, { noise: 0.3 }, { dhcp: true }]) {
       for (const b of JOBS) {
-        const r = runScenario(fetchWebPage({ ...first.photo, ...opts, join: { job: b, at: 0.01 } }), { seed: 1, faults: CLEAN, maxTime: 1000 });
+        const r = runScenario(fetchWebPage({ ...first.photo, ...opts, joins: [{ job: b, at: 0.01 }] }), { seed: 1, faults: CLEAN, maxTime: 1000 });
         const device = ['laptop', 'phone'];
         for (const e of r.events) {
           if (e.type !== 'rx' || !device.includes(e.deviceId)) continue;
@@ -44,7 +44,7 @@ describe('a job dropped in during a run', () => {
     const ids = (r: SimResult): string[] => [...r.packets.values()].filter((p) => p.job === 0).map((p) => p.id);
     expect(ids(run('photo', 'page', 0.01))).toEqual(ids(alone('photo')));
     const quiet = run('page', 'call', 0.01);
-    const cut = runScenario(fetchWebPage({ join: { job: 'call', at: 0.01 } }), { seed: 1, faults: { ...CLEAN, cuts: [{ link: 'bb6', from: 0 }] }, maxTime: 1000 });
+    const cut = runScenario(fetchWebPage({ joins: [{ job: 'call', at: 0.01 }] }), { seed: 1, faults: { ...CLEAN, cuts: [{ link: 'bb6', from: 0 }] }, maxTime: 1000 });
     const callers = (r: SimResult): string[] => [...r.packets.values()].filter((p) => p.origin === 'phone' && p.kind === 'rtp').map((p) => p.id);
     expect(callers(cut)).toEqual(callers(quiet));
   });
@@ -62,7 +62,7 @@ describe('a job dropped in during a run', () => {
   it('works with the Setup on: a VPN, HTTPS, DHCP, a cold resolver and a second visit', () => {
     for (const opts of [{ vpn: true }, { https: true }, { dhcp: true }, { cold: true }, { revisit: true }, { thin: true }, { slow: true }, { noise: 0.3 }]) {
       for (const job of JOBS) {
-        const r = runScenario(fetchWebPage({ ...opts, join: { job, at: 0.02 } }), { seed: 1, faults: CLEAN, maxTime: 1000 });
+        const r = runScenario(fetchWebPage({ ...opts, joins: [{ job, at: 0.02 }] }), { seed: 1, faults: CLEAN, maxTime: 1000 });
         expect(finished(r, 'phone')).toBe(true);
       }
     }

@@ -33,7 +33,7 @@ describe('what the devices say', () => {
   });
 
   it('never has one device saying two things at once', () => {
-    for (const opts of [{ https: true }, { vpn: true }, { cold: true }, { dhcp: true }, { join: {} }, { call: true }, { probe: 'ping' as const }, { probe: 'traceroute' as const }]) {
+    for (const opts of [{ https: true }, { vpn: true }, { cold: true }, { dhcp: true }, { joins: [{}] }, { call: true }, { probe: 'ping' as const }, { probe: 'traceroute' as const }]) {
       const tl = run(opts);
       for (const [i, a] of tl.speech.entries()) {
         const next = tl.speech.slice(i + 1).find((b) => b.device === a.device);

@@ -1,3 +1,4 @@
+import type { Job } from '../sim';
 import { el, setAttr, setText } from './svg';
 import { box, cylinder, line, rbox, tile } from './prims';
 import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, easeOutBounce, iso, isoV, lerp, U, unproject, v3, type Pt, type Vec3 } from './project';
@@ -7,7 +8,7 @@ import type { Details, PartKey, Row, Story, Trip, Wrap } from './story';
 import { bandPoint, pageContent, Paper, PAPER_H, PAPER_W, photoContent } from './paper';
 import { screenAt, type Readout } from './readout';
 import { drawBook, drawShelf, SERVER } from './stations';
-import { addressBefore, ATTACKER_KINDS, detailsAt, PERSONAL_KINDS, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, LEVEL, lockPose, NO_LOCK, NOTE_LIFE, packetPos, packetPose, pageParts, segAt, swapLanding, swapMoment, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowHop, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
+import { addressBefore, ATTACKER_KINDS, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, LEVEL, lockPose, NO_LOCK, NOTE_LIFE, namedAcks, packetPos, packetPose, pageParts, segAt, swapLanding, swapMoment, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowHop, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
 
 export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', vpn: '#2e5e6e', eth: '#e08b33', wifi: '#2a9d8f' } as const;
 const DEVICE = '#d9d0c2';
@@ -87,8 +88,8 @@ const SPEECH_CHAR = 7.1;
 /** The colours of a voice: its packets on the cables and its notes at the far end. */
 const VOICE_OF_CALLER = '#8b6fd0';
 const VOICE_OF_FRIEND = '#1f9a8c';
-/** Once a card has been dropped in, whose packet a block is: the first device's, or the one that joined in. */
-const OWNERS = [COLOR.app, '#d6488f'];
+/** Once an action has been added, whose packet a block is: the first device's, then each that joined in. */
+const OWNERS = [COLOR.app, '#d6488f', '#2a9d8f', '#c98a1b'];
 /** The blade of the session key, with its teeth; the tip at the origin. */
 const KEY_BLADE = 'M0 -2.2 H30 V2.2 H16 V8 H12 V2.2 H8 V6 H4 V2.2 H0 Z';
 
@@ -244,6 +245,8 @@ export class NetworkScene {
   private laidOut = '';
   /** Where the spyglass was last drawn, so it is not drawn again every frame. */
   private spyDrawn = '';
+  /** What the packet was last drawn from: held still, it stays as it is. */
+  private packetDrawn: { tl: Timeline; moment: string } | null = null;
   /** Whether any emoji is up, so an empty frame costs nothing. */
   private moodsUp = false;
   /** The devices keep their lines to themselves. */
@@ -396,7 +399,7 @@ export class NetworkScene {
 
   /** The spyglass, with its lens on the middle of its line; what it reads goes in the popup above the bar. It is drawn again only when it moves. */
   private renderSpy(): void {
-    const where = this.spy ? `${this.spy}|${this.tl.sky.has(this.spy)}` : '';
+    const where = this.spy ? `${this.spy}|${this.tl.sky.has(this.spy)}|${this.laidOut}` : '';
     if (where === this.spyDrawn) return;
     this.spyDrawn = where;
     this.spyGlass.replaceChildren();
@@ -513,11 +516,15 @@ export class NetworkScene {
     return this.shown(device);
   }
 
+  /** Your own devices are the ones you can start something on. */
+  private yours(device: string): boolean {
+    return !!this.story.devices.find((d) => d.id === device)?.actions.length;
+  }
+
   /** How far a device has come onto the table at visual time v, from 0 to 1. */
   private present(device: string, v: number): number {
     if (!this.shown(device)) return 0;
-    const kind = this.tl.kind.get(device) ?? '';
-    if (PERSONAL_KINDS.has(kind) || ATTACKER_KINDS.has(kind) || this.revealed.has(device)) return 1;
+    if (this.yours(device) || ATTACKER_KINDS.has(this.tl.kind.get(device) ?? '') || this.revealed.has(device)) return 1;
     const at = this.tl.reveals.get(device);
     return !at || v < at.t0 ? 0 : Math.max(0.01, clamp01((v - at.t0) / (at.t1 - at.t0)));
   }
@@ -594,11 +601,11 @@ export class NetworkScene {
     return p.x + p.y;
   }
 
-  /** Screen points (in SVG units) where the laptop and the phone accept a dropped card. */
-  dropPoints(): { id: string; sx: number; sy: number }[] {
-    return ['laptop', 'phone'].flatMap((id) => {
-      const p = this.tl.pos.get(id);
-      return p ? [{ id, ...iso(p.x, p.y - 0.3, id === 'phone' ? 1.4 : 1.0) }] : [];
+  /** Screen points (in SVG units) where your devices accept a dropped card, and what each can do. */
+  dropPoints(): { id: string; actions: Job[]; sx: number; sy: number }[] {
+    return this.story.devices.flatMap((d) => {
+      const p = this.tl.pos.get(d.id);
+      return p && d.actions.length ? [{ id: d.id, actions: d.actions, ...iso(p.x, p.y - 0.3, d.kind === 'phone' ? 1.4 : 1.0) }] : [];
     });
   }
 
@@ -695,7 +702,7 @@ export class NetworkScene {
     const tall = ch > cw * 1.2;
     if (!tall && this.revealed.size) return this.wholeCamera();
     // Only your own things are on the table: no need to leave room for what has not shown up yet.
-    const pts = this.story.devices.filter((d) => PERSONAL_KINDS.has(d.kind)).flatMap((d) => {
+    const pts = this.story.devices.filter((d) => d.actions.length).flatMap((d) => {
       const p = this.tl.pos.get(d.id) ?? { x: 0, y: 0 };
       const c = iso(p.x, p.y);
       return [{ sx: c.sx - 130, sy: c.sy - 130 }, { sx: c.sx + 130, sy: c.sy + 70 }];
@@ -1096,7 +1103,7 @@ export class NetworkScene {
   private terminals(): { readout: Readout; device: string; red?: boolean }[] {
     return [
       { readout: this.tl.readout, device: this.tl.client },
-      { readout: this.tl.joinReadout, device: this.story.joiner ?? this.tl.client },
+      ...this.tl.joinReadouts,
       // What the stranger hears has to stay readable while the camera follows the packet away, so it goes above the bar.
       ...this.tl.attackReadouts.filter((x) => x.device !== this.story.listener).map((x) => ({ ...x, red: true })),
     ];
@@ -1155,7 +1162,7 @@ export class NetworkScene {
     this.speechDrawn = drawn;
     this.speechLayer.replaceChildren();
     for (const { b, s, w, x, size, op } of looks) {
-      const flagged = [...this.tl.readout.flags, ...this.tl.joinReadout.flags].filter((f) => f.device === b.device && v >= f.t).length;
+      const flagged = [...this.tl.readout.flags, ...this.tl.joinReadouts.flatMap((x) => x.readout.flags)].filter((f) => f.device === b.device && v >= f.t).length;
       const y = s.sy + (flagged ? SPEECH_UNDER_FLAG + (flagged - 1) * FLAG_ROW : SPEECH_UNDER_NAME);
       const g = el('g', { class: 'mood', opacity: op.toFixed(3), transform: `translate(${x.toFixed(1)} ${y.toFixed(1)}) scale(${(size * big).toFixed(3)})` }, this.speechLayer);
       const tip = Math.max(-w / 2 + 28, Math.min(w / 2 - 28, (s.sx - x) / big));
@@ -1241,12 +1248,16 @@ export class NetworkScene {
   /** The packet at visual time v. `peek` (0..1) pulls its pieces apart and shows their sizes; `pill` is the one opened. */
   drawPacket(v: number, peek: number, pill: { key: PartKey; k: number } | null = null): void {
     this.pill = pill;
+    // The spy's note makes way for the size chips.
+    this.spyGlass.style.display = peek > 0.05 || (this.spy && !this.hasLink(this.spy)) ? 'none' : '';
+    // Paused, or between runs, nothing below has anything new to draw.
+    const moment = `${v}|${peek.toFixed(3)}|${pill?.key}|${pill?.k.toFixed(3)}`;
+    if (this.packetDrawn?.tl === this.tl && this.packetDrawn.moment === moment) return;
+    this.packetDrawn = { tl: this.tl, moment };
     this.packet.replaceChildren();
     this.tags.replaceChildren();
     this.fx.replaceChildren();
     this.keys.replaceChildren();
-    // The spy's note makes way for the size chips.
-    this.spyGlass.style.display = peek > 0.05 || (this.spy && !this.hasLink(this.spy)) ? 'none' : '';
     this.keyhole = null;
     const hit = segAt(this.tl, v);
     if (!hit) return;
@@ -1363,7 +1374,7 @@ export class NetworkScene {
   /** Whose block this is, once several jobs run at once. */
   private ownerColor(client: string): string {
     if (this.story.attackers.includes(client)) return ATTACKER;
-    return OWNERS[client === this.story.client ? 0 : 1]!;
+    return OWNERS[Math.max(0, [this.story.client, ...this.story.joiners].indexOf(client)) % OWNERS.length]!;
   }
 
   /** A stream: its packets as small blocks on the cables, far ones first. A part flies onto the sheet, a lost one falls. */
@@ -1371,7 +1382,7 @@ export class NetworkScene {
     for (const w of waits) if (v >= w.t0 && v < w.t1) this.drawWait(w.step, (v - w.t0) / (w.t1 - w.t0), w.t1 - w.t0);
     const blocks: { at: Vec3; size: number; color: string; op: number; named?: boolean }[] = [];
     // A block says nothing by itself: an ACK on its own says what it is, and so do the first few of a stream.
-    const named = flow.filter((p) => !p.trip.dataBytes).slice(0, 3);
+    const named = namedAcks(flow);
     for (const p of flow) {
       if (v < p.t0 || v >= p.t1) continue;
       const data = p.trip.dataBytes > 0;

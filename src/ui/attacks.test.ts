@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fetchWebPage, runScenario, TCP_RST, type Attack, type Job, type SimResult } from '../sim';
 import { buildStory, type Story, type Trip } from './story';
-import { buildTimeline, crossings, joinAt, type Timeline } from './timeline';
+import { buildTimeline, crossings, joinAt, namedAcks, type Timeline } from './timeline';
 
 const CLEAN = { randomLoss: 0, manual: [] };
 const JOBS = { page: {}, photo: { site: 'httpbin.org' }, call: { call: true }, ping: { probe: 'ping' }, trace: { probe: 'traceroute' } } as const;
@@ -181,13 +181,24 @@ describe('attackers together', () => {
     }
   }, 120_000);
 
+  it('calls only an ACK an ACK: a SYN, a SYN-ACK or a reset has no data either', () => {
+    for (const opts of [{ attacks: ['scan'] }, { attacks: ['flood'] }, { joins: [{ job: 'page', at: 0.001 }] }, { site: 'httpbin.org' }]) {
+      const flows = run(opts).tl.segs.flatMap((x) => (x.flow ? [x.flow] : []));
+      expect(flows.flatMap(namedAcks).length).toBeGreaterThan(0);
+      for (const flow of flows) {
+        const acks = flow.filter((p) => p.trip.l4Label === 'ACK');
+        expect(namedAcks(flow)).toEqual(acks.slice(0, 3));
+      }
+    }
+  });
+
   it('a card dropped in during an attack gets its own colour and job', () => {
     const before = run({ attacks: ['scan'] });
     const v = before.tl.total * 0.2;
-    const s = buildStory(sim({ attacks: ['scan'], join: { job: 'ping', at: joinAt(before.tl, v) } }));
-    expect(s.joiner).toBe('phone');
+    const s = buildStory(sim({ attacks: ['scan'], joins: [{ job: 'ping', at: joinAt(before.tl, v) }] }));
+    expect(s.joiners).toEqual(['phone']);
     expect(s.clients).toEqual(['laptop', 'scanner', 'phone']);
-    expect(s.joinProbe?.kind).toBe('ping');
+    expect(s.joinProbes[0]?.probe.kind).toBe('ping');
     expect(s.trips.flatMap(everyPacket).filter((t) => t.chapter === 'ping').every((t) => t.client === 'phone')).toBe(true);
   });
 
@@ -198,8 +209,8 @@ describe('attackers together', () => {
         for (const share of [0.1, 0.4, 0.8]) {
           const before = run({ attacks }).tl;
           const v = before.total * share;
-          const s = buildStory(sim({ attacks, join: { job, at: joinAt(before, v) } }));
-          const after = buildTimeline(s, new Map(), 0, v);
+          const s = buildStory(sim({ attacks, joins: [{ job, at: joinAt(before, v) }] }));
+          const after = buildTimeline(s, new Map(), 0, new Map([[s.joiners[0]!, v]]));
           const blocks = after.segs.find((x) => x.trip.chapter === 'traffic')!.flow!;
           const what = `${job} into ${attacks} at ${share}`;
           expect(Math.min(...blocks.filter((p) => p.trip.client === 'phone').map((p) => p.t0)), what).toBeGreaterThanOrEqual(v);
