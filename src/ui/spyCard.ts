@@ -61,6 +61,11 @@ export class SpyCard {
   }
 
   /** Keeps the popup above the bar. */
+  /** Where its top edge is on the screen, while it is up. */
+  get top(): number | null {
+    return this.panel.hidden ? null : this.panel.getBoundingClientRect().top;
+  }
+
   place(bar: HTMLElement): void {
     this.panel.style.bottom = `${(window.innerHeight - bar.getBoundingClientRect().top + 10).toFixed(0)}px`;
   }

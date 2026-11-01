@@ -1,6 +1,6 @@
 import { el } from './svg';
 
-/** A button in the bar with a small popup above it. */
+/** A button, in the bar or on the table, with a small popup by it. */
 export interface MenuItem<T extends string> {
   id: T;
   label: string;
@@ -89,14 +89,15 @@ export class Menu<T extends string> {
     b?.setAttribute('aria-pressed', String(on));
   }
 
-  /** Keeps the popup by its button, inside the screen: above it, unless that does not fit. */
+  /** Keeps the popup by its button, inside the screen: above it, unless only below fits. */
   place(): void {
     if (!this.isOpen) return;
     const r = this.button.getBoundingClientRect();
     const w = this.panel.offsetWidth;
     const left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2));
     this.panel.style.left = `${left.toFixed(0)}px`;
-    const above = r.top - this.panel.offsetHeight - 18 >= 0;
+    const h = this.panel.offsetHeight;
+    const above = r.top - h - 18 >= 0 || r.bottom + 10 + h > window.innerHeight;
     this.panel.style.bottom = above ? `${(window.innerHeight - r.top + 10).toFixed(0)}px` : 'auto';
     this.panel.style.top = above ? 'auto' : `${(r.bottom + 10).toFixed(0)}px`;
   }

@@ -1057,6 +1057,7 @@ body {
 /* On a device with nothing to do. It starts something, like the cards. It moves with the camera, so on a layer of its own. */
 button.action-menu {
   position: fixed;
+  z-index: 4;
   top: -17px;
   left: -52px;
   width: 104px;
