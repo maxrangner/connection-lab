@@ -489,7 +489,6 @@ const soundBtn = button('♪', 'Mute', () => {
   }
 });
 soundBtn.classList.add('sound-button');
-// Up where the chapter name goes during a run.
 const logo = document.createElement('img');
 logo.className = 'logo';
 logo.alt = 'Connection Lab';
@@ -555,7 +554,7 @@ let holding: { x: number; y: number } | null = null;
 const dock = document.createElement('div');
 dock.className = 'dock';
 dock.hidden = true;
-dock.appendChild(Object.assign(document.createElement('span'), { className: 'dock-label', textContent: 'drag one in' }));
+dock.appendChild(Object.assign(document.createElement('span'), { className: 'dock-label', textContent: 'drag in a secondary action' }));
 /** The card under the finger, and the ring on the device it can go to. */
 const dockGhost = document.createElement('div');
 dockGhost.className = 'dock-ghost';
@@ -1102,7 +1101,6 @@ function frame(now: number): void {
     resting.setAttribute('opacity', '1');
   }
   hint.style.display = mode === 'idle' ? '' : 'none';
-  logo.hidden = mode === 'play';
   dock.hidden = mode !== 'play' || !!joined || v >= tl.total;
   dockGhost.hidden = dockRing.hidden = !holding;
   if (holding) {
