@@ -90,7 +90,7 @@ let stretch = 0;
 /** The Wi-Fi has been shaken: this share of its frames is lost to interference, and the radio sends them again. */
 let noise = 0;
 const NOISY = 0.4;
-/** A card dropped in during this run: what it asks for, and when in sim time and in visual time. */
+/** A second action added during this run: what it asks for, and when in sim time and in visual time. */
 let joined: { job: Wanted; at: number; v: number } | null = null;
 /** The attackers on the table. They stay from run to run, until they are switched off. */
 const attacks = new Set<Attack>();
@@ -460,7 +460,8 @@ const ACTIONS: Record<Wanted, { label: string; draw: (g: SVGGElement) => void }>
       el('path', { d: 'M-10 7l7-8 5 5 3-3 5 6' }, g);
     },
   },
-  call: { label: 'Call', draw: (g) => drawHandset(el('g', { transform: 'scale(0.42)' }, g)) },
+  // The handset is not drawn around the origin: this centres it, or it runs out of its tile.
+  call: { label: 'Call', draw: (g) => drawHandset(el('g', { transform: 'translate(-3.2 -2.4) scale(0.4)' }, g)) },
   ping: { label: 'Ping', draw: (g) => drawPing(el('g', { transform: 'scale(0.42)' }, g)) },
   trace: { label: 'Trace', draw: (g) => drawTrace(el('g', { transform: 'scale(0.42)' }, g)) },
 };
@@ -1067,30 +1068,28 @@ function frame(now: number): void {
 
   // The camera eases between the whole network (between runs) and a close follow of the packet,
   // unless the viewer has taken it over. More than one action at a time needs the whole network.
+  const wide = mode === 'play' && (!!joined || story.attackers.length > 0);
   if (!camFree) {
-    const wide = mode === 'play' && (!!joined || story.attackers.length > 0);
-    const target = mode === 'play' && !wide ? scene.followCamera(v) : showAll || wide || attacks.size ? scene.wholeCamera() : scene.overviewCamera();
+    const target = wide ? scene.busyCamera() : mode === 'play' ? scene.followCamera(v) : showAll || attacks.size ? scene.wholeCamera() : scene.overviewCamera();
     const ease = snapCamera ? 1 : Math.min(1, dt * (seek ? 6 : 3.5));
     cam = { cx: lerp(cam.cx, target.cx, ease), cy: lerp(cam.cy, target.cy, ease), scale: lerp(cam.scale, target.scale, ease) };
   }
   snapCamera = false;
   scene.applyCamera(cam);
   for (const { device, menu } of deviceActions) {
-    // It needs something left to run alongside.
+    // It needs something left to run alongside. Closed first: the popup hands focus back to the button.
     const free = mode === 'play' && !joined && v < tl.total && device !== client;
+    if (!free) menu.setOpen(false);
     menu.button.hidden = !free;
-    if (!free) {
-      menu.setOpen(false);
-      continue;
-    }
+    // Open, it stays put: the run goes on, and what you are aiming for must not move.
+    if (!free || menu.isOpen) continue;
     const spot = scene.actionSpot(device);
-    const lowest = window.innerHeight - scene.barHeight - ACTION_H / 2 - 8;
+    const lowest = (spyCard.top ?? window.innerHeight - scene.barHeight) - ACTION_H / 2 - 8;
     const inView = spot.x >= ACTION_W / 2 + 8 && spot.x <= window.innerWidth - ACTION_W / 2 - 8 && spot.y >= ACTION_TOP && spot.y <= lowest;
     // With the device out of view its button waits in one quiet spot, and says whose it is.
     const [x, y] = inView ? [spot.x, spot.y] : [ACTION_W / 2 + 8, lowest];
     setText(menu.button, inView ? '+ action' : `+ ${device}`);
     menu.button.style.transform = `translate(${x.toFixed(0)}px, ${y.toFixed(0)}px)`;
-    menu.place();
   }
 
   const shown = mode === 'play' ? v : idleV;
@@ -1130,7 +1129,7 @@ function frame(now: number): void {
   // A tall screen starts close on the laptop, so the rest of the network has to be a press away.
   const closeUp = mode !== 'play' && !showAll && !attacks.size && scene.anythingRevealed && scene.overviewCamera().scale > scene.wholeCamera().scale;
   followBtn.hidden = !camFree && !closeUp;
-  setText(followBtn, mode === 'play' ? '◎ Follow packet' : '◎ Show all');
+  setText(followBtn, mode === 'play' && !wide ? '◎ Follow packet' : '◎ Show all');
   backBtn.disabled = pauseBtn.disabled = nextBtn.disabled = mode !== 'play';
   // The setup is for the next run: it would rewrite what has already happened.
   for (const menu of [setupMenu, attackMenu]) {
@@ -1172,7 +1171,7 @@ if (import.meta.env.DEV) {
       attack(id: Attack, on = true): void {
         setAttack(id, on);
       },
-      /** Drop a card in on the other device, as a hand would. */
+      /** Start an action on the other device, as its "+ action" does. */
       join(job: Wanted): void {
         joinIn(job);
       },

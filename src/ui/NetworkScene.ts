@@ -672,6 +672,22 @@ export class NetworkScene {
     return { cx: o.x + o.w / 2, cy: o.y + o.h / 2, scale: this.baseScale() };
   }
 
+  /** More than one action at once: the whole network, with room for the sheet and for the notes above whoever is on a call. */
+  busyCamera(): Camera {
+    const o = this.overview;
+    const pts = [{ sx: o.x, sy: o.y }, { sx: o.x + o.w, sy: o.y + o.h - 90 }];
+    if (pageParts(this.tl)) {
+      const paper = this.paperAt();
+      pts.push({ sx: paper.sx - 100, sy: paper.sy - 170 }, { sx: paper.sx + 100, sy: paper.sy + 110 });
+    }
+    for (const id of new Set(this.tl.notes.map((n) => n.device))) {
+      const d = this.tl.pos.get(id) ?? { x: 0, y: 0 };
+      const c = iso(d.x, d.y);
+      pts.push({ sx: c.sx - 174, sy: c.sy - 300 }, { sx: c.sx + 174, sy: c.sy + 100 });
+    }
+    return this.framing(pts);
+  }
+
   /** Between runs: the whole network, or on a tall phone screen closer on the laptop and the card so they are big enough to drag. */
   overviewCamera(): Camera {
     const cw = this.svg.clientWidth || 1;

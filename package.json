@@ -1,7 +1,7 @@
 {
   "name": "connection-lab",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "description": "How the Internet Works: an interactive, protocol-accurate packet simulator.",
   "scripts": {
