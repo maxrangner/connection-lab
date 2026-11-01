@@ -6,6 +6,7 @@ import { describeEthernet, ETHERTYPE_ARP, ETHERTYPE_IPV4, parseEthernet } from '
 import { describeHttp } from './http';
 import { describeIcmp } from './icmp';
 import { describeIpv4, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP, parseIpv4 } from './ipv4';
+import { describeMqtt, MQTT_PORT } from './mqtt';
 import { describeRtp, RTP_PORT } from './rtp';
 import { describeTcp, parseTcp } from './tcp';
 import { describeTls } from './tls';
@@ -100,6 +101,8 @@ function walk(b: Uint8Array, proto: Protocol, o: number, end: number, ctx: Decod
         walk(b, 'tls', t.payloadStart, end, ctx, out);
       } else if (end > t.payloadStart && (t.srcPort === 80 || t.dstPort === 80 || ctx.appHint === 'http')) {
         walk(b, 'http', t.payloadStart, end, ctx, out);
+      } else if (end > t.payloadStart && (t.srcPort === MQTT_PORT || t.dstPort === MQTT_PORT || ctx.appHint === 'mqtt')) {
+        walk(b, 'mqtt', t.payloadStart, end, ctx, out);
       }
       return end;
     }
@@ -125,6 +128,10 @@ function walk(b: Uint8Array, proto: Protocol, o: number, end: number, ctx: Decod
     }
     case 'rtp': {
       out.push(describeRtp(b, o, end));
+      return end;
+    }
+    case 'mqtt': {
+      out.push(describeMqtt(b, o, end));
       return end;
     }
   }

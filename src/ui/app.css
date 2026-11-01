@@ -1146,6 +1146,11 @@ button.action-menu[hidden] {
   display: none;
 }
 
+.sensor-eye {
+  fill: var(--app);
+  stroke: #3d7a52;
+}
+
 /* Small to look at, big to hit: 48px high however small the phone */
 button.action-menu::before {
   content: '';

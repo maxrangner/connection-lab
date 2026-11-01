@@ -1,11 +1,11 @@
 import './app.css';
-import { EVERY_JOB, fetchWebPage, runScenario, ulawDecodeAll, type Attack, type Cut, type Job, type ManualFault } from '../sim';
+import { EVERY_JOB, fetchWebPage, READING_AT, runScenario, ulawDecodeAll, type Attack, type Cut, type Job, type ManualFault } from '../sim';
 import { el } from './svg';
 import { clamp01, easeInOut, easeOutBack, iso, ISO_X, ISO_Y, lerp, U } from './project';
 import { HexCard } from './hexCard';
 import logoDark from './logo/logo-dark.png';
 import logoLight from './logo/logo-light.png';
-import { drawDoor, drawEar, drawHandset, drawHush, drawMoon, drawPadlock, drawPage, drawPause, drawPing, drawPlay, drawPipe, drawQuestion, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawSun, drawSwarm, drawTag, drawTrace } from './icons';
+import { drawDoor, drawEar, drawHandset, drawHush, drawMoon, drawPadlock, drawPage, drawPause, drawPing, drawPlay, drawPipe, drawQuestion, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawSun, drawSwarm, drawTag, drawThermometer, drawTrace } from './icons';
 import { Menu } from './menus';
 import { NetworkScene, type Camera } from './NetworkScene';
 import { screenAt } from './readout';
@@ -27,10 +27,10 @@ const LINGER = 1.4;
 const BACK_GRACE = 1;
 
 /** What the next run is like, set from the Setup menu between runs: changing it mid-run would rewrite what happened. */
-type Setting = 'https' | 'big' | 'slow' | 'vpn' | 'arp' | 'dhcp' | 'cold' | 'thin' | 'quiet';
+type Setting = 'https' | 'big' | 'slow' | 'vpn' | 'arp' | 'dhcp' | 'cold' | 'thin' | 'smart' | 'quiet';
 type Features = Record<Setting, boolean>;
-const SETTINGS: Setting[] = ['https', 'big', 'slow', 'vpn', 'arp', 'dhcp', 'cold', 'thin', 'quiet'];
-const features: Features = { https: false, big: false, slow: false, vpn: false, arp: false, dhcp: false, cold: false, thin: false, quiet: false };
+const SETTINGS: Setting[] = ['https', 'big', 'slow', 'vpn', 'arp', 'dhcp', 'cold', 'thin', 'smart', 'quiet'];
+const features: Features = { https: false, big: false, slow: false, vpn: false, arp: false, dhcp: false, cold: false, thin: false, smart: false, quiet: false };
 /** The line the spyglass is on, if any. */
 let spyLine: string | null = null;
 /** The visual time it was put there: it can only read what passes from then on. */
@@ -74,6 +74,8 @@ let revisit = false;
 let knownIp: string | undefined;
 /** What a card on the table asks for: the page, or the photo. */
 const isProbe = (w: Job): boolean => w === 'ping' || w === 'trace';
+/** This run is the sensor taking a reading, not a card on a device. */
+let reading = false;
 /** The card picked up last. */
 let carried: Job = 'page';
 const pageSite = (): 'info.cern.ch' | 'example.com' => (features.big ? 'info.cern.ch' : 'example.com');
@@ -101,21 +103,23 @@ const attacks = new Set<Attack>();
 function simulate(): void {
   const scenario = fetchWebPage({
     // A ping or a trace goes to example.com's server, whatever page the Setup would fetch.
-    site: isProbe(carried) ? 'example.com' : siteName(),
-    ...(carried === 'ping' ? { probe: 'ping' as const } : carried === 'trace' ? { probe: 'traceroute' as const } : {}),
+    site: reading || isProbe(carried) ? 'example.com' : siteName(),
+    ...(reading ? { reading } : carried === 'ping' ? { probe: 'ping' as const } : carried === 'trace' ? { probe: 'traceroute' as const } : {}),
     revisit,
     ...(knownIp ? { knownIp } : {}),
     slow: features.slow,
-    vpn: features.vpn,
-    https: features.https,
+    // A reading is the sensor's own connection: what the Setup does for a browser's is not part of it.
+    vpn: features.vpn && !reading,
+    https: features.https && !reading,
     from: client,
     warmArp,
     joins: joined,
     ...(attacks.size ? { attacks: [...attacks] } : {}),
-    dhcp: features.dhcp,
-    cold: features.cold,
+    dhcp: features.dhcp && !reading,
+    cold: features.cold && !reading,
     thin: features.thin,
-    call: carried === 'call',
+    smart: features.smart,
+    call: carried === 'call' && !reading,
     ...(stretch > 0 ? { wanDelay: wanDelayFor(stretch) } : {}),
     ...(noise > 0 ? { noise } : {}),
   });
@@ -202,6 +206,10 @@ function preview(): void {
   remember();
   joined = [];
   idleV = -1;
+  if (reading) {
+    reading = false;
+    client = 'laptop';
+  }
   recall();
   simulate();
   scene.setStory(story, tl);
@@ -216,8 +224,8 @@ function showFeatures(): void {
   }
   for (const [badges, skip] of [[cardBadges, null], [photoBadges, 'big'], [callBadges, 'big']] as const) {
     badges.replaceChildren();
-    // Quiet devices change nothing about the run, so the card has nothing to say about it.
-    SETUP.filter((s) => features[s.id] && s.id !== skip && s.id !== 'quiet').forEach((s, i) => {
+    // Quiet devices and a smart home change nothing about the card's run, so it has nothing to say about them.
+    SETUP.filter((s) => features[s.id] && s.id !== skip && s.id !== 'quiet' && s.id !== 'smart').forEach((s, i) => {
       const g = el('g', { transform: `translate(${72 - i * 30} -24)` }, badges);
       el('circle', { r: 13, class: 'card-badge' }, g);
       s.draw(el('g', { transform: `scale(${(14 / s.span).toFixed(3)})` }, g));
@@ -324,6 +332,7 @@ const SETUP: { id: Setting; label: string; hint: string; draw: (g: SVGGElement) 
   { id: 'dhcp', label: 'New on the network', hint: 'Asks for an address first', draw: drawTag, span: 34 },
   { id: 'cold', label: "DNS doesn't know it yet", hint: 'Must ask around for the name', draw: drawSnowflake, span: 34 },
   { id: 'thin', label: 'Slow home line', hint: 'Big downloads lose packets', draw: drawPipe, span: 34 },
+  { id: 'smart', label: 'Smart home', hint: 'A sensor that reports to your apps', draw: drawThermometer, span: 34 },
   { id: 'quiet', label: 'Quiet devices', hint: 'No speech bubbles', draw: drawHush, span: 34 },
 ];
 function setSetting(id: Setting, on: boolean): void {
@@ -348,7 +357,7 @@ function showSetup(): void {
 
 const CHAPTERS: Record<Chapter, string> = { address: 'Get an address', arp: 'Find the router', dns: 'Find the address', hello: 'Say hello', secret: 'Check and agree', page: 'Get the page', call: 'Make a call', ping: 'Ping the server', trace: 'Trace the path', traffic: 'All at once', attack: 'Attack' };
 /** Chapter number in this run (a second visit skips the address, HTTPS adds the secret). */
-const chapterName = (ch: Chapter): string => (ch === 'page' && story.image ? 'Get the photo' : CHAPTERS[ch]);
+const chapterName = (ch: Chapter): string => (ch === 'page' && story.reading ? 'Send the reading' : ch === 'page' && story.image ? 'Get the photo' : CHAPTERS[ch]);
 
 function chapterNumber(ch: Chapter): number {
   const order: Chapter[] = [];
@@ -471,13 +480,14 @@ const ACTIONS: Record<Job, { label: string; draw: (g: SVGGElement) => void }> = 
   trace: { label: 'Trace', draw: (g) => drawTrace(el('g', { transform: 'scale(0.42)' }, g)) },
 };
 // A device with nothing to do has a button of its own during a run, opening what it can do.
-const deviceActions = story!.devices.filter((d) => d.actions.length).map(({ id: device, actions }) => {
+const canStart = story!.devices.filter((d) => d.actions.some((a) => a !== 'reading'));
+const deviceActions = canStart.map(({ id: device, actions }) => {
   const menu = new Menu<Job>(
     root,
     root,
     '+ action',
     `Add an action on the ${device}`,
-    actions.map((id) => ({ id, label: ACTIONS[id].label, span: 16, draw: (g) => ACTIONS[id].draw(el('g', { class: 'site-card-globe' }, g)) })),
+    actions.filter((a) => a !== 'reading').map((id) => ({ id, label: ACTIONS[id].label, span: 16, draw: (g) => ACTIONS[id].draw(el('g', { class: 'site-card-globe' }, g)) })),
     (id) => {
       menu.setOpen(false);
       joinIn(device, id);
@@ -488,14 +498,14 @@ const deviceActions = story!.devices.filter((d) => d.actions.length).map(({ id: 
   return { device, menu };
 });
 /** A device can take on an action during a run while it has nothing to do. */
-const canAdd = (device: string): boolean => device !== client && !joined.some((j) => j.device === device);
+const canAdd = (device: string): boolean => !reading && device !== client && !joined.some((j) => j.device === device);
 // Several devices out of view share one button, which asks which: a row of them would be more than a phone can take.
 const moreDevices = new Menu<string>(
   root,
   root,
   '+ device',
   'Add an action on a device out of view',
-  story!.devices.filter((d) => d.actions.length).map((d) => ({ id: d.id, label: d.label })),
+  canStart.map((d) => ({ id: d.id, label: d.label })),
   (id) => {
     moreDevices.setOpen(false);
     const { menu } = deviceActions.find((a) => a.device === id)!;
@@ -507,6 +517,13 @@ const moreDevices = new Menu<string>(
 );
 moreDevices.mark('action-menu');
 moreDevices.button.hidden = true;
+// Under the sensor between runs: what is sent is whatever the sensor reads right now.
+const readingBtn = document.createElement('button');
+readingBtn.className = 'action-menu';
+readingBtn.textContent = 'Take reading';
+readingBtn.hidden = true;
+readingBtn.addEventListener('click', takeReading);
+root.appendChild(readingBtn);
 showSetup();
 const ATTACK_LINKS: Record<Attack, string[]> = { listen: [], flood: ['bot1-link', 'bot2-link', 'bot3-link'], scan: ['scanner-link'] };
 const attackMenu = new Menu<Attack>(
@@ -643,6 +660,16 @@ controls.appendChild(Object.assign(document.createElement('span'), { className: 
 controls.appendChild(aboutBtn);
 root.appendChild(controls);
 
+/** The sensor takes a reading and publishes it: to the broker, and from there to every app listening. */
+function takeReading(): void {
+  if (mode !== 'idle') return;
+  reading = true;
+  client = story.devices.find((d) => d.actions.includes('reading'))!.id;
+  camFree = false;
+  sound.play('pop');
+  beginRun();
+}
+
 /** This device starts on this job now: what has been shown stays, and from the next step on everything runs at once. */
 function joinIn(device: string, job: Job): void {
   const seen = seenSoFar(tl, v);
@@ -764,7 +791,10 @@ function dropCard(): void {
   if (mode !== 'drag') return;
   CARDS[carried].classList.remove('held', 'over');
   const drop = dropTarget();
-  if (drop) client = drop.id;
+  if (drop) {
+    client = drop.id;
+    reading = false;
+  }
   anim = { from: { ...cardPos }, to: drop ?? { ...HOMES[carried] }, t: 0, dur: drop ? 0.35 : 0.5 };
   mode = drop ? 'drop' : 'spring';
   if (drop) {
@@ -995,6 +1025,7 @@ function reset(): void {
   decided = {};
   known.clear();
   client = 'laptop';
+  reading = false;
   cardPos = { ...home };
   pickUp(null);
   // Everything goes back at once: one simulation and one sound, not one of each per thing undone.
@@ -1042,8 +1073,9 @@ function beginRun(): void {
   knocks.clear();
   runSeed = 1 + Math.floor(Math.random() * 1e6);
   decided = {};
-  cuts = [...cutLines].map((link) => ({ link, from: 0 }));
-  warmArp = cutLines.size > 0;
+  // The sensor and the apps were connected long before anyone cut anything.
+  cuts = [...cutLines].map((link) => ({ link, from: reading ? READING_AT : 0 }));
+  warmArp = !reading && cutLines.size > 0;
   recall();
   joined = [];
   // Every run starts from your own devices and finds the network again.
@@ -1065,12 +1097,13 @@ function beginRun(): void {
 /** The run is over: the device remembers the address until its TTL runs out, and the card floats back. */
 function endRun(): void {
   const ip = story.remembered ?? story.dnsAnswer;
-  if (ip && !revisit) known.set(client, { site: story.site, ip, until: performance.now() + (story.dnsTtl ?? 0) * 1000 });
+  if (ip && !revisit && !reading) known.set(client, { site: story.site, ip, until: performance.now() + (story.dnsTtl ?? 0) * 1000 });
   // A call over: hear what came through, holes and all.
   if (story.voice) sound.playVoice(story.voice.heard.map((b) => (b ? ulawDecodeAll(b) : null)), 160);
   idleV = tl.total;
   scene.setRevealed(tl.reveals.keys());
-  const from = scene.dropPoints().find((d) => d.id === client) ?? home;
+  // No card went in for a reading, so none comes out of the sensor: it was on the table all along.
+  const from = (reading ? null : scene.dropPoints().find((d) => d.id === client)) ?? (reading ? { ...HOMES[carried] } : home);
   anim = { from, to: { ...HOMES[carried] }, t: 0, dur: 0.8 };
   mode = 'return';
   camFree = false;
@@ -1184,6 +1217,12 @@ function frame(now: number): void {
   moreDevices.button.hidden = !shared || picking;
   moreDevices.button.style.transform = pinned;
   for (const { device } of deviceActions) moreDevices.setShown(device, outOfView.some((a) => a.device === device));
+  const reader = mode === 'idle' ? story.devices.find((d) => d.actions.includes('reading')) : undefined;
+  readingBtn.hidden = !reader;
+  if (reader) {
+    const spot = scene.actionSpot(reader.id);
+    readingBtn.style.transform = `translate(${Math.max(ACTION_W / 2 + 8, Math.min(window.innerWidth - ACTION_W / 2 - 8, spot.x)).toFixed(0)}px, ${Math.min(spot.y, lowest).toFixed(0)}px)`;
+  }
 
   const shown = mode === 'play' ? v : idleV;
   const heard = tl.attackReadouts.find((x) => x.device === story.listener);
@@ -1293,7 +1332,8 @@ if (import.meta.env.DEV) {
         return tl.reactions;
       },
       /** Start a run straight away with these things on the table (for screenshots). */
-      start(f: Partial<Features> & { photo?: boolean; call?: boolean; ping?: boolean; trace?: boolean; spy?: string; cut?: string | string[]; slow?: boolean; vpn?: boolean; again?: boolean; from?: string; noise?: number }): void {
+      start(f: Partial<Features> & { photo?: boolean; call?: boolean; ping?: boolean; trace?: boolean; spy?: string; cut?: string | string[]; slow?: boolean; vpn?: boolean; again?: boolean; from?: string; noise?: number; reading?: boolean }): void {
+        reading = false;
         client = f.from ?? 'laptop';
         if (f.noise !== undefined) noise = f.noise;
         carried = f.call ? 'call' : f.ping ? 'ping' : f.trace ? 'trace' : f.photo ? 'photo' : 'page';
@@ -1301,6 +1341,10 @@ if (import.meta.env.DEV) {
         for (const l of [...cutLines]) clearLine(l);
         for (const l of [f.cut ?? []].flat()) toggleCut(l);
         setSpyLine(f.spy ?? null);
+        if (f.reading) {
+          reading = true;
+          client = 'sensor';
+        }
         if (f.again) known.set(client, { site: siteName(), ip: '', until: Infinity });
         else known.delete(client);
         beginRun();

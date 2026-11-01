@@ -2,11 +2,13 @@ import type { Ip4 } from '../bytes/addr';
 import { concat, setU16, toAscii } from '../bytes/bytes';
 import type { AppSpec } from '../model';
 import { buildDnsQuery, buildDnsResponse, DNS_RCODE_NXDOMAIN, DNS_RCODE_OK, DNS_RCODE_SERVFAIL, DNS_TYPE_A, dnsAddresses, dnsReferral, dnsSummary, parseDns } from '../proto/dns';
+import { buildMqttConnack, buildMqttConnect, buildMqttPublish, buildMqttSuback, buildMqttSubscribe, MQTT_CONNACK, MQTT_CONNECT, MQTT_PORT, MQTT_PUBLISH, MQTT_SUBACK, MQTT_SUBSCRIBE, takeMqtt } from '../proto/mqtt';
 import { buildRtp, parseRtp, RTP_PORT, RTP_PT_PCMU, RTP_SAMPLES_PER_PACKET, RTP_VERSION } from '../proto/rtp';
 import { buildIcmp, ICMP_DEST_UNREACHABLE, ICMP_ECHO, ICMP_ECHO_REPLY, ICMP_HEADER_LEN, ICMP_TIME_EXCEEDED, pingData, pingTimestamp } from '../proto/icmp';
 import { IPPROTO_TCP, IPPROTO_UDP } from '../proto/ipv4';
 import { buildTcp, TCP_SYN } from '../proto/tcp';
 import type { Host, IcmpHandler } from './Host';
+import type { TcpConnection } from './tcp';
 import { httpsClient } from './https';
 
 const DNS_TIMEOUT = 5; // glibc resolv.conf default "timeout:5"
@@ -32,6 +34,8 @@ type TracerouteSpec = Extract<AppSpec, { kind: 'traceroute' }>;
 type DnsServerSpec = Extract<AppSpec, { kind: 'dns-server' }>;
 type DnsAuthoritySpec = Extract<AppSpec, { kind: 'dns-authority' }>;
 type HttpServerSpec = Extract<AppSpec, { kind: 'http-server' }>;
+type MqttClientSpec = Extract<AppSpec, { kind: 'mqtt-client' }>;
+type MqttBrokerSpec = Extract<AppSpec, { kind: 'mqtt-broker' }>;
 type DnsRecordSet = DnsServerSpec['records'][string];
 
 /** Is this a complete HTTP/1.1 message? Handles Content-Length and chunked bodies. */
@@ -172,6 +176,94 @@ export function startBrowser(host: Host, spec: BrowserSpec, mss: number, leased?
     },
     (reason) => sim.emit({ type: 'app', deviceId: host.id, app: 'browser', action: 'error', info: { reason } }),
   );
+}
+
+/** One MQTT message onto a connection, as a browser puts a request onto one. */
+function mqttSend(host: Host, conn: TcpConnection, bytes: Uint8Array, label: string): string {
+  const msg = host.sim.newPacket(host.id, 'stream', `${label} (application bytes)`);
+  const pduId = host.sim.pdu(msg.id, bytes, 'mqtt');
+  host.sim.emit({ type: 'encapsulate', deviceId: host.id, packetId: msg.id, layer: 5, protocol: 'mqtt', pduId });
+  conn.write(bytes, label);
+  return pduId;
+}
+
+/** How long the client promises never to go quiet for. Nothing here runs long enough for a PINGREQ to come due. */
+const MQTT_KEEP_ALIVE = 60;
+
+/**
+ * An MQTT client: connects to the broker and stays connected, which is how a device behind NAT can be reached at all: what
+ * the broker sends comes back along a connection the device opened itself. Subscribes once it is in, or publishes a reading
+ * when the time comes.
+ */
+export function startMqttClient(host: Host, spec: MqttClientSpec, mss: number): void {
+  const sim = host.sim;
+  sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-client', action: 'start', info: { to: spec.broker } });
+  lookup(
+    host,
+    spec.broker,
+    spec.resolver,
+    (ips) => {
+      let received: Uint8Array = new Uint8Array(0);
+      host.tcpConnect(ips[0]!, MQTT_PORT, { mss, wscale: 7, app: 'mqtt' }, {
+        onConnected(conn) {
+          mqttSend(host, conn, buildMqttConnect(spec.clientId, MQTT_KEEP_ALIVE), 'MQTT CONNECT');
+        },
+        onData(conn, data) {
+          const { messages, rest } = takeMqtt(concat(received, data));
+          received = rest;
+          for (const m of messages) {
+            if (m.type === MQTT_CONNACK && spec.subscribe) mqttSend(host, conn, buildMqttSubscribe(1, spec.subscribe), 'MQTT SUBSCRIBE');
+            if (m.type === MQTT_CONNACK && spec.publish) {
+              const { topic, at } = spec.publish;
+              sim.after(Math.max(0, at - sim.now), () => {
+                // A room in a home, in tenths of a degree: 18.0 to 23.9.
+                const payload = ((180 + (host.random32() >>> 0) % 60) / 10).toFixed(1);
+                const pduId = mqttSend(host, conn, buildMqttPublish(topic, payload), 'MQTT PUBLISH');
+                sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-client', action: 'mqtt-publish', pduId, info: { topic, value: payload } });
+              });
+            }
+            if (m.type === MQTT_SUBACK) sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-client', action: 'mqtt-subscribed', info: { topic: spec.subscribe ?? '' } });
+            if (m.type === MQTT_PUBLISH) sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-client', action: 'mqtt-received', info: { topic: m.topic, value: m.payload } });
+          }
+        },
+        onError(_conn, reason) {
+          sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-client', action: 'error', info: { reason } });
+        },
+      });
+    },
+    (reason) => sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-client', action: 'error', info: { reason } }),
+  );
+}
+
+/** An MQTT broker on its well-known port. A topic is matched as it is written: there are no wildcards here. */
+export function startMqttBroker(host: Host, spec: MqttBrokerSpec, mss: number): void {
+  const sim = host.sim;
+  const subscribed: { conn: TcpConnection; topic: string }[] = [];
+  host.tcpListen(MQTT_PORT, { mss, wscale: 10, app: 'mqtt' }, (conn) => {
+    let received: Uint8Array = new Uint8Array(0);
+    conn.handlers = {
+      onData(c, data) {
+        const { messages, rest } = takeMqtt(concat(received, data));
+        received = rest;
+        for (const m of messages) {
+          if (m.type === MQTT_CONNECT) mqttSend(host, c, buildMqttConnack(), 'MQTT CONNACK');
+          if (m.type === MQTT_SUBSCRIBE) {
+            subscribed.push({ conn: c, topic: m.topic });
+            mqttSend(host, c, buildMqttSuback(m.packetId), 'MQTT SUBACK');
+          }
+          if (m.type === MQTT_PUBLISH) {
+            sim.after(spec.processing, () => {
+              for (const s of subscribed) {
+                if (s.topic !== m.topic) continue;
+                const pduId = mqttSend(host, s.conn, buildMqttPublish(m.topic, m.payload), 'MQTT PUBLISH');
+                sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-broker', action: 'mqtt-forward', pduId, info: { topic: m.topic, value: m.payload } });
+              }
+            });
+          }
+        }
+      },
+    };
+  });
 }
 
 const round = (ms: number): number => Math.round(ms * 1000) / 1000;

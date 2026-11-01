@@ -9,8 +9,8 @@ import { COLOR } from './NetworkScene';
  */
 
 /** The colour of each protocol's bytes, by the piece of the packet it is drawn as. */
-const PROTO_COLOR: Record<string, string> = { ethernet: COLOR.eth, wifi: COLOR.wifi, arp: COLOR.app, ipv4: COLOR.ip, udp: COLOR.udp, tcp: COLOR.tcp, dns: COLOR.app, http: COLOR.app, tls: COLOR.app, wireguard: COLOR.vpn };
-const PROTO_NAME: Record<string, string> = { ethernet: 'Ethernet', wifi: 'Wi-Fi', arp: 'ARP', ipv4: 'IP', udp: 'UDP', tcp: 'TCP', dns: 'DNS', http: 'HTTP', tls: 'TLS', wireguard: 'WireGuard' };
+const PROTO_COLOR: Record<string, string> = { ethernet: COLOR.eth, wifi: COLOR.wifi, arp: COLOR.app, ipv4: COLOR.ip, udp: COLOR.udp, tcp: COLOR.tcp, dns: COLOR.app, mqtt: COLOR.app, http: COLOR.app, tls: COLOR.app, wireguard: COLOR.vpn };
+const PROTO_NAME: Record<string, string> = { ethernet: 'Ethernet', wifi: 'Wi-Fi', arp: 'ARP', ipv4: 'IP', udp: 'UDP', tcp: 'TCP', dns: 'DNS', mqtt: 'MQTT', http: 'HTTP', tls: 'TLS', wireguard: 'WireGuard' };
 const PER_ROW = 16;
 
 /** Which layer each byte belongs to: the innermost one that spans it. */

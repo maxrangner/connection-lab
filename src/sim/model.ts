@@ -3,8 +3,10 @@ import type { TlsSession } from './proto/tls';
 
 /** What a card asks a device to do. */
 export type Job = 'page' | 'photo' | 'call' | 'ping' | 'trace';
+/** What can be started on a device: a job, or a sensor taking a reading. */
+export type Action = Job | 'reading';
 
-export type DeviceKind = 'laptop' | 'phone' | 'home-router' | 'router' | 'dns-resolver' | 'web-server' | 'vpn-server' | 'root-server' | 'tld-server' | 'auth-server' | 'peer' | 'stranger' | 'bot' | 'scanner';
+export type DeviceKind = 'laptop' | 'phone' | 'home-router' | 'router' | 'dns-resolver' | 'web-server' | 'vpn-server' | 'root-server' | 'tld-server' | 'auth-server' | 'peer' | 'stranger' | 'bot' | 'scanner' | 'sensor' | 'mqtt-broker';
 
 export interface IfaceSpec {
   /** Globally unique, e.g. "laptop.eth0". */
@@ -96,6 +98,13 @@ export type AppSpec =
   | { kind: 'port-scan'; to: Ip4; ports: number[]; gap: number }
   /** Something else the server runs, which accepts a connection on this port. */
   | { kind: 'tcp-service'; port: number }
+  /**
+   * An MQTT client: it looks the broker up, connects and stays connected. An app subscribes to a topic; a sensor publishes
+   * one reading to its topic at the time given.
+   */
+  | { kind: 'mqtt-client'; clientId: string; broker: string; resolver: Ip4; subscribe?: string; publish?: { topic: string; at: number } }
+  /** An MQTT broker: it hands a copy of what is published to each client subscribed to that topic. */
+  | { kind: 'mqtt-broker'; processing: number }
   | {
       kind: 'dns-server';
       /** What the resolver already has in its cache. */
@@ -150,7 +159,7 @@ export interface DeviceSpec {
   dhcp?: DhcpServerSpec;
   apps: AppSpec[];
   /** What the viewer can start on this device. Only the viewer's own devices have any. */
-  actions?: Job[];
+  actions?: Action[];
   /** Its colour, once several devices' packets are on the table at once. */
   color?: string;
   /** Map position for the UI, in scene units. */
@@ -179,6 +188,11 @@ export interface Scenario {
   startDevice: string;
   /** Other devices whose jobs start during the run, each at its own time, so they all share the home router at once. */
   companions?: { device: string; at: number }[];
+  /**
+   * What happens before this time is how things stand when the run starts: it really happens, but it is not told. A smart
+   * home's apps connected long ago.
+   */
+  quietUntil?: number;
   /** Attackers and when each starts. Each is a job of its own, numbered after the first and before the companions. */
   attackers?: { device: string; at: number }[];
 }

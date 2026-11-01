@@ -58,6 +58,10 @@ export type AppAction =
   | 'http-response-sent'
   | 'http-response-received'
   | 'rtp-received' // a voice packet came in order: it is played
+  | 'mqtt-subscribed' // an app is told it will hear of a topic from now on
+  | 'mqtt-publish' // a client sends a message to a topic
+  | 'mqtt-forward' // the broker hands a copy to a subscriber
+  | 'mqtt-received' // an app got a message for its topic
   | 'rtp-gap' // a sequence number was skipped: the packet is lost and nothing asks for it again; silence is played instead
   | 'rtp-late' // a packet from before what has already been played, or one seen already: thrown away
   | 'call-done' // both clips are through: the call hangs up
@@ -76,7 +80,7 @@ export type AppAction =
 
 /** Everything that can happen, in the order it happens. Narration text is derived in the UI. */
 export type SimEventPayload =
-  | { type: 'app'; deviceId: string; app: 'browser' | 'dns-client' | 'dns-server' | 'dns-authority' | 'dhcp-client' | 'dhcp-server' | 'http-server' | 'voice-call' | 'voice-peer' | 'ping' | 'traceroute' | 'wifi-listener' | 'flood' | 'port-scan'; action: AppAction; pduId?: string; info?: Record<string, string | number | string[]> }
+  | { type: 'app'; deviceId: string; app: 'browser' | 'mqtt-client' | 'mqtt-broker' | 'dns-client' | 'dns-server' | 'dns-authority' | 'dhcp-client' | 'dhcp-server' | 'http-server' | 'voice-call' | 'voice-peer' | 'ping' | 'traceroute' | 'wifi-listener' | 'flood' | 'port-scan'; action: AppAction; pduId?: string; info?: Record<string, string | number | string[]> }
   | { type: 'encapsulate'; deviceId: string; packetId: string; layer: LayerNum; protocol: Protocol; pduId: string }
   | { type: 'decapsulate'; deviceId: string; packetId: string; layer: LayerNum; protocol: Protocol; pduId: string }
   | { type: 'arp:miss'; deviceId: string; ip: Ip4; packetId: string }

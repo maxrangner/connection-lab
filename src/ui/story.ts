@@ -9,8 +9,8 @@ import {
   TCP_SYN,
   TLS_ALERT,
   TLS_APPLICATION_DATA,
+  type Action,
   type AppAction,
-  type Job,
   type Field,
   type LayerPdu,
   type OpenedRecord,
@@ -67,7 +67,7 @@ export interface Row {
   value: string;
 }
 export type Details = Partial<Record<PartKey, Row[]>>;
-export type Message = { kind: 'dns-answer'; name: string } | { kind: 'http-request'; path: string } | { kind: 'http-response' };
+export type Message = { kind: 'dns-answer'; name: string } | { kind: 'http-request'; path: string } | { kind: 'http-response' } | { kind: 'reading' };
 
 export type Step = (
   | { kind: 'appear'; device: string }
@@ -201,6 +201,10 @@ export interface Story {
   clients: string[];
   /** The devices that had an action added during the run, in the order of their job numbers. */
   joiners: string[];
+  /** A sensor's reading, published to whoever listens, rather than one device's job. */
+  reading: boolean;
+  /** The sim time the story starts at: what came before is how things stood. */
+  startsAt: number;
   /** The attackers sending packets this run. Whatever they send runs alongside the rest from the start. */
   attackers: string[];
   /** The stranger by the Wi-Fi, who only hears, and what it heard. */
@@ -230,7 +234,7 @@ export interface Story {
   noise: number;
   /** Which device each address belongs to. */
   names: Record<string, string>;
-  devices: { id: string; label: string; kind: string; actions: Job[]; color?: string }[];
+  devices: { id: string; label: string; kind: string; actions: Action[]; color?: string }[];
   /** Cables, with their one-way delay in seconds, and the frames a port's buffer holds when it is finite. */
   links: { id: string; a: string; b: string; delay: number; medium: 'cable' | 'wifi'; queue?: number }[];
   trips: Trip[];
@@ -347,6 +351,9 @@ function seenOn(pdu: PduSnapshot | undefined, p: PacketInfo): Seen | undefined {
   const rtp = layer(pdu, 'rtp');
   if (rtp) return { ...base, lines: [`voice, ${field(rtp, 'rtp.payload')}`], kind: 'open' };
   if (p.kind === 'flood') return { ...base, lines: ['junk'], kind: 'open' };
+  // Plain MQTT: the topic and the reading are right there in the bytes.
+  const mqtt = layer(pdu, 'mqtt');
+  if (mqtt) return { ...base, lines: [field(mqtt, 'mqtt.topic'), readingOf(mqtt)], kind: 'open' };
   const icmp = layer(pdu, 'icmp');
   if (icmp) return { ...base, lines: [icmpCardLabel(icmp.summary)], kind: 'open' };
   const tls = layer(pdu, 'tls');
@@ -363,6 +370,9 @@ function seenOn(pdu: PduSnapshot | undefined, p: PacketInfo): Seen | undefined {
   if (tcp && tcp.payloadEnd > tcp.headerEnd) return { ...base, lines: readable(pdu.bytes.subarray(tcp.headerEnd, tcp.payloadEnd)), kind: 'open' };
   return { ...base, lines: tcp ? [flagNames(p.tcp?.flags ?? 0).replace(/, /g, '-')] : [], kind: 'empty' };
 }
+
+/** A published reading as a person would say it. */
+const readingOf = (mqtt: LayerPdu): string => `${field(mqtt, 'mqtt.payload')} °C`;
 
 const rowsOf = (fields: Field[]): Row[] =>
   fields.filter((f) => f.importance === 'key').flatMap((f) => [{ name: f.name, value: clip(f.display, 30) }, ...rowsOf(f.children ?? [])]);
@@ -386,7 +396,7 @@ function detailsOf(pdu: PduSnapshot | undefined): Details {
   const l4 = layer(pdu, 'tcp') ?? layer(pdu, 'udp');
   if (l4) d.l4 = rowsOf(l4.fields);
   // An ICMP message has no transport: like an ARP message, the whole thing is the card.
-  const app = layer(pdu, 'http') ?? layer(pdu, 'dns') ?? layer(pdu, 'dhcp') ?? layer(pdu, 'rtp') ?? layer(pdu, 'tls') ?? layer(pdu, 'arp') ?? layer(pdu, 'icmp');
+  const app = layer(pdu, 'http') ?? layer(pdu, 'dns') ?? layer(pdu, 'dhcp') ?? layer(pdu, 'rtp') ?? layer(pdu, 'mqtt') ?? layer(pdu, 'tls') ?? layer(pdu, 'arp') ?? layer(pdu, 'icmp');
   if (app) d.card = rowsOf(app.fields);
   return d;
 }
@@ -399,6 +409,7 @@ function httpMessage(line: string): Message | undefined {
 }
 
 function messageOf(app: LayerPdu | undefined): Message | undefined {
+  if (app?.protocol === 'mqtt') return { kind: 'reading' };
   if (app?.protocol === 'http') return httpMessage(app.summary.replace(/^HTTP /, ''));
   // A referral is a server's answer too: "not me, ask these"; it looked the name up to say so.
   if (app?.protocol === 'dns' && /^DNS (response|referral)/.test(app.summary)) return { kind: 'dns-answer', name: field(app, 'dns.question').split(' ')[0]! };
@@ -437,7 +448,7 @@ function chosen(r: SimResult, arp: boolean): { packets: PacketInfo[]; hellos: Se
     }
     if (hello || (flags === TCP_ACK && !answersFin(r, p))) packets.push(p);
   }
-  return { packets, hellos };
+  return { packets: packets.filter((p) => p.createdAt >= (r.scenario.quietUntil ?? 0)), hellos };
 }
 
 /** The device at the other end of a link from `device`. */
@@ -589,9 +600,9 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
   const ip = layer(packet, 'ipv4');
   const l4 = layer(packet, 'tcp') ?? layer(packet, 'udp');
   if (!arp && (!ip || (!l4 && !icmp))) return null;
-  const app = layer(packet, 'http') ?? layer(packet, 'dns') ?? layer(packet, 'dhcp') ?? layer(packet, 'rtp');
+  const app = layer(packet, 'http') ?? layer(packet, 'dns') ?? layer(packet, 'dhcp') ?? layer(packet, 'rtp') ?? layer(packet, 'mqtt');
   const dataBytes = arp ? arp.end - arp.start : icmp ? icmp.end - icmp.start : l4!.payloadEnd - l4!.headerEnd;
-  const appCard = (a: LayerPdu): string => (a.protocol === 'http' ? cardLabel(a.summary) : a.protocol === 'dhcp' ? dhcpCardLabel(a.summary) : a.protocol === 'rtp' ? 'voice' : dnsCardLabel(a.summary));
+  const appCard = (a: LayerPdu): string => (a.protocol === 'http' ? cardLabel(a.summary) : a.protocol === 'dhcp' ? dhcpCardLabel(a.summary) : a.protocol === 'rtp' ? 'voice' : a.protocol === 'mqtt' ? readingOf(a) : dnsCardLabel(a.summary));
   // What the device is running: ping numbers its cards out of its count, traceroute's probes say their TTL.
   const apps = r.scenario.devices.flatMap((d) => d.apps);
   const probeApp = apps.find((a) => a.kind === 'ping');
@@ -686,6 +697,9 @@ function imageOf(r: SimResult, job: number): string | null {
 
 /** What the client's browser got (another device fetching at the same time does not count). */
 function pageTitle(r: SimResult, client: string): string | null {
+  // An app shows the last thing it was told.
+  const told = r.events.find((e) => e.type === 'app' && e.action === 'mqtt-received' && e.deviceId === client);
+  if (told?.type === 'app') return `${told.info?.value} °C`;
   const got = r.events.find((e) => e.type === 'app' && e.action === 'http-response-received' && e.deviceId === client);
   const pdu = got && 'pduId' in got && got.pduId ? r.pdus.get(got.pduId) : undefined;
   if (!pdu) return null;
@@ -761,7 +775,7 @@ function heardOf(r: SimResult): Heard[] {
     const pdu = r.pdus.get(e.pduId);
     const p = pdu && r.packets.get(pdu.packetId);
     const seen = p && seenOn(pdu, p);
-    if (seen && !heard.has(p.id)) heard.set(p.id, { packetId: p.id, seen });
+    if (seen && p.createdAt >= (r.scenario.quietUntil ?? 0) && !heard.has(p.id)) heard.set(p.id, { packetId: p.id, seen });
   }
   return [...heard.values()];
 }
@@ -831,6 +845,8 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
     client,
     clients,
     joiners,
+    reading: r.scenario.quietUntil !== undefined,
+    startsAt: r.scenario.quietUntil ?? 0,
     attackers,
     ...(listener ? { listener } : {}),
     heard: heardOf(r),
