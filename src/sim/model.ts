@@ -151,6 +151,8 @@ export interface DeviceSpec {
   apps: AppSpec[];
   /** What the viewer can start on this device. Only the viewer's own devices have any. */
   actions?: Job[];
+  /** Its colour, once several devices' packets are on the table at once. */
+  color?: string;
   /** Map position for the UI, in scene units. */
   layout: { x: number; y: number };
   /** Send everything through a WireGuard tunnel to this server, using this inner address. */

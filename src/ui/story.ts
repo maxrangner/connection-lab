@@ -197,7 +197,7 @@ export interface Story {
   site: string;
   /** The device the page is opened on (laptop or phone). */
   client: string;
-  /** Every device with a job this run, in the order of their job numbers: the client, the attackers, the one that joined in. */
+  /** Every device with a job this run, in the order of their job numbers: the client, the attackers, those that joined in. */
   clients: string[];
   /** The devices that had an action added during the run, in the order of their job numbers. */
   joiners: string[];
@@ -230,7 +230,7 @@ export interface Story {
   noise: number;
   /** Which device each address belongs to. */
   names: Record<string, string>;
-  devices: { id: string; label: string; kind: string; actions: Job[] }[];
+  devices: { id: string; label: string; kind: string; actions: Job[]; color?: string }[];
   /** Cables, with their one-way delay in seconds, and the frames a port's buffer holds when it is finite. */
   links: { id: string; a: string; b: string; delay: number; medium: 'cable' | 'wifi'; queue?: number }[];
   trips: Trip[];
@@ -818,7 +818,7 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
   const wifiIfaces = new Set(r.scenario.devices.flatMap((d) => d.ifaces.filter((i) => i.wifi).map((i) => i.id)));
   const ifaceDevice = new Map(r.scenario.devices.flatMap((d) => d.ifaces.map((i) => [i.id, d.id] as const)));
   return {
-    devices: r.scenario.devices.map((d) => ({ id: d.id, label: d.label, kind: d.kind, actions: d.actions ?? [] })),
+    devices: r.scenario.devices.map((d) => ({ id: d.id, label: d.label, kind: d.kind, actions: d.actions ?? [], ...(d.color ? { color: d.color } : {}) })),
     links: r.scenario.links.map((l) => ({
       id: l.id,
       a: ifaceDevice.get(l.a) ?? l.a,

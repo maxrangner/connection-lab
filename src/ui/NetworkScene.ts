@@ -88,8 +88,6 @@ const SPEECH_CHAR = 7.1;
 /** The colours of a voice: its packets on the cables and its notes at the far end. */
 const VOICE_OF_CALLER = '#8b6fd0';
 const VOICE_OF_FRIEND = '#1f9a8c';
-/** Once an action has been added, whose packet a block is: the first device's, then each that joined in. */
-const OWNERS = [COLOR.app, '#d6488f', '#2a9d8f', '#c98a1b'];
 /** The blade of the session key, with its teeth; the tip at the origin. */
 const KEY_BLADE = 'M0 -2.2 H30 V2.2 H16 V8 H12 V2.2 H8 V6 H4 V2.2 H0 Z';
 
@@ -247,6 +245,10 @@ export class NetworkScene {
   private spyDrawn = '';
   /** What the packet was last drawn from: held still, it stays as it is. */
   private packetDrawn: { tl: Timeline; moment: string } | null = null;
+  /** Your own devices are the ones you can start something on. */
+  private yours = new Set<string>();
+  /** The colour of each device's blocks, once several are at it. */
+  private owners = new Map<string, string>();
   /** Whether any emoji is up, so an empty frame costs nothing. */
   private moodsUp = false;
   /** The devices keep their lines to themselves. */
@@ -318,6 +320,8 @@ export class NetworkScene {
   setStory(story: Story, tl: Timeline): void {
     this.story = story;
     this.tl = tl;
+    this.yours = new Set(story.devices.filter((d) => d.actions.length).map((d) => d.id));
+    this.owners = new Map(story.devices.flatMap((d) => (d.color ? [[d.id, d.color]] : [])));
     if (this.layoutKey() !== this.laidOut) this.buildDevices();
     const stops = (t: Trip): string[] => t.steps.flatMap((s) => (s.kind === 'flow' ? s.packets.flatMap(stops) : 'device' in s ? [s.device] : [s.from, s.to]));
     this.used = new Set([...story.trips.flatMap(stops), ...(story.listener ? [story.listener] : [])]);
@@ -516,15 +520,10 @@ export class NetworkScene {
     return this.shown(device);
   }
 
-  /** Your own devices are the ones you can start something on. */
-  private yours(device: string): boolean {
-    return !!this.story.devices.find((d) => d.id === device)?.actions.length;
-  }
-
   /** How far a device has come onto the table at visual time v, from 0 to 1. */
   private present(device: string, v: number): number {
     if (!this.shown(device)) return 0;
-    if (this.yours(device) || ATTACKER_KINDS.has(this.tl.kind.get(device) ?? '') || this.revealed.has(device)) return 1;
+    if (this.yours.has(device) || ATTACKER_KINDS.has(this.tl.kind.get(device) ?? '') || this.revealed.has(device)) return 1;
     const at = this.tl.reveals.get(device);
     return !at || v < at.t0 ? 0 : Math.max(0.01, clamp01((v - at.t0) / (at.t1 - at.t0)));
   }
@@ -1374,7 +1373,7 @@ export class NetworkScene {
   /** Whose block this is, once several jobs run at once. */
   private ownerColor(client: string): string {
     if (this.story.attackers.includes(client)) return ATTACKER;
-    return OWNERS[Math.max(0, [this.story.client, ...this.story.joiners].indexOf(client)) % OWNERS.length]!;
+    return this.owners.get(client) ?? COLOR.app;
   }
 
   /** A stream: its packets as small blocks on the cables, far ones first. A part flies onto the sheet, a lost one falls. */
