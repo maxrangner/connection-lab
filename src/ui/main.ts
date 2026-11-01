@@ -1255,18 +1255,27 @@ function frame(now: number): void {
   const lowest = (spyCard.top ?? window.innerHeight - scene.barHeight) - ACTION_H / 2 - 8;
   const actionSize = scene.actionSize();
   const halfW = (ACTION_W / 2) * actionSize + 8;
-  const inView = (s: { x: number; y: number }): boolean => s.x >= halfW && s.x <= window.innerWidth - halfW && s.y >= ACTION_TOP && s.y <= lowest;
-  /** The first spot by this device that leaves the others in sight. */
-  const spotFor = (device: string): ReturnType<typeof scene.actionSpots>[number] | undefined => scene.actionSpots(device).filter(inView).find((s) => !scene.hides(device, s, (ACTION_W + 8) * actionSize, (ACTION_H + 8) * actionSize));
+  const onScreen = (x: number): number => Math.max(halfW, Math.min(window.innerWidth - halfW, x));
+  const inView = (s: { x: number; y: number; points: string }): boolean => {
+    // Above or below, a button can slide in from the edge and still point back. Beside its device, it would slide onto it.
+    const across = s.points === 'left' || s.points === 'right' ? s.x === onScreen(s.x) : s.x > -ACTION_W / 2 && s.x < window.innerWidth + ACTION_W / 2;
+    return across && s.y >= ACTION_TOP && s.y <= lowest;
+  };
+  /** A device's button stays by it while it can be seen: at the first spot that leaves the others in sight, or else at any, with `to` where its arrow aims. */
+  const spotFor = (device: string): (ReturnType<typeof scene.actionSpots>[number] & { to: number }) | undefined => {
+    // Beside a device near the bar, a button can stand a little higher than the device's middle.
+    const spots = scene.actionSpots(device).map((s) => (s.points === 'left' || s.points === 'right' ? { ...s, y: Math.min(s.y, lowest) } : s)).filter(inView).map((s) => ({ ...s, to: s.x, x: onScreen(s.x) }));
+    return spots.find((s) => !scene.hides(device, s, (ACTION_W + 8) * actionSize, (ACTION_H + 8) * actionSize)) ?? spots[0];
+  };
   /** A button on the table, with its arrow on the device it belongs to. */
-  const putAction = (b: HTMLButtonElement, spot: { x: number; y: number; points?: string }, to: number): void => {
+  const putAction = (b: HTMLButtonElement, spot: { x: number; y: number; to: number; points?: string }): void => {
     b.style.transform = `translate(${spot.x.toFixed(0)}px, ${spot.y.toFixed(0)}px) scale(${actionSize.toFixed(3)})`;
     b.style.setProperty('--size', actionSize.toFixed(3));
-    b.style.setProperty('--arrow', `${Math.max(-ACTION_ARROW, Math.min(ACTION_ARROW, (to - spot.x) / actionSize)).toFixed(0)}px`);
+    b.style.setProperty('--arrow', `${Math.max(-ACTION_ARROW, Math.min(ACTION_ARROW, (spot.to - spot.x) / actionSize)).toFixed(0)}px`);
     if (spot.points) b.dataset.points = spot.points;
     else delete b.dataset.points;
   };
-  // With its device out of view, or nowhere free by it, a button waits at the side of the bar that has nothing on it.
+  // With its device out of view, a button waits at the side of the bar that has nothing on it.
   const pinSpot = (right: boolean): { x: number; y: number } => ({ x: right ? window.innerWidth - ACTION_W / 2 - 8 : ACTION_W / 2 + 8, y: lowest });
   if (scene.hides('', pinSpot(pinRight), ACTION_W, ACTION_H) && !scene.hides('', pinSpot(!pinRight), ACTION_W, ACTION_H)) pinRight = !pinRight;
   const pinned = `translate(${pinSpot(pinRight).x.toFixed(0)}px, ${lowest.toFixed(0)}px)`;
@@ -1282,7 +1291,7 @@ function frame(now: number): void {
     const spot = spotFor(device);
     if (spot) {
       setText(menu.button, '+ action');
-      putAction(menu.button, spot, spot.x);
+      putAction(menu.button, spot);
     } else outOfView.push(action);
   }
   // With its device out of view a button waits in one quiet spot, and says whose it is.
@@ -1301,8 +1310,8 @@ function frame(now: number): void {
   const reader = mode === 'idle' ? story.devices.find((d) => d.actions.includes('reading')) : undefined;
   readingBtn.hidden = !reader;
   if (reader) {
-    const spot = spotFor(reader.id) ?? scene.actionSpots(reader.id).find(inView) ?? scene.actionSpots(reader.id)[0]!;
-    putAction(readingBtn, { ...spot, x: Math.max(halfW, Math.min(window.innerWidth - halfW, spot.x)), y: Math.min(spot.y, lowest) }, spot.x);
+    const under = scene.actionSpots(reader.id)[0]!;
+    putAction(readingBtn, spotFor(reader.id) ?? { ...under, to: under.x, x: onScreen(under.x), y: Math.min(under.y, lowest) });
   }
 
   const shown = mode === 'play' ? v : idleV;

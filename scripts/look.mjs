@@ -111,7 +111,16 @@ function look(step) {
     if (r.width) devices[e.getAttribute('data-id')] = { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
   }
   const waiting = [...document.querySelectorAll('.mood.absent .term-red')].length > 0;
-  return { area, over, points, cut, devices, waiting, size: [w, h] };
+  // A button parked at the bar while its device is in plain sight.
+  const barTop = document.querySelector('.net-controls').getBoundingClientRect().top;
+  const parked = [...document.querySelectorAll('button.action-menu:not([hidden])')].flatMap((b) => {
+    const id = /^\+ (.+)$/.exec(b.textContent)?.[1];
+    const r = devices[id];
+    if (!r || b.dataset.points) return [];
+    const [x, y] = [(r.left + r.right) / 2, (r.top + r.bottom) / 2];
+    return x > 0 && x < w && y > 0 && y < barTop ? [id] : [];
+  });
+  return { area, over, points, cut, devices, waiting, parked, size: [w, h] };
 }
 
 const TOP_THINGS = ['pill', 'term', 'speech', 'flag', 'follow', 'clock', 'chapter', 'logo', 'spy'];
@@ -142,6 +151,7 @@ function judge(l, whole, scale, step) {
     if ((top === 'term' || top === 'speech') && under === 'card' && n >= 3) say('overlays-overlap', `${top} + cards`, n);
   }
   for (const c of new Set(l.cut)) say('cut-off', c, 1);
+  for (const id of l.parked) say('pill-far-from-device', id, 1);
   if (whole) {
     if (l.waiting) say('window-hidden', 'stranger', 1);
     for (const [id, r] of Object.entries(l.devices)) {
