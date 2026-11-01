@@ -8,7 +8,6 @@ import logoLight from './logo/logo-light.png';
 import { drawDoor, drawEar, drawHandset, drawHush, drawMoon, drawPadlock, drawPage, drawPause, drawPing, drawPlay, drawPipe, drawQuestion, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawSun, drawSwarm, drawTag, drawThermometer, drawTrace } from './icons';
 import { Menu } from './menus';
 import { NetworkScene, type Camera } from './NetworkScene';
-import { screenAt } from './readout';
 import { Sound } from './sound';
 import { SpyCard } from './spyCard';
 import { buildStory, type Chapter, type PartKey, type Story } from './story';
@@ -677,7 +676,6 @@ const placeMenus = (): void => {
   smartMenu.place();
   const bar = controls.getBoundingClientRect();
   scene.setBar(window.innerHeight - bar.top);
-  heardCard.style.bottom = `${window.innerHeight - bar.top + 8}px`;
   aboutCard.style.bottom = `${window.innerHeight - bar.top + 10}px`;
   spyCard.place(controls);
 };
@@ -749,25 +747,6 @@ function joinIn(device: string, job: Job): void {
   sound.play('pop');
 }
 
-/** What the stranger has read off the air so far, just above the bar wherever the camera goes. */
-const heardCard = document.createElement('div');
-heardCard.className = 'heard-card';
-heardCard.hidden = true;
-root.appendChild(heardCard);
-const heardArrow = document.createElement('div');
-heardArrow.className = 'heard-arrow';
-heardArrow.hidden = true;
-root.appendChild(heardArrow);
-/** The card's little arrow: on the edge nearest the stranger, pointing at it wherever the camera has gone. */
-function pointHeard(): void {
-  const to = scene.deviceSpot(story.listener!);
-  const r = heardCard.getBoundingClientRect();
-  const x = Math.max(r.left + 14, Math.min(r.right - 14, to.x));
-  const y = Math.max(r.top, Math.min(r.bottom, to.y));
-  const inside = to.x >= r.left && to.x <= r.right && to.y >= r.top && to.y <= r.bottom;
-  heardArrow.hidden = inside;
-  heardArrow.style.transform = `translate(${x.toFixed(0)}px, ${y.toFixed(0)}px) rotate(${Math.atan2(to.y - y, to.x - x).toFixed(3)}rad)`;
-}
 // Outside the bar, so the bar never moves.
 const followBtn = document.createElement('button');
 followBtn.className = 'follow';
@@ -1325,12 +1304,6 @@ function frame(now: number): void {
   }
 
   const shown = mode === 'play' ? v : idleV;
-  const heard = tl.attackReadouts.find((x) => x.device === story.listener);
-  const heardLines = heard && shown >= 0 ? screenAt(heard.readout, shown) : null;
-  heardCard.hidden = !heardLines;
-  if (heardLines) setText(heardCard, heardLines.join('\n'));
-  heardArrow.hidden = !heardLines;
-  if (heardLines) pointHeard();
   scene.render(shown, mode === 'play' ? 0 : riseK);
   scene.drawPacket(shown, peek, pill && pillOpen > 0.02 ? { key: pill, k: pillOpen } : null);
   spyCard.update(spyLine ? spyLog(tl, spyLine, shown, spyFrom) : []);

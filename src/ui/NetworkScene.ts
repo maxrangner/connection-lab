@@ -86,6 +86,7 @@ const TERM_PAD = 12;
 /** A speech bubble's tip below the spot a device's name hangs from, or below a hop's flag there, and the width of a character. */
 const SPEECH_UNDER_NAME = 34;
 const SPEECH_UNDER_FLAG = 70;
+const TERM_UNDER_NAME = 100;
 /** How far below a hop's flag the next one on the same device hangs. */
 const FLAG_ROW = 30;
 const SPEECH_CHAR = 7.1;
@@ -631,12 +632,6 @@ export class NetworkScene {
     return { x: (p.sx - this.viewX) * this.viewScale, y: (p.sy - this.viewY) * this.viewScale };
   }
 
-  /** Where a device stands on the screen, in pixels. */
-  deviceSpot(device: string): { x: number; y: number } {
-    const p = this.tl.pos.get(device) ?? { x: 0, y: 0 };
-    return this.onScreen(iso(p.x, p.y, this.deviceTop(device) / 2));
-  }
-
   /** How big a device's button is drawn: smaller as the camera goes back, as far as a finger can still hit it. */
   actionSize(): number {
     return Math.max(MIN_ACTION_SIZE, Math.min(1, this.viewScale / this.followScale()));
@@ -836,7 +831,8 @@ export class NetworkScene {
   }
 
   private terminalCorners(): { sx: number; sy: number }[] {
-    return this.terminals().flatMap((t) => {
+    // The stranger is only listening: the camera stays with the packets, and what it hears waits under it.
+    return this.terminals().filter((t) => t.device !== this.story.listener).flatMap((t) => {
       const b = this.terminalBox(t.readout, t.device);
       return b ? [{ sx: b.x - 20, sy: b.y - 80 }, { sx: b.x + b.w + 20, sy: b.y + b.h + 20 }] : [];
     });
@@ -1171,8 +1167,13 @@ export class NetworkScene {
     const w = Math.max(...readout.screens.flatMap((s) => s.lines.map((l) => l.length))) * TERM_CHAR + TERM_PAD * 2;
     const h = Math.max(...readout.screens.map((s) => s.lines.length)) * TERM_LINE + TERM_PAD * 2;
     const kind = this.tl.kind.get(device) ?? '';
-    // An attacker's goes under it, where the view has room. The phone's goes under it too and out to the left, with the stranger beside it.
-    if (ATTACKER_KINDS.has(kind)) return { x: c.sx - w / 2, y: c.sy + 112, w, h };
+    // An attacker's hangs under its name, where the view has room, with space for what it says in between. The phone's goes
+    // under it too and out to the left, with the stranger beside it.
+    if (ATTACKER_KINDS.has(kind)) {
+      const p = this.tl.pos.get(device) ?? { x: 0, y: 0 };
+      const name = iso(p.x, p.y + 1.9, 0);
+      return { x: name.sx - w / 2, y: name.sy + TERM_UNDER_NAME, w, h };
+    }
     if (kind === 'phone' && this.story.listener) return { x: c.sx + 30 - w, y: c.sy + 112, w, h };
     // Above the laptop is open table. Up from the phone is the home router and left of it the cards, so it goes below.
     return kind === 'phone' ? { x: c.sx + 50, y: c.sy + 40, w, h } : { x: c.sx - w / 2, y: c.sy - 150 - h, w, h };
@@ -1183,8 +1184,7 @@ export class NetworkScene {
     return [
       { readout: this.tl.readout, device: this.tl.client },
       ...this.tl.joinReadouts,
-      // What the stranger hears has to stay readable while the camera follows the packet away, so it goes above the bar.
-      ...this.tl.attackReadouts.filter((x) => x.device !== this.story.listener).map((x) => ({ ...x, red: true })),
+      ...this.tl.attackReadouts.map((x) => ({ ...x, red: true })),
     ];
   }
 
@@ -1212,7 +1212,9 @@ export class NetworkScene {
       const box = this.terminalBox(readout, device);
       if (!lines[n] || !box) return;
       const g = el('g', { class: 'mood', transform: `translate(${box.x.toFixed(1)} ${box.y.toFixed(1)})` }, this.readoutLayer);
-      el('rect', { width: box.w, height: box.h, rx: 8, class: red ? 'term-bg term-red' : 'term-bg' }, g);
+      // An attacker's points up at its name, in one piece with the terminal, the way what a device says does.
+      if (red) el('path', { d: `M8 0 H${box.w / 2 - 9} L${box.w / 2} -10 L${box.w / 2 + 9} 0 H${box.w - 8} a8 8 0 0 1 8 8 V${box.h - 8} a8 8 0 0 1 -8 8 H8 a8 8 0 0 1 -8 -8 V8 a8 8 0 0 1 8 -8 Z`, class: 'term-bg term-red' }, g);
+      else el('rect', { width: box.w, height: box.h, rx: 8, class: 'term-bg' }, g);
       lines[n].forEach((line, i) => {
         el('text', { x: TERM_PAD, y: TERM_PAD + (i + 0.75) * TERM_LINE, class: i ? 'term-text' : 'term-text term-title' }, g).textContent = line;
       });
