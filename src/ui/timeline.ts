@@ -147,8 +147,10 @@ export interface Timeline {
   pages: Map<string, number>;
   /** The same for the answer to its DNS question. */
   answers: Map<string, number>;
-  /** When a packet first sets off to or from each device: that is when it shows up on the table. */
-  reveals: Map<string, number>;
+  /** When each device comes onto the table, as the first packet to it nears it. */
+  reveals: Map<string, Entrance>;
+  /** When each cable is laid, ahead of the first packet over it, and the device it starts from. */
+  laid: Map<string, Entrance & { from: string }>;
   /** How far the cable to the ISP has been stretched, in tiles. */
   stretch: number;
 }
@@ -185,6 +187,18 @@ export const UPSTREAM_KINDS = new Set(['root-server', 'tld-server', 'auth-server
 export const ATTACKER_KINDS = new Set(['stranger', 'scanner', 'bot']);
 /** What is yours, and on the table from the start. The rest of the network shows up as packets reach it. */
 export const PERSONAL_KINDS = new Set(['laptop', 'phone']);
+/** Shares of a packet's first trip over a cable: by the first the cable has reached the far end, the device there springs up between the other two. */
+const LAID_BY = 0.7;
+const SPRINGS_FROM = 0.55;
+const SPRINGS_BY = 0.95;
+/** The fewest seconds a device takes to spring up, for a block that crosses in a moment. */
+const SPRING_MIN = 0.35;
+
+/** When something comes onto the table. */
+export interface Entrance {
+  t0: number;
+  t1: number;
+}
 export const CABLE_Z = 0.55;
 /** Tray levels: 0 Ethernet, 1 IP, 2 transport, 3 app. The VPN case goes on just above Ethernet. */
 export const LEVEL: Record<Wrap | 'app', number> = { eth: 0, vpn: 0.5, ip: 1, l4: 2, app: 3 };
@@ -437,7 +451,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   // Each end makes its private half when it first has a hello to answer or to send.
   const halves = new Map<string, number>();
   for (const s of segs) if (s.trip.keyShare && (s.step.kind === 'appear' || s.step.kind === 'read') && !halves.has(s.step.device)) halves.set(s.step.device, s.t0);
-  const reveals = revealsOf(segs);
+  const { reveals, laid } = entrances(segs);
   const times = timing(segs);
   const readout = buildReadout(story, times, t);
   const joinReadout = buildReadout(story, times, t, true);
@@ -450,21 +464,29 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   ];
   for (const f of [...readout.flags, ...joinReadout.flags]) cues.push({ t: f.t, sound: 'found' });
   const speech = [...buildSpeech(story, segs), ...(story.listener ? listenerSpeech(story.listener, story.heard, heardAt) : [])];
-  return { segs, reactions, notes, readout, joinReadout, attackReadouts, speech, keys, halves, real: realClock(segs, story), cues, total: t, pos, kind, trayZ, isRouter, sky, air, client: story.client, pages, answers, reveals, stretch };
+  return { segs, reactions, notes, readout, joinReadout, attackReadouts, speech, keys, halves, real: realClock(segs, story), cues, total: t, pos, kind, trayZ, isRouter, sky, air, client: story.client, pages, answers, reveals, laid, stretch };
 }
 
-/** The first time anything crosses to or from each device. */
-function revealsOf(segs: Seg[]): Map<string, number> {
-  const reveals = new Map<string, number>();
-  const see = (device: string, t: number): void => {
-    if (t < (reveals.get(device) ?? Infinity)) reveals.set(device, t);
+/** What each packet's trip over a cable brings onto the table: the first over a cable lays it, the first to a device brings it. */
+function entrances(segs: Seg[]): Pick<Timeline, 'reveals' | 'laid'> {
+  const reveals: Timeline['reveals'] = new Map();
+  const laid: Timeline['laid'] = new Map();
+  const bring = (device: string, t0: number, t1: number): void => {
+    if (t0 < (reveals.get(device)?.t0 ?? Infinity)) reveals.set(device, { t0, t1 });
+  };
+  const cross = (from: string, to: string, link: string, t0: number, t1: number): void => {
+    if (t0 < (laid.get(link)?.t0 ?? Infinity)) laid.set(link, { from, t0, t1: lerp(t0, t1, LAID_BY) });
+    // Something that sends before anything reached it has to be there already.
+    bring(from, t0 - SPRING_MIN, t0);
+    const springs = lerp(t0, t1, SPRINGS_FROM);
+    bring(to, springs, Math.max(lerp(t0, t1, SPRINGS_BY), springs + SPRING_MIN));
   };
   for (const s of segs) {
     const st = s.step;
-    for (const h of (s.flow ?? []).flatMap((p) => p.hops)) for (const d of [h.from, h.to]) see(d, h.t0);
-    if (st.kind === 'travel' || st.kind === 'lost') for (const d of [st.from, st.to]) see(d, s.t0);
+    for (const h of (s.flow ?? []).flatMap((p) => p.hops)) cross(h.from, h.to, h.link, h.t0, h.t1);
+    if (st.kind === 'travel' || st.kind === 'lost') cross(st.from, st.to, st.link, s.t0, s.t1);
   }
-  return reveals;
+  return { reveals, laid };
 }
 
 /** When each packet set off and when it was done. */

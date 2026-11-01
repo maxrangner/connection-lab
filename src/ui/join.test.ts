@@ -225,7 +225,7 @@ describe('a card dropped in during a run', () => {
 
   it('a device shows up the moment anything crosses to or from it, in the order a packet reaches them', () => {
     const tl = buildTimeline(story('page'));
-    const order = [...tl.reveals].sort((a, b) => a[1] - b[1]).map(([d]) => d);
+    const order = [...tl.reveals].sort((a, b) => a[1].t0 - b[1].t0).map(([d]) => d);
     expect(order.indexOf('home')).toBeLessThan(order.indexOf('isp'));
     expect(order.indexOf('isp')).toBeLessThan(order.indexOf('server'));
     expect(tl.reveals.has('phone')).toBe(false);
@@ -234,10 +234,32 @@ describe('a card dropped in during a run', () => {
       for (const b of JOBS) {
         const { after, s } = dropped(a, b, 0.3);
         for (const seg of after.segs) {
-          for (const h of (seg.flow ?? []).flatMap((p) => p.hops)) for (const d of [h.from, h.to]) expect(after.reveals.get(d)!).toBeLessThanOrEqual(h.t0);
+          for (const h of (seg.flow ?? []).flatMap((p) => p.hops)) {
+            expect(after.reveals.get(h.from)!.t0).toBeLessThan(h.t0);
+            expect(after.reveals.get(h.to)!.t0).toBeLessThan(h.t1);
+            expect(after.laid.get(h.link)!.t0).toBeLessThanOrEqual(h.t0);
+          }
         }
         expect([...after.reveals.keys()].every((d) => s.devices.some((x) => x.id === d))).toBe(true);
       }
+    }
+  });
+
+  it('lays each cable ahead of the first packet over it, and the device at its end springs up before the packet lands', () => {
+    const tl = buildTimeline(story('page'));
+    const trips = tl.segs.flatMap((s) => (s.step.kind === 'travel' ? [{ s, step: s.step }] : []));
+    for (const [link, at] of tl.laid) {
+      const first = trips.find((x) => x.step.link === link)!;
+      expect(at).toMatchObject({ from: first.step.from, t0: first.s.t0 });
+      expect(at.t1).toBeLessThan(first.s.t1);
+    }
+    for (const device of ['home', 'isp', 'resolver', 'server']) {
+      const first = trips.find((x) => x.step.to === device)!;
+      const at = tl.reveals.get(device)!;
+      expect(at.t0).toBeGreaterThan(first.s.t0);
+      expect(at.t1).toBeLessThan(first.s.t1);
+      // The cable gets there first, or the device would stand there alone.
+      expect(at.t0).toBeLessThan(tl.laid.get(first.step.link)!.t1);
     }
   });
 

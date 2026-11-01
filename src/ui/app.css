@@ -293,6 +293,8 @@ body {
   flex-direction: column;
   align-items: center;
   gap: 6px;
+  /* A layer of its own: the stage under it is sliced anew as the packet moves, and the dock must not be repainted with it */
+  will-change: transform;
 }
 
 .dock[hidden],
@@ -606,15 +608,9 @@ body {
   stroke-linecap: round;
 }
 
-/* Devices and cables a run doesn't use step back */
-.device,
-.link {
-  transition: opacity 0.4s;
-}
-
+/* Devices and cables a run doesn't use step back; how far is drawn from the timeline */
 .device.unused,
 .link.unused {
-  opacity: 0.28;
   filter: grayscale(1);
 }
 
