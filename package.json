@@ -9,6 +9,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "look": "node scripts/look.mjs look-out",
+    "site": "node scripts/bundle.mjs dist-bundle/site/index.html --whole",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
