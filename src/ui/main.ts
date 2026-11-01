@@ -3,6 +3,8 @@ import { fetchWebPage, runScenario, ulawDecodeAll, type Attack, type Cut, type J
 import { el } from './svg';
 import { clamp01, easeInOut, easeOutBack, iso, ISO_X, ISO_Y, lerp, U } from './project';
 import { HexCard } from './hexCard';
+import logoDark from './logo/logo-dark.png';
+import logoLight from './logo/logo-light.png';
 import { drawDoor, drawEar, drawHandset, drawHush, drawMoon, drawPadlock, drawPage, drawPause, drawPing, drawPlay, drawPipe, drawQuestion, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawSun, drawSwarm, drawTag, drawTrace } from './icons';
 import { Menu } from './menus';
 import { NetworkScene, type Camera } from './NetworkScene';
@@ -487,6 +489,11 @@ const soundBtn = button('♪', 'Mute', () => {
   }
 });
 soundBtn.classList.add('sound-button');
+// Up where the chapter name goes during a run.
+const logo = document.createElement('img');
+logo.className = 'logo';
+logo.alt = 'Connection Lab';
+root.appendChild(logo);
 /** Dark as the system is, until the viewer chooses. */
 const savedTheme = ((): string | null => {
   try {
@@ -498,6 +505,7 @@ const savedTheme = ((): string | null => {
 let dark = savedTheme ? savedTheme === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
 const showTheme = (): void => {
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  logo.src = dark ? logoDark : logoLight;
   themeBtn.setAttribute('aria-label', dark ? 'Light theme' : 'Dark theme');
   themeBtn.replaceChildren(barIcon(dark ? drawSun : drawMoon));
 };
@@ -1094,6 +1102,7 @@ function frame(now: number): void {
     resting.setAttribute('opacity', '1');
   }
   hint.style.display = mode === 'idle' ? '' : 'none';
+  logo.hidden = mode === 'play';
   dock.hidden = mode !== 'play' || !!joined || v >= tl.total;
   dockGhost.hidden = dockRing.hidden = !holding;
   if (holding) {
