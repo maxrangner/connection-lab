@@ -251,7 +251,7 @@ body {
   justify-content: center;
   gap: 8px;
   width: max-content;
-  max-width: calc(100vw - 32px);
+  max-width: calc(100vw - 16px);
 }
 
 /* Where the bar breaks into two rows on a narrow screen */
@@ -323,26 +323,7 @@ body {
   transform: translateY(-50%) rotate(45deg);
 }
 
-/* The small print, lower left. Small to look at, big to hit. */
-.about-button {
-  position: fixed;
-  z-index: 3;
-  left: max(16px, env(safe-area-inset-left, 0px));
-  bottom: calc(22px + env(safe-area-inset-bottom, 0px));
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  font: inherit;
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--ink-soft);
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 50%;
-  box-shadow: 0 2px 6px rgb(var(--shadow) / 0.1);
-  cursor: pointer;
-}
-
+/* The small print */
 .about-button::before {
   content: '';
   position: absolute;
@@ -352,7 +333,7 @@ body {
 .about-card {
   position: fixed;
   z-index: 5;
-  left: max(8px, env(safe-area-inset-left, 0px));
+  right: max(8px, env(safe-area-inset-right, 0px));
   width: min(320px, 100vw - 16px);
   max-height: calc(100vh - 150px);
   overflow-y: auto;
@@ -1294,7 +1275,7 @@ button.action-menu::after {
 }
 
 /* A narrow screen gets two rows, each the same every time: the playback buttons, then the popups. Buttons stay big enough for a thumb. */
-@media (max-width: 520px) {
+@media (max-width: 760px) {
   .net-controls {
     gap: 6px;
   }
@@ -1319,7 +1300,7 @@ button.action-menu::after {
 
   .net-controls button.menu-button {
     order: 2;
-    min-width: 76px;
+    min-width: 68px;
     padding: 0 8px;
   }
 }
@@ -1333,6 +1314,27 @@ button.action-menu::after {
   .net-controls button:not(.menu-button) {
     width: 42px;
   }
+
+  .net-controls button.menu-button {
+    min-width: 0;
+    padding: 0 7px;
+  }
+
+  .net-controls button.menu-button::after {
+    content: none;
+  }
+}
+
+/* Last in the bar, at the end of the bottom row. Small to look at, big to hit. */
+.net-controls button.about-button {
+  position: relative;
+  order: 3;
+  align-self: center;
+  width: 32px;
+  height: 32px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink-soft);
 }
 
 /* The things on the Setup menu */

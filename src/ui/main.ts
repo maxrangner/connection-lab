@@ -444,8 +444,6 @@ const setupMenu = new Menu<Setting>(controls, root, 'Setup', 'Setup', SETUP, (id
 const ACTION_W = 104;
 const ACTION_H = 34;
 const ACTION_TOP = 110;
-/** What the "?" takes up at the left edge, with its margins. */
-const ABOUT_ROOM = 60;
 /** What can start on a device with nothing to do, in the white of the cards. */
 const ACTIONS: Record<Wanted, { label: string; draw: (g: SVGGElement) => void }> = {
   page: {
@@ -545,7 +543,7 @@ for (const { label, url } of LINKS) {
 }
 aboutText('h3', 'Cookies and privacy');
 aboutText('p', PRIVACY);
-root.append(aboutBtn, aboutCard);
+root.append(aboutCard);
 const about = {
   button: aboutBtn,
   get isOpen(): boolean {
@@ -561,8 +559,6 @@ const about = {
   place(): void {},
 };
 aboutBtn.addEventListener('click', () => about.setOpen(!about.isOpen));
-/** The "?" fits beside the bar, or else above it, which is a narrow screen. */
-let aboutBeside = true;
 const menus: { isOpen: boolean; setOpen(open: boolean): void; place(): void; button: HTMLButtonElement }[] = [speedMenu, toolsMenu, setupMenu, attackMenu, ...deviceActions.map((a) => a.menu), about];
 for (const menu of menus) {
   menu.button.addEventListener('click', () => {
@@ -575,9 +571,7 @@ const placeMenus = (): void => {
   const bar = controls.getBoundingClientRect();
   scene.setBar(window.innerHeight - bar.top);
   heardCard.style.bottom = `${window.innerHeight - bar.top + 8}px`;
-  aboutBeside = bar.left >= ABOUT_ROOM;
-  aboutBtn.style.bottom = aboutBeside ? '' : `${window.innerHeight - bar.top + 8}px`;
-  aboutCard.style.bottom = `${window.innerHeight - aboutBtn.getBoundingClientRect().top + 10}px`;
+  aboutCard.style.bottom = `${window.innerHeight - bar.top + 10}px`;
   spyCard.place(controls);
 };
 const soundBtn = button('♪', 'Mute', () => {
@@ -621,6 +615,7 @@ showTheme();
 button('↺', 'Reset', reset);
 // On a narrow screen the bar breaks into two rows here (see app.css).
 controls.appendChild(Object.assign(document.createElement('span'), { className: 'bar-break' }));
+controls.appendChild(aboutBtn);
 root.appendChild(controls);
 
 /** The other device starts on this job now: what has been shown stays, and from the next step on everything runs at once. */
@@ -1145,7 +1140,7 @@ function frame(now: number): void {
     const lowest = (spyCard.top ?? window.innerHeight - scene.barHeight) - ACTION_H / 2 - 8;
     const inView = spot.x >= ACTION_W / 2 + 8 && spot.x <= window.innerWidth - ACTION_W / 2 - 8 && spot.y >= ACTION_TOP && spot.y <= lowest;
     // With the device out of view its button waits in one quiet spot, and says whose it is.
-    const [x, y] = inView ? [spot.x, spot.y] : [ACTION_W / 2 + (aboutBeside ? 8 : ABOUT_ROOM), lowest];
+    const [x, y] = inView ? [spot.x, spot.y] : [ACTION_W / 2 + 8, lowest];
     setText(menu.button, inView ? '+ action' : `+ ${device}`);
     menu.button.style.transform = `translate(${x.toFixed(0)}px, ${y.toFixed(0)}px)`;
   }
