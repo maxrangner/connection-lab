@@ -12,6 +12,20 @@ export function drawScissors(g: SVGGElement): void {
   el('circle', { cx: 0, cy: 0, r: 2.5, class: 'scissor-pin' }, g);
 }
 
+/** The moon, for the dark theme. */
+export function drawMoon(g: SVGGElement): void {
+  el('path', { d: 'M4 -9 A9.5 9.5 0 1 0 9 5 A7.5 7.5 0 0 1 4 -9 Z', fill: 'currentColor' }, g);
+}
+
+/** The sun, for the light theme. */
+export function drawSun(g: SVGGElement): void {
+  el('circle', { r: 4.5, fill: 'currentColor' }, g);
+  for (let i = 0; i < 8; i++) {
+    const a = (i * Math.PI) / 4;
+    el('line', { x1: Math.cos(a) * 7, y1: Math.sin(a) * 7, x2: Math.cos(a) * 10, y2: Math.sin(a) * 10, stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round' }, g);
+  }
+}
+
 /** A magnifying glass. */
 export function drawSpyglass(g: SVGGElement): void {
   el('line', { x1: 13, y1: 13, x2: 30, y2: 30, class: 'spy-handle' }, g);
