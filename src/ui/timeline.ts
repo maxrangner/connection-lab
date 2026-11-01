@@ -162,8 +162,8 @@ const POS: Record<string, { x: number; y: number }> = {
   laptop: { x: 0, y: 0 },
   // The phone sits in front of the home router, talking to it over Wi-Fi.
   phone: { x: 8, y: 8 },
-  // The sensor is on the wall behind the cable to the router, clear of the cards and of whoever turns up in front.
-  sensor: { x: 4, y: -4 },
+  // The sensor is on the wall well behind the cable to the router, so the button under it stays clear of the router.
+  sensor: { x: 1, y: -9 },
   'home-router': { x: 8, y: 0 },
   router: { x: 16, y: 0 },
   'web-server': { x: 24, y: 0 },
@@ -181,7 +181,7 @@ const POS: Record<string, { x: number; y: number }> = {
   // Red, once dragged in. The stranger sits within reach of the Wi-Fi, the others out on the internet by the ISP router.
   stranger: { x: 13, y: 7 },
   scanner: { x: 20, y: 8 },
-  bot1: { x: 1, y: -7 },
+  bot1: { x: -2, y: -13 },
   bot2: { x: 5, y: -9 },
   bot3: { x: 9, y: -7 },
 };

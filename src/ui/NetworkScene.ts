@@ -201,6 +201,9 @@ export class NetworkScene {
   /** The picture asked for, drawn wherever it shows. */
   private readonly photo: SVGImageElement;
   private overview = { x: 0, y: 0, w: 1, h: 1 };
+  /** What is on the table right now, which is all the whole-network view has to frame; and what that is made of. */
+  private table = { x: 0, y: 0, w: 1, h: 1 };
+  private tableMade = '';
   private onTable: { sx: number; sy: number }[] = [];
   private bar = 0;
   /** The stretch of the table in view, for what must not be cut off at its edges. */
@@ -437,9 +440,11 @@ export class NetworkScene {
           const c = iso(p.x, p.y, p.z + 0.3);
           for (const r of [7, 12, 17]) el('path', { d: `M${(c.sx - r).toFixed(1)} ${(c.sy - r * 0.2).toFixed(1)}A${r} ${r} 0 0 1 ${(c.sx + r).toFixed(1)} ${(c.sy - r * 0.2).toFixed(1)}`, class: 'ripple' }, g);
         }
-        // Home Wi-Fi with a password seals its frames; this one is not, so the spyglass can read it.
-        const note = this.linkSpot(l.id, 0.3, 16);
-        el('text', { x: note.sx, y: note.sy, 'text-anchor': 'middle', class: 'link-note' }, g).textContent = noisy ? 'open Wi-Fi · noisy' : 'open Wi-Fi';
+        // Home Wi-Fi with a password seals its frames; this one is not, so the spyglass can read it. Once is enough to say so.
+        if (l.id === 'wlan') {
+          const note = this.linkSpot(l.id, 0.3, 16);
+          el('text', { x: note.sx, y: note.sy, 'text-anchor': 'middle', class: 'link-note' }, g).textContent = noisy ? 'open Wi-Fi · noisy' : 'open Wi-Fi';
+        }
       } else if (path.length === 5) {
         // A cable from each device to its dish, then the radio beams up to the satellite.
         const [a, footA, top, footB, b] = path as [Vec3, Vec3, Vec3, Vec3, Vec3];
@@ -636,14 +641,31 @@ export class NetworkScene {
   }
 
   private fit(): void {
+    // Everything a run could bring on: what the follow camera's scale comes from, so it holds still during a run.
+    this.overview = this.frameOf([...this.tl.pos.keys()].filter((id) => this.linkShown(id)), this.terminals());
+    this.tableMade = '';
+    this.frameTable();
+  }
+
+  /** The whole-network view shows what is there, not what could be: it grows as a run brings things on. */
+  private frameTable(): void {
+    const devices = [...this.tl.pos.keys()].filter((id) => this.present(id, this.now) > 0);
+    const printing = this.terminals().filter((t) => this.now >= 0 && screenAt(t.readout, this.now));
+    const made = `${devices.join()}|${printing.map((t) => t.device).join()}`;
+    if (made === this.tableMade) return;
+    this.tableMade = made;
+    this.table = this.frameOf(devices, printing);
+  }
+
+  private frameOf(devices: string[], terminals: { readout: Readout; device: string }[]): { x: number; y: number; w: number; h: number } {
     const pts: { sx: number; sy: number }[] = [];
-    for (const [id, p] of this.tl.pos) {
-      if (!this.linkShown(id)) continue;
+    for (const id of devices) {
+      const p = this.tl.pos.get(id) ?? { x: 0, y: 0 };
       for (const [dx, dy] of [[-2, -2], [2, 2.4], [-2, 2.4], [2, -2]] as const) for (const z of [0, 3.2]) pts.push(iso(p.x + dx, p.y + dy, z));
     }
     pts.push(...this.onTable);
     // What a probe printed stays up after the run, so the view between runs keeps it in frame.
-    for (const t of this.terminals()) {
+    for (const t of terminals) {
       const printed = this.terminalBox(t.readout, t.device);
       if (printed) pts.push({ sx: printed.x, sy: printed.y }, { sx: printed.x + printed.w, sy: printed.y + printed.h });
     }
@@ -652,12 +674,11 @@ export class NetworkScene {
     const minY = Math.min(...pts.map((p) => p.sy)) - 10;
     // Room for the device names, and for the bar over the bottom of the view.
     const maxY = Math.max(...pts.map((p) => p.sy)) + 90;
-    this.overview = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+    return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
   }
 
-  /** Screen pixels per SVG unit that fit the whole network. */
-  private baseScale(): number {
-    const o = this.overview;
+  /** Screen pixels per SVG unit that fit the whole network, or this much of it. */
+  private baseScale(o = this.overview): number {
     return Math.min((this.svg.clientWidth || 1) / o.w, (this.svg.clientHeight || 1) / o.h);
   }
 
@@ -672,15 +693,15 @@ export class NetworkScene {
     return { min: this.baseScale() * 0.6, max: this.followScale() * 4 };
   }
 
-  /** The whole network in view, however narrow the screen. */
+  /** All that is on the table in view, however narrow the screen, and no closer than following a packet. */
   wholeCamera(): Camera {
-    const o = this.overview;
-    return { cx: o.x + o.w / 2, cy: o.y + o.h / 2, scale: this.baseScale() };
+    const o = this.table;
+    return { cx: o.x + o.w / 2, cy: o.y + o.h / 2, scale: Math.min(this.baseScale(o), this.followScale()) };
   }
 
   /** More than one action at once: the whole network, with room for the sheet and for the notes above whoever is on a call. */
   busyCamera(): Camera {
-    const o = this.overview;
+    const o = this.table;
     const pts = [{ sx: o.x, sy: o.y }, { sx: o.x + o.w, sy: o.y + o.h - 90 }];
     if (pageParts(this.tl)) {
       const paper = this.paperAt();
@@ -966,6 +987,7 @@ export class NetworkScene {
     const tl = this.tl;
     const hit = segAt(tl, v);
     this.now = v;
+    this.frameTable();
     // Once a run starts, whatever it doesn't use steps back.
     const greying = v >= 0;
     const stepped = lerp(1, UNUSED_OPACITY, clamp01(v / STEP_BACK));
