@@ -68,3 +68,12 @@ describe('a job dropped in during a run', () => {
     }
   });
 });
+
+describe('two calls at once', () => {
+  it('the friend talks back to each caller', () => {
+    const heard = (device: string): number => run('call', 'call', 0.3).events.filter((e) => e.type === 'app' && e.action === 'rtp-received' && e.deviceId === device).length;
+    expect(heard('laptop')).toBe(50);
+    expect(heard('phone')).toBe(50);
+    expect(heard('friend')).toBe(100);
+  });
+});

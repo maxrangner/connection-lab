@@ -559,82 +559,101 @@ export function startTraceroute(host: Host, spec: TracerouteSpec, leased?: strin
   );
 }
 
+/** One call as one end has it: what it hears from the other, and how far its own clip has gone. */
+interface VoiceLeg {
+  ssrc: number;
+  expected: number;
+  received: number;
+  gaps: number;
+  firstAt: number;
+  sentAll: number;
+  hangTimer: number | undefined;
+  done: boolean;
+}
+
 /**
- * One end of a voice call on one UDP port: it streams its clip to whoever it is told to, a packet every 20 ms, and plays
- * what comes in by sequence number. A skipped number is a gap: the packet is lost, nothing asks for it again, the call
- * goes on. The call hangs up once both clips are through: its own sent, and the other's length heard from when its
- * first packet came (the clips are the same length). No RTCP, no SIP and no jitter buffer: packets are played as they come.
+ * One end of voice calls on one UDP port: it streams its clip to whoever it is told to, a packet every 20 ms, and plays what
+ * comes in by sequence number. A skipped number is a gap: the packet is lost, nothing asks for it again, the call goes on. A
+ * call hangs up once both clips are through: its own sent, and the other's length heard from when its first packet came (the
+ * clips are the same length). With `answers` it talks back to each new source that calls, each a call of its own, and the
+ * port stays open for the next. No RTCP, no SIP and no jitter buffer: packets are played as they come.
  */
-function voiceEndpoint(host: Host, app: 'voice-call' | 'voice-peer', port: number, clip: Uint8Array, onFirst?: (from: { ip: Ip4; port: number }) => void): { send(to: { ip: Ip4; port: number }): void } {
+function voiceEndpoint(host: Host, app: 'voice-call' | 'voice-peer', port: number, clip: Uint8Array, answers = false): { send(to: { ip: Ip4; port: number }): void } {
   const sim = host.sim;
   const packets = Math.ceil(clip.length / RTP_SAMPLES_PER_PACKET);
-  const rx = { ssrc: -1, expected: -1, received: 0, gaps: 0, firstAt: -1 };
-  let sentAll = -1;
-  let hangTimer: number | undefined;
-  let done = false;
-  const finish = (ok: boolean): void => {
-    done = true;
-    host.udpUnbind(port);
-    if (ok) sim.emit({ type: 'app', deviceId: host.id, app, action: 'call-done', info: { received: rx.received, gaps: rx.gaps } });
+  const newLeg = (): VoiceLeg => ({ ssrc: -1, expected: -1, received: 0, gaps: 0, firstAt: -1, sentAll: -1, hangTimer: undefined, done: false });
+  /** Each call by the source heard on it. */
+  const callers = new Map<number, VoiceLeg>();
+  let own = newLeg();
+  const finish = (leg: VoiceLeg, ok: boolean): void => {
+    leg.done = true;
+    if (!answers) host.udpUnbind(port);
+    if (ok) sim.emit({ type: 'app', deviceId: host.id, app, action: 'call-done', info: { received: leg.received, gaps: leg.gaps } });
     else sim.emit({ type: 'app', deviceId: host.id, app, action: 'error', info: { reason: 'nobody answered' } });
   };
-  const hangUp = (): void => {
-    if (sentAll < 0) return;
-    sim.cancel(hangTimer);
-    if (rx.firstAt < 0) hangTimer = sim.at(sentAll + NO_ANSWER_WAIT, () => finish(false));
-    else hangTimer = sim.at(Math.max(sentAll, rx.firstAt + packets * RTP_INTERVAL), () => finish(true));
+  const hangUp = (leg: VoiceLeg): void => {
+    if (leg.sentAll < 0) return;
+    sim.cancel(leg.hangTimer);
+    if (leg.firstAt < 0) leg.hangTimer = sim.at(leg.sentAll + NO_ANSWER_WAIT, () => finish(leg, false));
+    else leg.hangTimer = sim.at(Math.max(leg.sentAll, leg.firstAt + packets * RTP_INTERVAL), () => finish(leg, true));
+  };
+  const speak = (leg: VoiceLeg, to: { ip: Ip4; port: number }): void => {
+    // RFC 3550 §5.1: the sequence number and timestamp start at random values, and the SSRC is random too.
+    const ssrc = host.random32();
+    const seq0 = host.random32() & 0xffff;
+    const ts0 = host.random32();
+    const start = sim.now;
+    for (let i = 0; i < packets; i++) {
+      sim.at(start + i * RTP_INTERVAL, () => {
+        if (leg.done) return;
+        const seq = (seq0 + i) & 0xffff;
+        const timestamp = (ts0 + i * RTP_SAMPLES_PER_PACKET) >>> 0;
+        // The marker says "a talkspurt starts here": set on the first packet, as a phone does after silence.
+        const msg = buildRtp({ marker: i === 0, payloadType: RTP_PT_PCMU, seq, timestamp, ssrc }, clip.subarray(i * RTP_SAMPLES_PER_PACKET, (i + 1) * RTP_SAMPLES_PER_PACKET));
+        const pk = sim.newPacket(host.id, 'rtp', `RTP voice (part ${i + 1}/${packets})`, { rtp: { seq, ssrc, part: i + 1, of: packets } });
+        const pduId = sim.pdu(pk.id, msg, 'rtp');
+        sim.emit({ type: 'encapsulate', deviceId: host.id, packetId: pk.id, layer: 5, protocol: 'rtp', pduId });
+        host.udpSend(port, to.ip, to.port, msg, pk.id);
+        if (i === packets - 1) {
+          leg.sentAll = sim.now + RTP_INTERVAL;
+          hangUp(leg);
+        }
+      });
+    }
   };
   host.udpBind(port, 'rtp', (from, data, _packetId, pduId) => {
-    if (done) return;
     const h = parseRtp(data, 0);
     if (h.version !== RTP_VERSION || h.payloadType !== RTP_PT_PCMU) return;
-    const first = rx.ssrc < 0;
+    const leg = answers ? (callers.get(h.ssrc) ?? newLeg()) : own;
+    if (leg.done) return;
+    const first = leg.ssrc < 0;
     if (first) {
-      rx.ssrc = h.ssrc;
-      rx.firstAt = sim.now;
-    } else if (h.ssrc !== rx.ssrc) return; // another stream altogether; a real app keeps one receiver per source
+      leg.ssrc = h.ssrc;
+      leg.firstAt = sim.now;
+      if (answers) callers.set(h.ssrc, leg);
+    } else if (h.ssrc !== leg.ssrc) return; // another stream altogether; a caller listens to the one it called
     const bytes = h.payloadEnd - h.payloadStart;
-    if (rx.expected >= 0 && h.seq !== rx.expected) {
-      const ahead = (h.seq - rx.expected) & 0xffff;
+    if (leg.expected >= 0 && h.seq !== leg.expected) {
+      const ahead = (h.seq - leg.expected) & 0xffff;
       if (ahead >= 0x8000) {
-        sim.emit({ type: 'app', deviceId: host.id, app, action: 'rtp-late', pduId, info: { seq: h.seq, expected: rx.expected } });
+        sim.emit({ type: 'app', deviceId: host.id, app, action: 'rtp-late', pduId, info: { seq: h.seq, expected: leg.expected } });
         return;
       }
-      rx.gaps += ahead;
-      sim.emit({ type: 'app', deviceId: host.id, app, action: 'rtp-gap', pduId, info: { expected: rx.expected, got: h.seq, missing: ahead } });
+      leg.gaps += ahead;
+      sim.emit({ type: 'app', deviceId: host.id, app, action: 'rtp-gap', pduId, info: { expected: leg.expected, got: h.seq, missing: ahead } });
     }
-    rx.received++;
-    rx.expected = (h.seq + 1) & 0xffff;
-    sim.emit({ type: 'app', deviceId: host.id, app, action: 'rtp-received', pduId, info: { seq: h.seq, bytes, totalReceived: rx.received } });
+    leg.received++;
+    leg.expected = (h.seq + 1) & 0xffff;
+    sim.emit({ type: 'app', deviceId: host.id, app, action: 'rtp-received', pduId, info: { seq: h.seq, bytes, totalReceived: leg.received } });
     if (first) {
-      onFirst?.(from);
-      hangUp();
+      if (answers) speak(leg, from);
+      hangUp(leg);
     }
   });
   return {
     send(to) {
-      // RFC 3550 §5.1: the sequence number and timestamp start at random values, and the SSRC is random too.
-      const ssrc = host.random32();
-      const seq0 = host.random32() & 0xffff;
-      const ts0 = host.random32();
-      const start = sim.now;
-      for (let i = 0; i < packets; i++) {
-        sim.at(start + i * RTP_INTERVAL, () => {
-          if (done) return;
-          const seq = (seq0 + i) & 0xffff;
-          const timestamp = (ts0 + i * RTP_SAMPLES_PER_PACKET) >>> 0;
-          // The marker says "a talkspurt starts here": set on the first packet, as a phone does after silence.
-          const msg = buildRtp({ marker: i === 0, payloadType: RTP_PT_PCMU, seq, timestamp, ssrc }, clip.subarray(i * RTP_SAMPLES_PER_PACKET, (i + 1) * RTP_SAMPLES_PER_PACKET));
-          const pk = sim.newPacket(host.id, 'rtp', `RTP voice (part ${i + 1}/${packets})`, { rtp: { seq, ssrc, part: i + 1, of: packets } });
-          const pduId = sim.pdu(pk.id, msg, 'rtp');
-          sim.emit({ type: 'encapsulate', deviceId: host.id, packetId: pk.id, layer: 5, protocol: 'rtp', pduId });
-          host.udpSend(port, to.ip, to.port, msg, pk.id);
-          if (i === packets - 1) {
-            sentAll = sim.now + RTP_INTERVAL;
-            hangUp();
-          }
-        });
-      }
+      own = newLeg();
+      speak(own, to);
     },
   };
 }
@@ -653,9 +672,9 @@ export function startVoiceCall(host: Host, spec: VoiceCallSpec, leased?: string)
   );
 }
 
-/** The friend's phone: listens on its RTP port and, when the first packet of a call comes, talks back to where it came from. */
+/** The friend's phone: listens on its RTP port and, when the first packet of a call comes, talks back to where it came from, to each caller in turn. */
 export function startVoicePeer(host: Host, spec: VoicePeerSpec): void {
-  const endpoint = voiceEndpoint(host, 'voice-peer', spec.port, spec.clip, (from) => endpoint.send(from));
+  voiceEndpoint(host, 'voice-peer', spec.port, spec.clip, true);
 }
 
 /**
