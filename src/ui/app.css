@@ -423,6 +423,27 @@ body {
   pointer-events: none;
 }
 
+/* The name, top left, until the chapter name takes its place */
+.logo {
+  position: fixed;
+  top: calc(18px + env(safe-area-inset-top, 0px));
+  left: max(16px, env(safe-area-inset-left, 0px));
+  width: min(56vw, 300px);
+  pointer-events: none;
+  user-select: none;
+}
+
+.logo[hidden] {
+  display: none;
+}
+
+/* A phone on its side: clear of the cards */
+@media (max-height: 420px) {
+  .logo {
+    width: 200px;
+  }
+}
+
 /* Chapter name, top left */
 .chapter {
   position: fixed;
