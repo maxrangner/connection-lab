@@ -87,6 +87,8 @@ const TERM_PAD = 12;
 const SPEECH_UNDER_NAME = 34;
 const SPEECH_UNDER_FLAG = 70;
 const TERM_UNDER_NAME = 100;
+/** How far along an attacker's terminal its name is: it hangs out to the right, away from the phone's. */
+const TERM_TIP = 60;
 /** How far below a hop's flag the next one on the same device hangs. */
 const FLAG_ROW = 30;
 const SPEECH_CHAR = 7.1;
@@ -263,6 +265,12 @@ export class NetworkScene {
   private quiet = false;
   /** The bubbles as last drawn, so they are not drawn again every frame. */
   private speechDrawn = '';
+  /** Where they are, in SVG units, by their top middle. */
+  private saying: { x: number; y: number; w: number; h: number }[] = [];
+  /** And the terminals. */
+  private printed: { x: number; y: number; w: number; h: number }[] = [];
+  /** What the stranger has printed, while it has. */
+  private heard: { g: SVGGElement; bottom: number } | null = null;
 
   constructor(
     host: HTMLElement,
@@ -304,7 +312,7 @@ export class NetworkScene {
     for (const d of order) {
       const p = this.tl.pos.get(d.id) ?? { x: 0, y: 0 };
       const trays = el('g', { class: 'trays', opacity: 0 }, this.devs);
-      const g = el('g', { class: ATTACKER_KINDS.has(d.kind) ? 'device attacker' : 'device' }, this.devs);
+      const g = el('g', { class: ATTACKER_KINDS.has(d.kind) ? 'device attacker' : 'device', 'data-id': d.id }, this.devs);
       // The ISP router can be dragged further away between runs.
       if (d.kind === 'router') g.setAttribute('data-grab', d.id);
       const screen = this.buildDevice(g, d.kind, p.x, p.y);
@@ -642,17 +650,21 @@ export class NetworkScene {
     const p = this.tl.pos.get(device) ?? { x: 0, y: 0 };
     const size = this.actionSize();
     const name = iso(p.x, p.y + 1.9, 0);
-    const under = this.onScreen({ sx: name.sx, sy: name.sy + 30 });
+    const under = this.onScreen({ sx: name.sx, sy: name.sy + 26 });
     const head = this.onScreen(iso(p.x, p.y, this.deviceTop(device) + 1.7));
     return [
-      { x: under.x, y: under.y + 24 * size, points: 'up' },
+      { x: under.x, y: under.y + 5 + 29 * size, points: 'up' },
       { x: head.x, y: head.y - 24 * size, points: 'down' },
     ];
   }
 
-  /** Would something this big, centred here on the screen, stand in front of another device on the table? */
+  /** Would something this big, centred here on the screen, stand in front of another device on the table, or of what one is saying? */
   hides(device: string, spot: { x: number; y: number }, w: number, h: number): boolean {
-    return this.devices.some(({ id }) => {
+    const onWords = [...this.saying, ...this.printed].some((b) => {
+      const c = this.onScreen({ sx: b.x, sy: b.y });
+      return spot.x + w / 2 > c.x - (b.w / 2) * this.viewScale && spot.x - w / 2 < c.x + (b.w / 2) * this.viewScale && spot.y + h / 2 > c.y && spot.y - h / 2 < c.y + b.h * this.viewScale;
+    });
+    return onWords || this.devices.some(({ id }) => {
       if (id === device || !this.present(id, this.now)) return false;
       const p = this.tl.pos.get(id) ?? { x: 0, y: 0 };
       const c = this.onScreen(iso(p.x, p.y));
@@ -759,6 +771,7 @@ export class NetworkScene {
       const c = iso(p.x, p.y);
       return [{ sx: c.sx - 130, sy: c.sy - 130 }, { sx: c.sx + 130, sy: c.sy + 70 }];
     });
+    if (this.now >= 0) pts.push(...this.terminalCorners());
     const xs = [...pts, ...this.onTable].map((p) => p.sx);
     const ys = [...pts, ...this.onTable].map((p) => p.sy);
     const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
@@ -1074,6 +1087,8 @@ export class NetworkScene {
     this.renderMoods(v);
     this.renderNotes(v);
     this.renderReadout(v);
+    // The camera goes on without the stranger: what it heard shows whole, or waits, and does not stick out from behind the bar.
+    this.heard?.g.classList.toggle('absent', this.onScreen({ sx: 0, sy: this.heard.bottom }).y > (this.svg.clientHeight || 1) - this.bar);
     this.renderSpeech(v);
     this.renderSpy();
     for (const [id, screen] of this.screens) {
@@ -1168,13 +1183,11 @@ export class NetworkScene {
     const h = Math.max(...readout.screens.map((s) => s.lines.length)) * TERM_LINE + TERM_PAD * 2;
     const kind = this.tl.kind.get(device) ?? '';
     // An attacker's hangs under its name, where the view has room, with space for what it says in between. The phone's goes
-    // under it too and out to the left, with the stranger beside it.
-    if (ATTACKER_KINDS.has(kind)) {
-      const p = this.tl.pos.get(device) ?? { x: 0, y: 0 };
-      const name = iso(p.x, p.y + 1.9, 0);
-      return { x: name.sx - w / 2, y: name.sy + TERM_UNDER_NAME, w, h };
-    }
-    if (kind === 'phone' && this.story.listener) return { x: c.sx + 30 - w, y: c.sy + 112, w, h };
+    // under it too, out to the left of the stranger beside it.
+    const p = this.tl.pos.get(device) ?? { x: 0, y: 0 };
+    const name = iso(p.x, p.y + 1.9, 0);
+    if (ATTACKER_KINDS.has(kind)) return { x: name.sx - TERM_TIP, y: name.sy + TERM_UNDER_NAME, w, h };
+    if (kind === 'phone' && this.story.listener) return { x: name.sx - w, y: name.sy + TERM_UNDER_NAME, w, h };
     // Above the laptop is open table. Up from the phone is the home router and left of it the cards, so it goes below.
     return kind === 'phone' ? { x: c.sx + 50, y: c.sy + 40, w, h } : { x: c.sx - w / 2, y: c.sy - 150 - h, w, h };
   }
@@ -1198,6 +1211,8 @@ export class NetworkScene {
     if (drawn === this.readoutDrawn) return;
     this.readoutDrawn = drawn;
     this.readoutLayer.replaceChildren();
+    this.heard = null;
+    this.printed = [];
     flags.forEach((f, i) => {
       const d = this.tl.pos.get(f.device) ?? { x: 0, y: 0 };
       const s = iso(d.x, d.y + 1.9, 0);
@@ -1212,9 +1227,13 @@ export class NetworkScene {
       const box = this.terminalBox(readout, device);
       if (!lines[n] || !box) return;
       const g = el('g', { class: 'mood', transform: `translate(${box.x.toFixed(1)} ${box.y.toFixed(1)})` }, this.readoutLayer);
+      if (device === this.story.listener) this.heard = { g, bottom: box.y + box.h };
+      // One that hangs under its device has only to be as long as what it has printed so far.
+      const h = this.tl.kind.get(device) === 'laptop' ? box.h : lines[n].length * TERM_LINE + TERM_PAD * 2;
+      this.printed.push({ x: box.x + box.w / 2, y: box.y, w: box.w, h });
       // An attacker's points up at its name, in one piece with the terminal, the way what a device says does.
-      if (red) el('path', { d: `M8 0 H${box.w / 2 - 9} L${box.w / 2} -10 L${box.w / 2 + 9} 0 H${box.w - 8} a8 8 0 0 1 8 8 V${box.h - 8} a8 8 0 0 1 -8 8 H8 a8 8 0 0 1 -8 -8 V8 a8 8 0 0 1 8 -8 Z`, class: 'term-bg term-red' }, g);
-      else el('rect', { width: box.w, height: box.h, rx: 8, class: 'term-bg' }, g);
+      if (red) el('path', { d: `M8 0 H${TERM_TIP - 9} L${TERM_TIP} -10 L${TERM_TIP + 9} 0 H${box.w - 8} a8 8 0 0 1 8 8 V${h - 8} a8 8 0 0 1 -8 8 H8 a8 8 0 0 1 -8 -8 V8 a8 8 0 0 1 8 -8 Z`, class: 'term-bg term-red' }, g);
+      else el('rect', { width: box.w, height: h, rx: 8, class: 'term-bg' }, g);
       lines[n].forEach((line, i) => {
         el('text', { x: TERM_PAD, y: TERM_PAD + (i + 0.75) * TERM_LINE, class: i ? 'term-text' : 'term-text term-title' }, g).textContent = line;
       });
@@ -1242,9 +1261,11 @@ export class NetworkScene {
     if (drawn === this.speechDrawn) return;
     this.speechDrawn = drawn;
     this.speechLayer.replaceChildren();
+    this.saying = [];
     for (const { b, s, w, x, size, op } of looks) {
       const flagged = [...this.tl.readout.flags, ...this.tl.joinReadouts.flatMap((x) => x.readout.flags)].filter((f) => f.device === b.device && v >= f.t).length;
       const y = s.sy + (flagged ? SPEECH_UNDER_FLAG + (flagged - 1) * FLAG_ROW : SPEECH_UNDER_NAME);
+      this.saying.push({ x, y, w: w * big, h: 40 * big });
       const g = el('g', { class: 'mood', opacity: op.toFixed(3), transform: `translate(${x.toFixed(1)} ${y.toFixed(1)}) scale(${(size * big).toFixed(3)})` }, this.speechLayer);
       const tip = Math.max(-w / 2 + 28, Math.min(w / 2 - 28, (s.sx - x) / big));
       el('path', { d: `M${-w / 2 + 16} 8 H${tip - 9} L${tip} -2 L${tip + 9} 8 H${w / 2 - 16} a16 16 0 0 1 0 32 H${-w / 2 + 16} a16 16 0 0 1 0 -32 Z`, class: 'speech-bg' }, g);

@@ -519,6 +519,8 @@ showSmart();
 const ACTION_W = 104;
 const ACTION_H = 34;
 const ACTION_TOP = 110;
+/** A button with nowhere by its device waits at the right of the bar, not the left. */
+let pinRight = false;
 /** How far past its middle the arrow of a button can go. */
 const ACTION_ARROW = ACTION_W / 2 - 20;
 /** What can start on a device with nothing to do, in the white of the cards. */
@@ -1254,11 +1256,8 @@ function frame(now: number): void {
   const actionSize = scene.actionSize();
   const halfW = (ACTION_W / 2) * actionSize + 8;
   const inView = (s: { x: number; y: number }): boolean => s.x >= halfW && s.x <= window.innerWidth - halfW && s.y >= ACTION_TOP && s.y <= lowest;
-  /** The first spot by this device that leaves the others in sight, or any it has. */
-  const spotFor = (device: string): ReturnType<typeof scene.actionSpots>[number] | undefined => {
-    const spots = scene.actionSpots(device).filter(inView);
-    return spots.find((s) => !scene.hides(device, s, (ACTION_W + 8) * actionSize, (ACTION_H + 8) * actionSize)) ?? spots[0];
-  };
+  /** The first spot by this device that leaves the others in sight. */
+  const spotFor = (device: string): ReturnType<typeof scene.actionSpots>[number] | undefined => scene.actionSpots(device).filter(inView).find((s) => !scene.hides(device, s, (ACTION_W + 8) * actionSize, (ACTION_H + 8) * actionSize));
   /** A button on the table, with its arrow on the device it belongs to. */
   const putAction = (b: HTMLButtonElement, spot: { x: number; y: number; points?: string }, to: number): void => {
     b.style.transform = `translate(${spot.x.toFixed(0)}px, ${spot.y.toFixed(0)}px) scale(${actionSize.toFixed(3)})`;
@@ -1267,7 +1266,10 @@ function frame(now: number): void {
     if (spot.points) b.dataset.points = spot.points;
     else delete b.dataset.points;
   };
-  const pinned = `translate(${(ACTION_W / 2 + 8).toFixed(0)}px, ${lowest.toFixed(0)}px)`;
+  // With its device out of view, or nowhere free by it, a button waits at the side of the bar that has nothing on it.
+  const pinSpot = (right: boolean): { x: number; y: number } => ({ x: right ? window.innerWidth - ACTION_W / 2 - 8 : ACTION_W / 2 + 8, y: lowest });
+  if (scene.hides('', pinSpot(pinRight), ACTION_W, ACTION_H) && !scene.hides('', pinSpot(!pinRight), ACTION_W, ACTION_H)) pinRight = !pinRight;
+  const pinned = `translate(${pinSpot(pinRight).x.toFixed(0)}px, ${lowest.toFixed(0)}px)`;
   const outOfView: (typeof deviceActions)[number][] = [];
   for (const action of deviceActions) {
     const { device, menu } = action;
@@ -1299,7 +1301,7 @@ function frame(now: number): void {
   const reader = mode === 'idle' ? story.devices.find((d) => d.actions.includes('reading')) : undefined;
   readingBtn.hidden = !reader;
   if (reader) {
-    const spot = spotFor(reader.id) ?? scene.actionSpots(reader.id)[0]!;
+    const spot = spotFor(reader.id) ?? scene.actionSpots(reader.id).find(inView) ?? scene.actionSpots(reader.id)[0]!;
     putAction(readingBtn, { ...spot, x: Math.max(halfW, Math.min(window.innerWidth - halfW, spot.x)), y: Math.min(spot.y, lowest) }, spot.x);
   }
 
@@ -1414,10 +1416,27 @@ if (import.meta.env.DEV) {
         v = tl.total;
         paused = false;
         peek = peekTarget = 0;
+        doneFor = LINGER;
+      },
+      /** Where the camera means to be all through a run. */
+      path(step: number): (Camera & { v: number })[] {
+        const stops: (Camera & { v: number })[] = [];
+        for (let t = 0; t < tl.total; t += step) stops.push({ ...scene.followCamera(t), v: t });
+        return stops;
+      },
+      /** Set the Setup for the next run, as the popups do. */
+      setup(f: Partial<Features> & { cloud?: boolean; qos?: 0 | 1 | 2 }): void {
+        cloud = !!f.cloud;
+        qos = f.qos ?? 0;
+        showSmart();
+        for (const k of SETTINGS) if (features[k] !== !!f[k]) setSetting(k, !!f[k]);
+        preview();
       },
       /** Start a run straight away with these things on the table (for screenshots). */
-      start(f: Partial<Features> & { photo?: boolean; call?: boolean; ping?: boolean; trace?: boolean; spy?: string; cut?: string | string[]; slow?: boolean; vpn?: boolean; again?: boolean; from?: string; noise?: number; reading?: boolean }): void {
+      start(f: Partial<Features> & { photo?: boolean; call?: boolean; ping?: boolean; trace?: boolean; spy?: string; cut?: string | string[]; slow?: boolean; vpn?: boolean; again?: boolean; from?: string; noise?: number; reading?: boolean; cloud?: boolean; qos?: 0 | 1 | 2 }): void {
         reading = false;
+        cloud = !!f.cloud;
+        qos = f.qos ?? 0;
         client = f.from ?? 'laptop';
         if (f.noise !== undefined) noise = f.noise;
         carried = f.call ? 'call' : f.ping ? 'ping' : f.trace ? 'trace' : f.photo ? 'photo' : 'page';
