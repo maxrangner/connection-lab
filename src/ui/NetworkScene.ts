@@ -66,6 +66,10 @@ const UNUSED_OPACITY = 0.28;
 const STEP_BACK = 0.4;
 /** How wide a device's button is (see app.css), and how small it gets. */
 const ACTION_W = 104;
+const ACTION_H = 34;
+/** The sides of a device its button can stand on, best first, named for the way its arrow then points. */
+const ACTION_SIDES = ['up', 'down', 'left', 'right'] as const;
+type ActionSide = (typeof ACTION_SIDES)[number];
 const MIN_ACTION_SIZE = 0.7;
 /** What a device takes up around where it stands, with its trays above it and its name below, in SVG units. */
 const DEVICE_ROOM = { side: 75, up: 130, down: 70 };
@@ -267,10 +271,8 @@ export class NetworkScene {
   private quiet = false;
   /** The bubbles as last drawn, so they are not drawn again every frame. */
   private speechDrawn = '';
-  /** Where they are, in SVG units, by their top middle. */
-  private saying: { x: number; y: number; w: number; h: number }[] = [];
-  /** And the terminals. */
-  private printed: { x: number; y: number; w: number; h: number }[] = [];
+  /** The side of its device each button keeps during this run. */
+  private actionSides = new Map<string, ActionSide>();
   /** What the stranger has printed, while it has. */
   private heard: { g: SVGGElement; bottom: number } | null = null;
 
@@ -340,6 +342,7 @@ export class NetworkScene {
   setStory(story: Story, tl: Timeline): void {
     this.story = story;
     this.tl = tl;
+    this.actionSides.clear();
     this.yours = new Set(story.devices.filter((d) => d.actions.length).map((d) => d.id));
     this.owners = new Map(story.devices.flatMap((d) => (d.color ? [[d.id, d.color]] : [])));
     if (this.layoutKey() !== this.laidOut) this.buildDevices();
@@ -649,36 +652,43 @@ export class NetworkScene {
     return Math.max(MIN_ACTION_SIZE, Math.min(1, this.viewScale / this.followScale()));
   }
 
-  /** Where a device's button can go on the screen, in pixels, best first: just under its name, over its head, or beside it. */
-  actionSpots(device: string): { x: number; y: number; points: 'up' | 'down' | 'left' | 'right' }[] {
+  /** Where a device's button stands in the world on this side of it, at this zoom and size. */
+  private actionPoint(device: string, side: ActionSide, scale: number, size: number): { sx: number; sy: number } {
     const p = this.tl.pos.get(device) ?? { x: 0, y: 0 };
-    const size = this.actionSize();
     const name = iso(p.x, p.y + 1.9, 0);
-    const under = this.onScreen({ sx: name.sx, sy: name.sy + 26 });
-    const head = this.onScreen(iso(p.x, p.y, this.deviceTop(device) + 1.7));
-    const middle = this.onScreen(iso(p.x, p.y, this.deviceTop(device) / 2));
-    const beside = DEVICE_ROOM.side * this.viewScale + (ACTION_W / 2 + 14) * size;
-    return [
-      { x: under.x, y: under.y + 5 + 29 * size, points: 'up' },
-      { x: head.x, y: head.y - 24 * size, points: 'down' },
-      { x: middle.x + beside, y: middle.y, points: 'left' },
-      { x: middle.x - beside, y: middle.y, points: 'right' },
-    ];
+    const middle = iso(p.x, p.y, this.deviceTop(device) / 2);
+    const beside = DEVICE_ROOM.side + ((ACTION_W / 2 + 14) * size) / scale;
+    if (side === 'up') return { sx: name.sx, sy: name.sy + 26 + (5 + 29 * size) / scale };
+    if (side === 'down') {
+      const head = iso(p.x, p.y, this.deviceTop(device) + 1.7);
+      return { sx: head.sx, sy: head.sy - (24 * size) / scale };
+    }
+    return { sx: middle.sx + (side === 'left' ? beside : -beside), sy: middle.sy };
   }
 
-  /** Would something this big, centred here on the screen, stand in front of another device on the table, or of what one is saying? */
-  hides(device: string, spot: { x: number; y: number }, w: number, h: number): boolean {
-    const onWords = [...this.saying, ...this.printed].some((b) => {
-      const c = this.onScreen({ sx: b.x, sy: b.y });
-      return spot.x + w / 2 > c.x - (b.w / 2) * this.viewScale && spot.x - w / 2 < c.x + (b.w / 2) * this.viewScale && spot.y + h / 2 > c.y && spot.y - h / 2 < c.y + b.h * this.viewScale;
-    });
-    return onWords || this.devices.some(({ id }) => {
-      if (id === device || !this.present(id, this.now)) return false;
-      const p = this.tl.pos.get(id) ?? { x: 0, y: 0 };
-      const c = this.onScreen(iso(p.x, p.y));
-      const [side, up, down] = [DEVICE_ROOM.side * this.viewScale, DEVICE_ROOM.up * this.viewScale, DEVICE_ROOM.down * this.viewScale];
-      return spot.x + w / 2 > c.x - side && spot.x - w / 2 < c.x + side && spot.y + h / 2 > c.y - up && spot.y - h / 2 < c.y + down;
-    });
+  /** The side of a device its button keeps all through a run: the first that stands clear of everything this run can put on the table. */
+  private actionSide(device: string): ActionSide {
+    const known = this.actionSides.get(device);
+    if (known) return known;
+    const scale = this.followScale();
+    const [w, h] = [(ACTION_W + 8) / scale, (ACTION_H + 8) / scale];
+    const side = ACTION_SIDES.find((s) => {
+      const a = this.actionPoint(device, s, scale, 1);
+      return !this.devices.some(({ id }) => {
+        if (id === device || !this.shown(id)) return false;
+        const p = this.tl.pos.get(id) ?? { x: 0, y: 0 };
+        const c = iso(p.x, p.y);
+        return a.sx + w / 2 > c.sx - DEVICE_ROOM.side && a.sx - w / 2 < c.sx + DEVICE_ROOM.side && a.sy + h / 2 > c.sy - DEVICE_ROOM.up && a.sy - h / 2 < c.sy + DEVICE_ROOM.down;
+      });
+    }) ?? 'up';
+    this.actionSides.set(device, side);
+    return side;
+  }
+
+  /** Where a device's button is on the screen, in pixels, and which way its arrow points. */
+  actionSpot(device: string): { x: number; y: number; points: ActionSide } {
+    const points = this.actionSide(device);
+    return { ...this.onScreen(this.actionPoint(device, points, this.viewScale, this.actionSize())), points };
   }
 
   /** Everything else lying on the table, which the whole-network view must keep in frame. */
@@ -1228,7 +1238,6 @@ export class NetworkScene {
     this.readoutDrawn = drawn;
     this.readoutLayer.replaceChildren();
     this.heard = null;
-    this.printed = [];
     flags.forEach((f, i) => {
       const d = this.tl.pos.get(f.device) ?? { x: 0, y: 0 };
       const s = iso(d.x, d.y + 1.9, 0);
@@ -1246,7 +1255,6 @@ export class NetworkScene {
       if (device === this.story.listener) this.heard = { g, bottom: box.y + box.h };
       // One that hangs under its device has only to be as long as what it has printed so far.
       const h = this.tl.kind.get(device) === 'laptop' ? box.h : lines[n].length * TERM_LINE + TERM_PAD * 2;
-      this.printed.push({ x: box.x + box.w / 2, y: box.y, w: box.w, h });
       // An attacker's points up at its name, in one piece with the terminal, the way what a device says does.
       if (red) el('path', { d: `M8 0 H${TERM_TIP - 9} L${TERM_TIP} -10 L${TERM_TIP + 9} 0 H${box.w - 8} a8 8 0 0 1 8 8 V${h - 8} a8 8 0 0 1 -8 8 H8 a8 8 0 0 1 -8 -8 V8 a8 8 0 0 1 8 -8 Z`, class: 'term-bg term-red' }, g);
       else el('rect', { width: box.w, height: h, rx: 8, class: 'term-bg' }, g);
@@ -1277,11 +1285,9 @@ export class NetworkScene {
     if (drawn === this.speechDrawn) return;
     this.speechDrawn = drawn;
     this.speechLayer.replaceChildren();
-    this.saying = [];
     for (const { b, s, w, x, size, op } of looks) {
       const flagged = [...this.tl.readout.flags, ...this.tl.joinReadouts.flatMap((x) => x.readout.flags)].filter((f) => f.device === b.device && v >= f.t).length;
       const y = s.sy + (flagged ? SPEECH_UNDER_FLAG + (flagged - 1) * FLAG_ROW : SPEECH_UNDER_NAME);
-      this.saying.push({ x, y, w: w * big, h: 40 * big });
       const g = el('g', { class: 'mood', opacity: op.toFixed(3), transform: `translate(${x.toFixed(1)} ${y.toFixed(1)}) scale(${(size * big).toFixed(3)})` }, this.speechLayer);
       const tip = Math.max(-w / 2 + 28, Math.min(w / 2 - 28, (s.sx - x) / big));
       el('path', { d: `M${-w / 2 + 16} 8 H${tip - 9} L${tip} -2 L${tip + 9} 8 H${w / 2 - 16} a16 16 0 0 1 0 32 H${-w / 2 + 16} a16 16 0 0 1 0 -32 Z`, class: 'speech-bg' }, g);

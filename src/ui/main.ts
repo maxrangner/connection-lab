@@ -515,14 +515,9 @@ function showSmart(): void {
   for (const n of [0, 1, 2] as const) smartMenu.setOn(`qos${n}`, qos === n);
 }
 showSmart();
-/** The size of a device's "+ action" (see app.css), and how high it can go: clear of the chapter name. */
-const ACTION_W = 104;
+/** The height of a device's "+ action" (see app.css), and how high it can go: clear of the chapter name. */
 const ACTION_H = 34;
 const ACTION_TOP = 110;
-/** A button with nowhere by its device waits at the right of the bar, not the left. */
-let pinRight = false;
-/** How far past its middle the arrow of a button can go. */
-const ACTION_ARROW = ACTION_W / 2 - 20;
 /** What can start on a device with nothing to do, in the white of the cards. */
 const ACTIONS: Record<Job, { label: string; draw: (g: SVGGElement) => void }> = {
   page: {
@@ -564,24 +559,6 @@ const deviceActions = canStart.map(({ id: device, actions }) => {
 });
 /** A device can take on an action during a run while it has nothing to do. */
 const canAdd = (device: string): boolean => !reading && device !== client && !joined.some((j) => j.device === device);
-// Several devices out of view share one button, which asks which: a row of them would be more than a phone can take.
-const moreDevices = new Menu<string>(
-  root,
-  root,
-  '+ device',
-  'Add an action on a device out of view',
-  canStart.map((d) => ({ id: d.id, label: d.label })),
-  (id) => {
-    moreDevices.setOpen(false);
-    const { menu } = deviceActions.find((a) => a.device === id)!;
-    menu.button.hidden = false;
-    menu.button.style.transform = moreDevices.button.style.transform;
-    setText(menu.button, `+ ${id}`);
-    menu.setOpen(true);
-  },
-);
-moreDevices.mark('action-menu');
-moreDevices.button.hidden = true;
 // Under the sensor between runs: what is sent is whatever the sensor reads right now.
 const readingBtn = document.createElement('button');
 readingBtn.className = 'action-menu';
@@ -666,7 +643,7 @@ const about = {
   place(): void {},
 };
 aboutBtn.addEventListener('click', () => about.setOpen(!about.isOpen));
-const menus: { isOpen: boolean; setOpen(open: boolean): void; place(): void; button: HTMLButtonElement }[] = [speedMenu, toolsMenu, setupMenu, attackMenu, ...deviceActions.map((a) => a.menu), moreDevices, about];
+const menus: { isOpen: boolean; setOpen(open: boolean): void; place(): void; button: HTMLButtonElement }[] = [speedMenu, toolsMenu, setupMenu, attackMenu, ...deviceActions.map((a) => a.menu), about];
 for (const menu of menus) {
   menu.button.addEventListener('click', () => {
     for (const other of menus) if (other !== menu) other.setOpen(false);
@@ -1253,66 +1230,26 @@ function frame(now: number): void {
   snapCamera = false;
   scene.applyCamera(cam);
   const lowest = (spyCard.top ?? window.innerHeight - scene.barHeight) - ACTION_H / 2 - 8;
-  const actionSize = scene.actionSize();
-  const halfW = (ACTION_W / 2) * actionSize + 8;
-  const onScreen = (x: number): number => Math.max(halfW, Math.min(window.innerWidth - halfW, x));
-  const inView = (s: { x: number; y: number; points: string }): boolean => {
-    // Above or below, a button can slide in from the edge and still point back. Beside its device, it would slide onto it.
-    const across = s.points === 'left' || s.points === 'right' ? s.x === onScreen(s.x) : s.x > -ACTION_W / 2 && s.x < window.innerWidth + ACTION_W / 2;
-    return across && s.y >= ACTION_TOP && s.y <= lowest;
+  /** A button stands by its device and moves only as the device does: out of view with it, and not over the bar. */
+  const putAction = (b: HTMLButtonElement, device: string): void => {
+    const spot = scene.actionSpot(device);
+    const size = scene.actionSize();
+    b.hidden = spot.y < ACTION_TOP || spot.y > lowest;
+    b.style.transform = `translate(${spot.x.toFixed(0)}px, ${spot.y.toFixed(0)}px) scale(${size.toFixed(3)})`;
+    b.style.setProperty('--size', size.toFixed(3));
+    b.dataset.points = spot.points;
   };
-  /** A device's button stays by it while it can be seen: at the first spot that leaves the others in sight, or else at any, with `to` where its arrow aims. */
-  const spotFor = (device: string): (ReturnType<typeof scene.actionSpots>[number] & { to: number }) | undefined => {
-    // Beside a device near the bar, a button can stand a little higher than the device's middle.
-    const spots = scene.actionSpots(device).map((s) => (s.points === 'left' || s.points === 'right' ? { ...s, y: Math.min(s.y, lowest) } : s)).filter(inView).map((s) => ({ ...s, to: s.x, x: onScreen(s.x) }));
-    return spots.find((s) => !scene.hides(device, s, (ACTION_W + 8) * actionSize, (ACTION_H + 8) * actionSize)) ?? spots[0];
-  };
-  /** A button on the table, with its arrow on the device it belongs to. */
-  const putAction = (b: HTMLButtonElement, spot: { x: number; y: number; to: number; points?: string }): void => {
-    b.style.transform = `translate(${spot.x.toFixed(0)}px, ${spot.y.toFixed(0)}px) scale(${actionSize.toFixed(3)})`;
-    b.style.setProperty('--size', actionSize.toFixed(3));
-    b.style.setProperty('--arrow', `${Math.max(-ACTION_ARROW, Math.min(ACTION_ARROW, (spot.to - spot.x) / actionSize)).toFixed(0)}px`);
-    if (spot.points) b.dataset.points = spot.points;
-    else delete b.dataset.points;
-  };
-  // With its device out of view, a button waits at the side of the bar that has nothing on it.
-  const pinSpot = (right: boolean): { x: number; y: number } => ({ x: right ? window.innerWidth - ACTION_W / 2 - 8 : ACTION_W / 2 + 8, y: lowest });
-  if (scene.hides('', pinSpot(pinRight), ACTION_W, ACTION_H) && !scene.hides('', pinSpot(!pinRight), ACTION_W, ACTION_H)) pinRight = !pinRight;
-  const pinned = `translate(${pinSpot(pinRight).x.toFixed(0)}px, ${lowest.toFixed(0)}px)`;
-  const outOfView: (typeof deviceActions)[number][] = [];
-  for (const action of deviceActions) {
-    const { device, menu } = action;
+  for (const { device, menu } of deviceActions) {
     // It needs something left to run alongside. Closed first: the popup hands focus back to the button.
     const free = mode === 'play' && v < tl.total && canAdd(device);
     if (!free) menu.setOpen(false);
     menu.button.hidden = !free;
     // Open, it stays put: the run goes on, and what you are aiming for must not move.
-    if (!free || menu.isOpen) continue;
-    const spot = spotFor(device);
-    if (spot) {
-      setText(menu.button, '+ action');
-      putAction(menu.button, spot);
-    } else outOfView.push(action);
+    if (free && !menu.isOpen) putAction(menu.button, device);
   }
-  // With its device out of view a button waits in one quiet spot, and says whose it is.
-  const picking = deviceActions.some((a) => a.menu.isOpen);
-  const shared = outOfView.length > 1;
-  for (const { device, menu } of outOfView) {
-    menu.button.hidden = shared || picking;
-    setText(menu.button, `+ ${device}`);
-    menu.button.style.transform = pinned;
-    delete menu.button.dataset.points;
-  }
-  if (!shared || picking) moreDevices.setOpen(false);
-  moreDevices.button.hidden = !shared || picking;
-  moreDevices.button.style.transform = pinned;
-  for (const { device } of deviceActions) moreDevices.setShown(device, outOfView.some((a) => a.device === device));
   const reader = mode === 'idle' ? story.devices.find((d) => d.actions.includes('reading')) : undefined;
   readingBtn.hidden = !reader;
-  if (reader) {
-    const under = scene.actionSpots(reader.id)[0]!;
-    putAction(readingBtn, spotFor(reader.id) ?? { ...under, to: under.x, x: onScreen(under.x), y: Math.min(under.y, lowest) });
-  }
+  if (reader) putAction(readingBtn, reader.id);
 
   const shown = mode === 'play' ? v : idleV;
   scene.render(shown, mode === 'play' ? 0 : riseK);

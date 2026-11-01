@@ -1206,7 +1206,7 @@ button.action-menu::after {
 button.action-menu[data-points]::after {
   content: '';
   position: absolute;
-  left: calc(50% + var(--arrow, 0px) - 9px);
+  left: calc(50% - 9px);
   width: 18px;
   height: 11px;
   background: var(--app);
