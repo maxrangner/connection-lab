@@ -802,8 +802,14 @@ export class NetworkScene {
       const d = this.tl.pos.get(hit.seg.step.device) ?? { x: 0, y: 0 };
       p = v3(d.x, d.y, this.deviceTop(hit.seg.step.device) + 1.5);
     } else if (hit?.seg.flow) {
-      // One small ACK: follow it like a packet.
-      p = this.blockAt(hit.seg.flow[0]!, v) ?? packetPos(this.tl, hit.seg, hit.k);
+      // One small ACK: follow it like a packet, unless whoever sent it gets straight to work: the story stays there.
+      const next = this.tl.segs[this.tl.segs.indexOf(hit.seg) + 1];
+      const nextAt = next?.flow ? next.flow[0]?.hops[0]?.from : next && 'device' in next.step ? next.step.device : undefined;
+      const sender = hit.seg.flow[0]!.hops[0]?.from;
+      if (sender && nextAt === sender) {
+        const d = this.tl.pos.get(sender) ?? { x: 0, y: 0 };
+        p = v3(d.x, d.y, this.deviceTop(sender) + 1.5);
+      } else p = this.blockAt(hit.seg.flow[0]!, v) ?? packetPos(this.tl, hit.seg, hit.k);
     } else if (hit) {
       p = packetPos(this.tl, hit.seg, hit.k);
       if (hit.seg.step.kind === 'read' && hit.seg.step.device === hit.seg.trip.client) p = v3(p.x, p.y, lerp(p.z, 1.2, hit.k));
