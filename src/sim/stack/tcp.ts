@@ -622,6 +622,15 @@ export class TcpConnection {
     });
   }
 
+  /** Gives up on the connection without a word: when the far end has gone silent, there is nobody to say it to. */
+  abort(): void {
+    this.host.sim.cancel(this.rtoTimer);
+    this.rtoTimer = undefined;
+    this.outstanding = [];
+    this.setState('CLOSED');
+    this.host.tcpRemove(this);
+  }
+
   private enterTimeWait(): void {
     this.setState('TIME_WAIT');
     const sim = this.host.sim;

@@ -24,6 +24,16 @@ const DHCP: Record<string, (rest: string) => string> = {
   ACK: () => "It's yours",
 };
 
+/** What each step of a QoS exchange, or of an app coming back, comes down to. */
+const MQTT: Record<string, string> = {
+  PUBACK: 'Got it',
+  PUBREC: 'I have it, and only once',
+  PUBREL: 'Good, I can forget mine',
+  PUBCOMP: 'All done',
+  CONNECT: "I'm back!",
+  CONNACK: 'Welcome back',
+};
+
 /** The plain meaning of a packet, if it has one worth saying. */
 function lineOf(t: Trip): string | null {
   if (t.chapter === 'attack') {
@@ -37,6 +47,7 @@ function lineOf(t: Trip): string | null {
   if (card === 'bye' || t.l4Label.includes('FIN')) return 'Bye!';
   if (t.l4Label.includes('RST')) return 'No, sorry';
   if (card === 'unreachable') return "Can't get there";
+  if (t.message?.kind === 'mqtt-control') return MQTT[card] ?? null;
   // The broker says this once, for everyone: it sends a copy to each app.
   if (t.message?.kind === 'reading') return t.outward ? `It's ${card}` : 'A copy for everyone listening';
   switch (t.chapter) {

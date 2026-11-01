@@ -95,6 +95,16 @@ export class Menu<T extends string> {
     if (b) b.style.display = shown ? '' : 'none';
   }
 
+  /** Gives an item a row of its own in the popup, for something else to go beside it. */
+  row(id: T): HTMLElement {
+    const b = this.items.get(id)!;
+    const row = document.createElement('div');
+    row.className = 'menu-row';
+    b.replaceWith(row);
+    row.appendChild(b);
+    return row;
+  }
+
   /** Keeps the popup by its button, inside the screen: above it, unless only below fits. */
   place(): void {
     if (!this.isOpen) return;

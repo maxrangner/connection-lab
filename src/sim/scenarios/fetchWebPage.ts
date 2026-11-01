@@ -15,6 +15,7 @@ import * as tlsCern from './tlsCapture_info_cern_ch';
 import * as tlsPhoto from './tlsCapture_httpbin_org';
 import { CERN_A_RECORDS, CERN_DNS_TTL, CERN_HOST, CERN_HTTP_REQUEST, CERN_HTTP_RESPONSE_BASE64, CERN_IP, CERN_PATH } from './infoCernCapture';
 import { PHOTO_A_RECORDS, PHOTO_DNS_TTL, PHOTO_HOST, PHOTO_HTTP_REQUEST, PHOTO_HTTP_RESPONSE_BASE64, PHOTO_IP, PHOTO_PATH } from './photoCapture';
+import type { MqttQos } from '../proto/mqtt';
 import { RTP_PORT } from '../proto/rtp';
 import { VOICE_CLIP_CALLER_BASE64, VOICE_CLIP_FRIEND_BASE64 } from './voiceClip';
 
@@ -35,9 +36,11 @@ export const ADDR = {
   laptop: { ip: '192.168.1.23', mac: '3c:22:fb:5a:10:e4' },
   phone: { ip: '192.168.1.42', mac: 'f0:5c:77:3e:91:2a' },
   sensor: { ip: '192.168.1.60', mac: '84:f3:eb:2c:41:9e' },
+  localBroker: { ip: '192.168.1.2', mac: 'dc:a6:32:5e:7b:10' },
   homeLan: { ip: '192.168.1.1', mac: 'a4:91:b1:7d:02:01' },
   homeWlan: { ip: '192.168.1.1', mac: 'a4:91:b1:7d:02:03' },
   homeSensor: { ip: '192.168.1.1', mac: 'a4:91:b1:7d:02:04' },
+  homeBroker: { ip: '192.168.1.1', mac: 'a4:91:b1:7d:02:05' },
   homeWan: { ip: '203.0.113.7', mac: 'a4:91:b1:7d:02:02' },
   ispCustomer: { ip: '203.0.113.1', mac: '00:1b:21:3a:4c:01' },
   ispToResolver: { ip: '198.51.100.1', mac: '00:1b:21:3a:4c:02' },
@@ -145,13 +148,17 @@ export interface FetchWebPageOptions {
   noise?: number;
   /** Attackers on the table. See `Attack`. */
   attacks?: Attack[];
-  /** A smart home: a sensor on the Wi-Fi, and an MQTT broker out on the internet that it and your apps connect to. */
+  /** A smart home: a sensor on the Wi-Fi, and an MQTT broker on your home network that it and your apps connect to. */
   smart?: boolean;
+  /** The broker is out on the internet instead: reachable from anywhere, and everything goes out through the NAT and back. */
+  cloud?: boolean;
   /**
    * Instead of a job on the laptop or phone, the sensor takes a reading (with `smart`, which this turns on). Everyone has
    * been connected for a while by then, as in any home: that part really runs, before `READING_AT`, and is not told.
    */
   reading?: boolean;
+  /** How sure a reading is of arriving. See `MqttQos`. */
+  qos?: MqttQos;
 }
 
 /**
@@ -192,7 +199,12 @@ const SCAN = { ports: [21, 22, 23, 25, 80, 443, 3306, 8080], open: [22, 443], ga
 export type { Action, Job };
 
 /** When a reading is taken, in seconds: long after the sensor and the apps are connected, even over a satellite. */
-export const READING_AT = 10;
+export const READING_AT = 20;
+/**
+ * A line that is cut as a reading is taken has been out for a while: from here. Long enough before it for keep-alive to find
+ * out on both sides, so a device on that line is properly gone by then, and not just late.
+ */
+export const OFFLINE_AT = 10;
 const BROKER_NAME = 'broker.example';
 const TEMPERATURE_TOPIC = 'home/livingroom/temperature';
 
@@ -276,6 +288,20 @@ const SENSOR: HomeDevice = {
   link: { id: 'wlan2', bitsPerSecond: 72e6, delay: 3e-8, label: 'Wi-Fi · 72 Mbit/s', name: "the sensor's Wi-Fi" },
   actions: ['reading'],
   color: '#c98a1b',
+};
+
+/** A broker at home, as on a small computer in a cupboard, on a cable of its own into the router. */
+const LOCAL_BROKER: HomeDevice = {
+  id: 'local-broker',
+  label: 'MQTT broker',
+  kind: 'mqtt-broker',
+  layout: { x: 820, y: 585 },
+  ...ADDR.localBroker,
+  iface: { name: 'eth0' },
+  port: { id: 'home.lan2', name: 'lan2', ...ADDR.homeBroker },
+  link: { id: 'lan2', bitsPerSecond: 1e9, delay: 5e-8, label: 'Ethernet cable · 1 Gbit/s', name: "the broker's cable" },
+  actions: [],
+  color: '#7a8a99',
 };
 
 /** What the scenario needs to know about each real site. */
@@ -366,9 +392,10 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
   const warm = revisit || !!opts.warmArp;
   const reading = !!opts.reading;
   const smart = reading || !!opts.smart;
-  const homes = opts.home ?? (smart ? [...HOME_DEVICES, SENSOR] : HOME_DEVICES);
+  const cloud = smart && !!opts.cloud;
+  const homes = opts.home ?? (smart ? [...HOME_DEVICES, SENSOR, ...(cloud ? [] : [LOCAL_BROKER])] : HOME_DEVICES);
   const from = opts.from ?? (reading ? SENSOR.id : homes[0]!.id);
-  const idle = homes.map((d) => d.id).filter((id) => id !== from && !opts.joins?.some((j) => j.device === id));
+  const idle = homes.filter((d) => EVERY_JOB.some((j) => d.actions.includes(j))).map((d) => d.id).filter((id) => id !== from && !opts.joins?.some((j) => j.device === id));
   const joins = (opts.joins ?? []).map((j) => {
     const device = j.device ?? idle.shift();
     if (!homes.some((d) => d.id === device) || device === from) throw new Error(`No free device for this job: ${device}`);
@@ -411,7 +438,8 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
     ? Array.from({ length: BOTS }, (_, i) => outsider(i + 1, `bot${i + 1}`, `Bot ${i + 1}`, 'bot', [{ kind: 'flood', to: server.ip, port: 80, packets: FLOOD.packets, burst: FLOOD.burst, gap: FLOOD.gap, bytes: FLOOD.bytes }]))
     : [];
   const scanner = attacks.has('scan') ? [outsider(BOTS + 1, 'scanner', 'Scanner', 'scanner', [{ kind: 'port-scan', to: server.ip, ports: SCAN.ports, gap: SCAN.gap }])] : [];
-  const broker = smart ? [outsider(BOTS + 2, 'broker', 'MQTT broker', 'mqtt-broker', [{ kind: 'mqtt-broker', processing: 0.0003 }])] : [];
+  const brokerApp = { kind: 'mqtt-broker' as const, processing: 0.0003, watchUntil: READING_AT };
+  const broker = cloud ? [outsider(BOTS + 2, 'broker', 'MQTT broker', 'mqtt-broker', [brokerApp])] : [];
   const outsiders = [...bots, ...scanner, ...broker];
   const resolver = ADDR.resolver.ip;
   const jobs: Record<Job, () => AppSpec> = {
@@ -426,7 +454,8 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
     apps: [jobs[job]()],
   });
   const appsOf = (d: HomeDevice) => {
-    const client = { kind: 'mqtt-client' as const, clientId: d.id, broker: BROKER_NAME, resolver };
+    if (d.kind === 'mqtt-broker') return { apps: [brokerApp] };
+    const client = { kind: 'mqtt-client' as const, clientId: d.id, broker: cloud ? BROKER_NAME : LOCAL_BROKER.ip, resolver, qos: opts.qos ?? 0, watchUntil: READING_AT };
     if (reading) return { apps: [d.id === from ? { ...client, publish: { topic: TEMPERATURE_TOPIC, at: READING_AT } } : { ...client, subscribe: TEMPERATURE_TOPIC }] };
     const join = joins.find((j) => j.device === d.id);
     return d.id === from ? browser(d.port) : join ? joined(join.job, d.port) : { apps: [] };
@@ -466,7 +495,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
     startDevice: from,
     ...(joins.length ? { companions: joins.map(({ device, at }) => ({ device, at })) } : {}),
     // Your apps are jobs of their own, already connected by the time anything is told.
-    ...(reading ? { quietUntil: READING_AT, companions: homes.filter((d) => d.id !== from).map((d) => ({ device: d.id, at: 0 })) } : {}),
+    ...(reading ? { quietUntil: READING_AT, companions: homes.filter((d) => d.id !== from && d.actions.length).map((d) => ({ device: d.id, at: 0 })) } : {}),
     ...(bots.length || scanner.length ? { attackers: [...bots.map((b, i) => ({ device: b.device.id, at: (reading ? READING_AT : 0) + i * FLOOD.stagger })), ...scanner.map((s) => ({ device: s.device.id, at: reading ? READING_AT : 0 }))] } : {}),
     tcp: { clientMss: opts.vpn ? Math.min(mss, 1380) : mss, serverMss: 1460 },
     devices: [
@@ -493,6 +522,8 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           ...(warm ? macsOf([from, ...joins.map((j) => j.device)]) : {}),
         },
         nat: { inside: homes.map((d) => d.port.id), outside: 'home.wan' },
+        // With a broker at home, traffic stays inside: the router is simply the switch between its ports.
+        ...(smart && !cloud ? { bridge: Object.fromEntries(homes.map((d) => [d.mac, d.port.id])) } : {}),
         // The router's DHCP server is always there; a device only asks it when it starts without an address. Each
         // device gets the address the scenario knows it by, so "where does 192.168.1.23 come from?" has one answer.
         dhcp: {

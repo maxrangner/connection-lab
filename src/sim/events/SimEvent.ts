@@ -62,6 +62,10 @@ export type AppAction =
   | 'mqtt-publish' // a client sends a message to a topic
   | 'mqtt-forward' // the broker hands a copy to a subscriber
   | 'mqtt-received' // an app got a message for its topic
+  | 'mqtt-held' // the broker keeps a message for a client that is away, until it comes back
+  | 'mqtt-missed' // nobody will ever send this message to a client that was away: QoS 0
+  | 'mqtt-offline' // a client or the broker gave up on a silent connection
+  | 'mqtt-back' // a client is connected again
   | 'rtp-gap' // a sequence number was skipped: the packet is lost and nothing asks for it again; silence is played instead
   | 'rtp-late' // a packet from before what has already been played, or one seen already: thrown away
   | 'call-done' // both clips are through: the call hangs up

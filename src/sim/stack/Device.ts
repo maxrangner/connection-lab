@@ -166,7 +166,8 @@ export abstract class Device {
     }
     // Over Wi-Fi the radio receiver (address 1) must be us too.
     const heard = !wifi || wifi.addr1 === iface.mac || wifi.addr1 === BROADCAST_MAC;
-    if (!heard || (eth.dst !== iface.mac && eth.dst !== BROADCAST_MAC)) {
+    const port = this.spec.bridge?.[eth.dst];
+    if (!heard || (eth.dst !== iface.mac && eth.dst !== BROADCAST_MAC && !port)) {
       sim.emit({ type: 'drop', packetId, reason: 'not-for-me', deviceId: this.id, frameId });
       return;
     }
@@ -185,12 +186,22 @@ export abstract class Device {
       const arpBytes = frame.slice(eth.payloadStart, eth.payloadStart + 28);
       const pduId = sim.pdu(packetId, arpBytes, 'arp');
       sim.emit({ type: 'decapsulate', deviceId: this.id, packetId, layer: 2, protocol: l2, pduId });
+      if (port) {
+        this.sendFrame(this.iface(port), eth.dst, eth.type, arpBytes, packetId, eth.src);
+        return;
+      }
+      this.floodArp(iface, arpBytes, eth.src, packetId);
       this.onArp(iface, arpBytes, packetId);
     } else if (eth.type === ETHERTYPE_IPV4) {
       const ip = parseIpv4(frame, eth.payloadStart);
       const ipBytes = frame.slice(eth.payloadStart, eth.payloadStart + ip.totalLength);
       const pduId = sim.pdu(packetId, ipBytes, 'ipv4');
       sim.emit({ type: 'decapsulate', deviceId: this.id, packetId, layer: 2, protocol: l2, pduId });
+      // A switch reads the frame and no further: same addresses, same TTL, nothing to translate.
+      if (port) {
+        this.sendFrame(this.iface(port), eth.dst, eth.type, ipBytes, packetId, eth.src);
+        return;
+      }
       if (!ip.checksumValid) {
         sim.emit({ type: 'drop', packetId, reason: 'bad-checksum', deviceId: this.id });
         return;
@@ -200,6 +211,12 @@ export abstract class Device {
   }
 
   protected abstract onIpv4(iface: IfaceSpec, ipBytes: Uint8Array, packetId: string): void;
+
+  /** A switch passes a broadcast on to its other ports. Who has the router's own address, only the router need answer. */
+  private floodArp(from: IfaceSpec, arpBytes: Uint8Array, src: Mac, packetId: string): void {
+    if (!this.spec.bridge || this.ownsIp(parseArp(arpBytes, 0).tpa)) return;
+    for (const port of new Set(Object.values(this.spec.bridge))) if (port !== from.id) this.sendFrame(this.iface(port), BROADCAST_MAC, ETHERTYPE_ARP, arpBytes, packetId, src);
+  }
 
   /** A frame picked out of the air by a radio it was not sent to. It changes nothing: nobody knows it was heard. */
   overhear(frame: Uint8Array, frameId: string): void {
@@ -327,7 +344,8 @@ export abstract class Device {
     return owner && other ? owner.iface(other).mac : BROADCAST_MAC;
   }
 
-  protected sendFrame(iface: IfaceSpec, dstMac: Mac, type: number, payload: Uint8Array, packetId: string): void {
+  /** `from` is whose frame it is, when a switch passes on someone else's. */
+  protected sendFrame(iface: IfaceSpec, dstMac: Mac, type: number, payload: Uint8Array, packetId: string, from: Mac = iface.mac): void {
     const link = this.world.ifaceLink.get(iface.id);
     if (!link) throw new Error(`${iface.id} has no link`);
     let frame: Uint8Array;
@@ -338,10 +356,10 @@ export abstract class Device {
       // Going up, address 1 is the access point and 3 the real destination; coming down, 1 is the phone and 3 the sender.
       // Here the access point is built into the router, so the access point's MAC is the router's own (its BSSID).
       const up = iface.wifi === 'station';
-      header = { toAp: up, addr1: up ? this.bssid(iface) : dstMac, addr2: iface.mac, addr3: up ? dstMac : iface.mac, seq, type };
+      header = { toAp: up, addr1: up ? this.bssid(iface) : dstMac, addr2: iface.mac, addr3: up ? dstMac : from, seq, type };
       frame = buildWifi(header, payload);
     } else {
-      frame = buildEthernet({ dst: dstMac, src: iface.mac, type }, payload);
+      frame = buildEthernet({ dst: dstMac, src: from, type }, payload);
     }
     const protocol = iface.wifi ? 'wifi' : 'ethernet';
     const frameId = this.sim.pdu(packetId, frame, protocol);

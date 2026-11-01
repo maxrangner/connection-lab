@@ -162,6 +162,8 @@ const POS: Record<string, { x: number; y: number }> = {
   laptop: { x: 0, y: 0 },
   // The phone sits in front of the home router, talking to it over Wi-Fi.
   phone: { x: 8, y: 8 },
+  // A broker at home, on its own cable from the router, on the far side from your own things.
+  'local-broker': { x: 14, y: 3 },
   // The sensor is on the wall well behind the cable to the router, so the button under it stays clear of the router.
   sensor: { x: 1, y: -9 },
   'home-router': { x: 8, y: 0 },
@@ -557,8 +559,8 @@ export function formatWait(s: number): string {
   return ms >= 1000 ? `${Number(s.toFixed(1))} s` : `${ms} ms`;
 }
 
-/** The small blocks that say what they are: the first few plain ACKs of a stream. A SYN or a reset has no data either, and is no ACK. */
-export const namedAcks = (flow: FlowPacket[]): FlowPacket[] => flow.filter((p) => p.trip.l4Label === 'ACK').slice(0, NAMED_ACKS);
+/** The small blocks that say what they are: the first few plain ACKs of a stream, and a QoS step. A SYN or a reset has no data either, and is no ACK. */
+export const namedAcks = (flow: FlowPacket[]): FlowPacket[] => flow.filter((p) => p.trip.l4Label === 'ACK' || p.trip.message?.kind === 'mqtt-control').slice(0, NAMED_ACKS);
 
 /** What a stream has heard and sent so far. Traffic carries on from a stream that a dropped card cut short. */
 interface FlowState {
@@ -735,7 +737,7 @@ function arrivalFace(trip: Trip, device: string, arrived: Set<string>, filled: S
     for (let m = 1; m < trip.part.n; m++) if (!filled.has(m)) return 'confused';
     return 'thumbs';
   }
-  if (trip.chapter === 'page' && !trip.outward) return 'love';
+  if (trip.chapter === 'page' && !trip.outward) return trip.message?.kind === 'mqtt-control' ? 'thumbs' : 'love';
   if (!trip.outward) return 'thumbs';
   if (trip.chapter === 'hello' && trip.l4Label === 'ACK') return 'thumbs';
   return null;

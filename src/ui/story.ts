@@ -67,7 +67,7 @@ export interface Row {
   value: string;
 }
 export type Details = Partial<Record<PartKey, Row[]>>;
-export type Message = { kind: 'dns-answer'; name: string } | { kind: 'http-request'; path: string } | { kind: 'http-response' } | { kind: 'reading' };
+export type Message = { kind: 'dns-answer'; name: string } | { kind: 'http-request'; path: string } | { kind: 'http-response' } | { kind: 'reading' } | { kind: 'mqtt-control' };
 
 export type Step = (
   | { kind: 'appear'; device: string }
@@ -353,7 +353,7 @@ function seenOn(pdu: PduSnapshot | undefined, p: PacketInfo): Seen | undefined {
   if (p.kind === 'flood') return { ...base, lines: ['junk'], kind: 'open' };
   // Plain MQTT: the topic and the reading are right there in the bytes.
   const mqtt = layer(pdu, 'mqtt');
-  if (mqtt) return { ...base, lines: [field(mqtt, 'mqtt.topic'), readingOf(mqtt)], kind: 'open' };
+  if (mqtt) return { ...base, lines: field(mqtt, 'mqtt.payload') ? [field(mqtt, 'mqtt.topic'), readingOf(mqtt)] : [mqttName(mqtt)], kind: 'open' };
   const icmp = layer(pdu, 'icmp');
   if (icmp) return { ...base, lines: [icmpCardLabel(icmp.summary)], kind: 'open' };
   const tls = layer(pdu, 'tls');
@@ -373,6 +373,8 @@ function seenOn(pdu: PduSnapshot | undefined, p: PacketInfo): Seen | undefined {
 
 /** A published reading as a person would say it. */
 const readingOf = (mqtt: LayerPdu): string => `${field(mqtt, 'mqtt.payload')} °C`;
+/** "MQTT PUBACK 1" → "PUBACK". */
+const mqttName = (mqtt: LayerPdu): string => mqtt.summary.split(' ')[1] ?? 'MQTT';
 
 const rowsOf = (fields: Field[]): Row[] =>
   fields.filter((f) => f.importance === 'key').flatMap((f) => [{ name: f.name, value: clip(f.display, 30) }, ...rowsOf(f.children ?? [])]);
@@ -409,7 +411,7 @@ function httpMessage(line: string): Message | undefined {
 }
 
 function messageOf(app: LayerPdu | undefined): Message | undefined {
-  if (app?.protocol === 'mqtt') return { kind: 'reading' };
+  if (app?.protocol === 'mqtt') return { kind: field(app, 'mqtt.payload') ? 'reading' : 'mqtt-control' };
   if (app?.protocol === 'http') return httpMessage(app.summary.replace(/^HTTP /, ''));
   // A referral is a server's answer too: "not me, ask these"; it looked the name up to say so.
   if (app?.protocol === 'dns' && /^DNS (response|referral)/.test(app.summary)) return { kind: 'dns-answer', name: field(app, 'dns.question').split(' ')[0]! };
@@ -602,7 +604,7 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
   if (!arp && (!ip || (!l4 && !icmp))) return null;
   const app = layer(packet, 'http') ?? layer(packet, 'dns') ?? layer(packet, 'dhcp') ?? layer(packet, 'rtp') ?? layer(packet, 'mqtt');
   const dataBytes = arp ? arp.end - arp.start : icmp ? icmp.end - icmp.start : l4!.payloadEnd - l4!.headerEnd;
-  const appCard = (a: LayerPdu): string => (a.protocol === 'http' ? cardLabel(a.summary) : a.protocol === 'dhcp' ? dhcpCardLabel(a.summary) : a.protocol === 'rtp' ? 'voice' : a.protocol === 'mqtt' ? readingOf(a) : dnsCardLabel(a.summary));
+  const appCard = (a: LayerPdu): string => (a.protocol === 'http' ? cardLabel(a.summary) : a.protocol === 'dhcp' ? dhcpCardLabel(a.summary) : a.protocol === 'rtp' ? 'voice' : a.protocol === 'mqtt' ? (field(a, 'mqtt.payload') ? readingOf(a) : mqttName(a)) : dnsCardLabel(a.summary));
   // What the device is running: ping numbers its cards out of its count, traceroute's probes say their TTL.
   const apps = r.scenario.devices.flatMap((d) => d.apps);
   const probeApp = apps.find((a) => a.kind === 'ping');
@@ -627,7 +629,8 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
   if ((p.kind === 'dns' && packet.layers.some((x) => x.summary.startsWith('DNS query'))) || ownDhcp) asked.set(askKey, p.createdAt);
   const resend = r.events.find((e) => e.type === 'tcp:retransmit' && e.packetId === p.id);
   const timer = resend?.type === 'tcp:retransmit' && resend.cause === 'rto' ? resend.rto : askedAt !== undefined ? p.createdAt - askedAt : undefined;
-  const client = clients[p.job]!;
+  // A reading is one story, whoever's connection a packet is on; an app coming back is part of it.
+  const client = r.scenario.quietUntil !== undefined && !attackers.includes(clients[p.job]!) ? r.scenario.startDevice : clients[p.job]!;
   const tracing = r.scenario.devices.find((d) => d.id === client)?.apps.some((a) => a.kind === 'traceroute');
   // Echoes are ping's; probes, and the errors they provoke, traceroute's (an error in a ping run is ping's too).
   const chapter: Chapter = attackers.includes(client) ? 'attack' : arp ? 'arp' : p.kind === 'dhcp' ? 'address' : p.kind === 'dns' ? 'dns' : p.kind === 'rtp' ? 'call' : p.kind === 'probe' ? 'trace' : icmp ? (icmp.summary.startsWith('ICMP echo') || !tracing ? 'ping' : 'trace') : dataBytes > 0 || flags & TCP_RST ? 'page' : 'hello';
@@ -881,6 +884,12 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
   };
 }
 
+/** QoS on the sensor's own connection is told in full. The same steps with each app are the same again, as small blocks. */
+const appLeg = (t: Trip): boolean => {
+  const read = [...t.steps].reverse().find((s) => s.kind === 'read');
+  return t.message?.kind === 'mqtt-control' && t.origin !== t.client && read?.kind === 'read' && read.device !== t.client;
+};
+
 /**
  * The ACK that ends the hello is a whole packet. The rest run as small blocks, as in a stream: there is nothing to open, but
  * you see the receiver answer, so a sender that hears nothing has a visible reason to wait.
@@ -888,7 +897,7 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
 function smallAcks(trips: Trip[], from: Chapter = 'dns'): Trip[] {
   let chapter = from;
   return trips.map((t) => {
-    if (t.l4Label !== 'ACK' || t.hello) {
+    if ((t.l4Label !== 'ACK' || t.hello) && !appLeg(t)) {
       chapter = t.chapter;
       return t;
     }
@@ -985,6 +994,8 @@ function addLookups(trips: Trip[], title: string | null): void {
  * fetching alongside gets the plain one-packet page.
  */
 function numberParts(trips: Trip[], r: SimResult, client: string): void {
+  // Readings are messages of their own, not the pieces of a page.
+  if (r.scenario.quietUntil !== undefined) return;
   const parts = trips.filter((t) => t.chapter === 'page' && !t.outward && t.client === client && t.dataBytes > 0);
   const seqOf = (t: Trip): number => r.packets.get(t.packetId)?.tcp?.relSeq ?? 0;
   const seqs = [...new Set(parts.map(seqOf))].sort((a, b) => a - b);

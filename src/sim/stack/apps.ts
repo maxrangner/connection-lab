@@ -2,7 +2,7 @@ import type { Ip4 } from '../bytes/addr';
 import { concat, setU16, toAscii } from '../bytes/bytes';
 import type { AppSpec } from '../model';
 import { buildDnsQuery, buildDnsResponse, DNS_RCODE_NXDOMAIN, DNS_RCODE_OK, DNS_RCODE_SERVFAIL, DNS_TYPE_A, dnsAddresses, dnsReferral, dnsSummary, parseDns } from '../proto/dns';
-import { buildMqttConnack, buildMqttConnect, buildMqttPublish, buildMqttSuback, buildMqttSubscribe, MQTT_CONNACK, MQTT_CONNECT, MQTT_PORT, MQTT_PUBLISH, MQTT_SUBACK, MQTT_SUBSCRIBE, takeMqtt } from '../proto/mqtt';
+import { buildMqttAck, buildMqttConnack, buildMqttConnect, buildMqttPing, buildMqttPublish, buildMqttSuback, buildMqttSubscribe, MQTT_CONNACK, MQTT_CONNECT, MQTT_PINGREQ, MQTT_PINGRESP, MQTT_PORT, MQTT_PUBACK, MQTT_PUBCOMP, MQTT_PUBLISH, MQTT_PUBREC, MQTT_PUBREL, MQTT_SUBACK, MQTT_SUBSCRIBE, takeMqtt, type MqttQos } from '../proto/mqtt';
 import { buildRtp, parseRtp, RTP_PORT, RTP_PT_PCMU, RTP_SAMPLES_PER_PACKET, RTP_VERSION } from '../proto/rtp';
 import { buildIcmp, ICMP_DEST_UNREACHABLE, ICMP_ECHO, ICMP_ECHO_REPLY, ICMP_HEADER_LEN, ICMP_TIME_EXCEEDED, pingData, pingTimestamp } from '../proto/icmp';
 import { IPPROTO_TCP, IPPROTO_UDP } from '../proto/ipv4';
@@ -187,80 +187,211 @@ function mqttSend(host: Host, conn: TcpConnection, bytes: Uint8Array, label: str
   return pduId;
 }
 
-/** How long the client promises never to go quiet for. Nothing here runs long enough for a PINGREQ to come due. */
-const MQTT_KEEP_ALIVE = 60;
+/**
+ * How long a client promises never to go quiet for. Short for the sake of the story: 60 s is usual. A client that hears no
+ * PINGRESP within this long of a PINGREQ gives the connection up; a broker gives up after one and a half times this.
+ */
+const MQTT_KEEP_ALIVE = 3;
+/** Seconds from a message arriving to an app dealing with it. */
+const MQTT_APP_TIME = 0.0003;
 
 /**
  * An MQTT client: connects to the broker and stays connected, which is how a device behind NAT can be reached at all: what
- * the broker sends comes back along a connection the device opened itself. Subscribes once it is in, or publishes a reading
- * when the time comes.
+ * the broker sends comes back along a connection the device opened itself. Subscribes once it is in, publishes a reading
+ * when the time comes, and goes through a QoS exchange for each message. An app keeps its session at the broker (no clean
+ * session), so when a connection is lost it connects again and carries on where it was.
  */
 export function startMqttClient(host: Host, spec: MqttClientSpec, mss: number): void {
   const sim = host.sim;
+  /** The connection, once the broker has said yes. */
+  let up: TcpConnection | undefined;
+  let nextId = 1;
+  /** What was to go out while there was no connection. */
+  let held: { topic: string; payload: string }[] = [];
+  /** QoS 2 IDs already taken in, so a copy of one would not be taken twice. */
+  const taken = new Set<number>();
+  const say = (conn: TcpConnection, bytes: Uint8Array, label: string): string => mqttSend(host, conn, bytes, label);
+  const send = (conn: TcpConnection, topic: string, payload: string): void => {
+    const pduId = say(conn, buildMqttPublish(topic, payload, spec.qos, spec.qos ? nextId++ : 0), 'MQTT PUBLISH');
+    sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-client', action: 'mqtt-publish', pduId, info: { topic, value: payload, qos: spec.qos } });
+  };
+  const connect = (ip: string, again: boolean): void => {
+    let received: Uint8Array = new Uint8Array(0);
+    /** No answer to the last PINGREQ yet. */
+    let silent: number | undefined;
+    const lost = (conn: TcpConnection): void => {
+      up = undefined;
+      conn.abort();
+      sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-client', action: 'mqtt-offline', info: { reason: 'no PINGRESP' } });
+      connect(ip, true);
+    };
+    const keepAlive = (conn: TcpConnection): void => {
+      if (sim.now + MQTT_KEEP_ALIVE >= spec.watchUntil) return;
+      sim.after(MQTT_KEEP_ALIVE, () => {
+        if (conn !== up) return;
+        say(conn, buildMqttPing(MQTT_PINGREQ), 'MQTT PINGREQ');
+        silent = sim.after(MQTT_KEEP_ALIVE, () => lost(conn));
+      });
+    };
+    host.tcpConnect(ip, MQTT_PORT, { mss, wscale: 7, app: 'mqtt' }, {
+      onConnected(conn) {
+        say(conn, buildMqttConnect(spec.clientId, MQTT_KEEP_ALIVE, !spec.subscribe), 'MQTT CONNECT');
+      },
+      onData(conn, data) {
+        const { messages, rest } = takeMqtt(concat(received, data));
+        received = rest;
+        // The program gets to it a moment after TCP has taken it in and acknowledged it.
+        sim.after(MQTT_APP_TIME, () => {
+          for (const m of messages) {
+            if (m.type === MQTT_CONNACK) {
+              up = conn;
+              if (again) sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-client', action: 'mqtt-back', info: { session: m.sessionPresent ? 1 : 0 } });
+              if (spec.subscribe && !m.sessionPresent) say(conn, buildMqttSubscribe(1, spec.subscribe, spec.qos), 'MQTT SUBSCRIBE');
+              for (const h of held) send(conn, h.topic, h.payload);
+              held = [];
+              keepAlive(conn);
+            }
+            if (m.type === MQTT_PINGRESP) {
+              sim.cancel(silent);
+              keepAlive(conn);
+            }
+            if (m.type === MQTT_SUBACK) sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-client', action: 'mqtt-subscribed', info: { topic: spec.subscribe ?? '' } });
+            // What it published: QoS 2 goes on from the broker's PUBREC, and the rest of either exchange needs no answer.
+            if (m.type === MQTT_PUBREC) say(conn, buildMqttAck(MQTT_PUBREL, m.packetId), 'MQTT PUBREL');
+            // What it subscribed to.
+            if (m.type === MQTT_PUBREL) {
+              taken.delete(m.packetId);
+              say(conn, buildMqttAck(MQTT_PUBCOMP, m.packetId), 'MQTT PUBCOMP');
+            }
+            if (m.type === MQTT_PUBLISH) {
+              if (m.qos === 1) say(conn, buildMqttAck(MQTT_PUBACK, m.packetId), 'MQTT PUBACK');
+              if (m.qos === 2) say(conn, buildMqttAck(MQTT_PUBREC, m.packetId), 'MQTT PUBREC');
+              if (m.qos === 2 && taken.has(m.packetId)) continue;
+              if (m.qos === 2) taken.add(m.packetId);
+              sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-client', action: 'mqtt-received', info: { topic: m.topic, value: m.payload } });
+            }
+          }
+        });
+      },
+      onError(_conn, reason) {
+        sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-client', action: 'error', info: { reason } });
+      },
+    });
+  };
   sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-client', action: 'start', info: { to: spec.broker } });
+  if (spec.publish) {
+    const { topic, at } = spec.publish;
+    sim.at(at, () => {
+      // A room in a home, in tenths of a degree: 18.0 to 23.9.
+      const payload = ((180 + (host.random32() >>> 0) % 60) / 10).toFixed(1);
+      if (up) send(up, topic, payload);
+      else if (spec.qos) held.push({ topic, payload });
+      else sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-client', action: 'mqtt-missed', info: { topic, value: payload } });
+    });
+  }
   lookup(
     host,
     spec.broker,
     spec.resolver,
-    (ips) => {
-      let received: Uint8Array = new Uint8Array(0);
-      host.tcpConnect(ips[0]!, MQTT_PORT, { mss, wscale: 7, app: 'mqtt' }, {
-        onConnected(conn) {
-          mqttSend(host, conn, buildMqttConnect(spec.clientId, MQTT_KEEP_ALIVE), 'MQTT CONNECT');
-        },
-        onData(conn, data) {
-          const { messages, rest } = takeMqtt(concat(received, data));
-          received = rest;
-          for (const m of messages) {
-            if (m.type === MQTT_CONNACK && spec.subscribe) mqttSend(host, conn, buildMqttSubscribe(1, spec.subscribe), 'MQTT SUBSCRIBE');
-            if (m.type === MQTT_CONNACK && spec.publish) {
-              const { topic, at } = spec.publish;
-              sim.after(Math.max(0, at - sim.now), () => {
-                // A room in a home, in tenths of a degree: 18.0 to 23.9.
-                const payload = ((180 + (host.random32() >>> 0) % 60) / 10).toFixed(1);
-                const pduId = mqttSend(host, conn, buildMqttPublish(topic, payload), 'MQTT PUBLISH');
-                sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-client', action: 'mqtt-publish', pduId, info: { topic, value: payload } });
-              });
-            }
-            if (m.type === MQTT_SUBACK) sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-client', action: 'mqtt-subscribed', info: { topic: spec.subscribe ?? '' } });
-            if (m.type === MQTT_PUBLISH) sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-client', action: 'mqtt-received', info: { topic: m.topic, value: m.payload } });
-          }
-        },
-        onError(_conn, reason) {
-          sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-client', action: 'error', info: { reason } });
-        },
-      });
-    },
+    (ips) => connect(ips[0]!, false),
     (reason) => sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-client', action: 'error', info: { reason } }),
   );
 }
 
-/** An MQTT broker on its well-known port. A topic is matched as it is written: there are no wildcards here. */
+interface MqttSession {
+  clientId: string;
+  conn: TcpConnection | undefined;
+  topic?: string;
+  qos: MqttQos;
+  keepAlive: number;
+  heard: number;
+  /** What came for it at QoS 1 or 2 while it was away. */
+  waiting: { topic: string; payload: string; qos: MqttQos }[];
+  nextId: number;
+}
+
+/**
+ * An MQTT broker on its well-known port. A topic is matched as it is written: there are no wildcards here. Each connection
+ * is a leg of its own, with its own exchange: what comes in at QoS 2 is passed on only once the sender has released it.
+ */
 export function startMqttBroker(host: Host, spec: MqttBrokerSpec, mss: number): void {
   const sim = host.sim;
-  const subscribed: { conn: TcpConnection; topic: string }[] = [];
+  const sessions = new Map<string, MqttSession>();
+  const deliver = (s: MqttSession, topic: string, payload: string, qos: MqttQos): void => {
+    const pduId = mqttSend(host, s.conn!, buildMqttPublish(topic, payload, qos, qos ? s.nextId++ : 0), 'MQTT PUBLISH');
+    sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-broker', action: 'mqtt-forward', pduId, info: { topic, value: payload, qos } });
+  };
+  const hand = (topic: string, payload: string, qos: MqttQos): void => {
+    for (const s of sessions.values()) {
+      if (s.topic !== topic) continue;
+      const leg = Math.min(qos, s.qos) as MqttQos;
+      if (s.conn) deliver(s, topic, payload, leg);
+      else if (leg) {
+        s.waiting.push({ topic, payload, qos: leg });
+        sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-broker', action: 'mqtt-held', info: { topic, value: payload, client: s.clientId } });
+      } else sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-broker', action: 'mqtt-missed', info: { topic, value: payload, client: s.clientId } });
+    }
+  };
+  const watch = (s: MqttSession, conn: TcpConnection): void => {
+    const wait = (s.keepAlive * 3) / 2;
+    if (sim.now + wait >= spec.watchUntil + wait) return;
+    sim.after(wait, () => {
+      if (s.conn !== conn) return;
+      if (sim.now - s.heard < wait) return watch(s, conn);
+      s.conn = undefined;
+      conn.abort();
+      sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-broker', action: 'mqtt-offline', info: { reason: 'keep-alive ran out', client: s.clientId } });
+    });
+  };
   host.tcpListen(MQTT_PORT, { mss, wscale: 10, app: 'mqtt' }, (conn) => {
     let received: Uint8Array = new Uint8Array(0);
+    let me: MqttSession | undefined;
+    /** QoS 2 messages taken in on this connection and not yet released. */
+    const unreleased = new Map<number, { topic: string; payload: string }>();
     conn.handlers = {
       onData(c, data) {
         const { messages, rest } = takeMqtt(concat(received, data));
         received = rest;
-        for (const m of messages) {
-          if (m.type === MQTT_CONNECT) mqttSend(host, c, buildMqttConnack(), 'MQTT CONNACK');
-          if (m.type === MQTT_SUBSCRIBE) {
-            subscribed.push({ conn: c, topic: m.topic });
-            mqttSend(host, c, buildMqttSuback(m.packetId), 'MQTT SUBACK');
-          }
-          if (m.type === MQTT_PUBLISH) {
-            sim.after(spec.processing, () => {
-              for (const s of subscribed) {
-                if (s.topic !== m.topic) continue;
-                const pduId = mqttSend(host, s.conn, buildMqttPublish(m.topic, m.payload), 'MQTT PUBLISH');
-                sim.emit({ type: 'app', deviceId: host.id, app: 'mqtt-broker', action: 'mqtt-forward', pduId, info: { topic: m.topic, value: m.payload } });
+        if (me) me.heard = sim.now;
+        sim.after(spec.processing, () => {
+          for (const m of messages) {
+            if (m.type === MQTT_CONNECT) {
+              const old = sessions.get(m.clientId);
+              const kept = !!old && !m.clean;
+              me = kept ? old : { clientId: m.clientId, conn: undefined, qos: 0, keepAlive: m.keepAlive, heard: sim.now, waiting: [], nextId: 1 };
+              sessions.set(m.clientId, me);
+              me.conn = c;
+              me.heard = sim.now;
+              mqttSend(host, c, buildMqttConnack(kept), 'MQTT CONNACK');
+              for (const w of me.waiting) deliver(me, w.topic, w.payload, w.qos);
+              me.waiting = [];
+              watch(me, c);
+            }
+            if (m.type === MQTT_SUBSCRIBE && me) {
+              me.topic = m.topic;
+              me.qos = m.qos;
+              mqttSend(host, c, buildMqttSuback(m.packetId, m.qos), 'MQTT SUBACK');
+            }
+            if (m.type === MQTT_PINGREQ) mqttSend(host, c, buildMqttPing(MQTT_PINGRESP), 'MQTT PINGRESP');
+            if (m.type === MQTT_PUBLISH) {
+              const { topic, payload, qos, packetId } = m;
+              if (qos === 2) {
+                unreleased.set(packetId, { topic, payload });
+                mqttSend(host, c, buildMqttAck(MQTT_PUBREC, packetId), 'MQTT PUBREC');
+                continue;
               }
-            });
+              if (qos === 1) mqttSend(host, c, buildMqttAck(MQTT_PUBACK, packetId), 'MQTT PUBACK');
+              hand(topic, payload, qos);
+            }
+            if (m.type === MQTT_PUBREL) {
+              const message = unreleased.get(m.packetId);
+              unreleased.delete(m.packetId);
+              mqttSend(host, c, buildMqttAck(MQTT_PUBCOMP, m.packetId), 'MQTT PUBCOMP');
+              if (message) hand(message.topic, message.payload, 2);
+            }
+            if (m.type === MQTT_PUBREC) mqttSend(host, c, buildMqttAck(MQTT_PUBREL, m.packetId), 'MQTT PUBREL');
           }
-        }
+        });
       },
     };
   });
