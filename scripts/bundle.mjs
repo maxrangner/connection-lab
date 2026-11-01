@@ -1,6 +1,6 @@
 // Builds index.html into one self-contained page (inline JS and CSS) that can be opened anywhere,
 // e.g. published as a claude.ai artifact to try on a phone.
-// Usage: node scripts/bundle.mjs [outFile]
+// Usage: node scripts/bundle.mjs [outFile] [--whole]
 import { build } from 'vite';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -33,7 +33,20 @@ ${css}
 ${js.replace(/<\/script/gi, '<\\/script')}
 </script>
 `;
+// A real web host adds nothing: `--whole` keeps the document as it is, with the styles and script written into it.
+const whole = html
+  .replace(/<link rel="stylesheet"[^>]*>\s*/g, '')
+  .replace(/(<link rel="icon"[^>]*href=")([^"]+)/, (_, start, href) => `${start}data:image/png;base64,${fs.readFileSync(path.join(tmp, href.replace(/^\.?\//, ''))).toString('base64')}`)
+  .replace(/<script type="module"[^>]*><\/script>\s*/g, '')
+  .replace('</head>', () => `<style>
+${css}
+</style>
+</head>`)
+  .replace('</body>', () => `<script type="module">
+${js.replace(/<\/script/gi, '<\/script')}
+</script>
+</body>`);
 fs.mkdirSync(path.dirname(outFile), { recursive: true });
-fs.writeFileSync(outFile, page);
+fs.writeFileSync(outFile, process.argv.includes('--whole') ? whole : page);
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`${outFile}: ${(page.length / 1024).toFixed(0)} KB`);

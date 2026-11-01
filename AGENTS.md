@@ -29,6 +29,7 @@ The machine may not have Node on `PATH` in every shell. If `node` is missing in 
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint (incl. sim/UI boundary) |
 | `npm run build` | typecheck + static build to `dist/` |
+| `npm run site` | The whole page as one file for a real web host, `dist-bundle/site/index.html`; [DEPLOY.md](DEPLOY.md) puts it online |
 | `npm run look` | With `npm run dev` running: plays every mix of broker, attackers and job at phone, small phone and desktop size and reports what stands on what, from what the browser really draws (`--only=text`, `--phone`, `--small`, `--desk`, `--every=n`; about 15 minutes a size). Run it after any change to the layout |
 | `npx vite-node scripts/dump-events.ts [mss] [dhcp] [call] [thin] [photo] [ping\|traceroute] [phone] [noise:<0..1>] [lose:<packetId>@<linkId>]` | Print a scenario's full event log (debugging); `dhcp` turns the DHCP option on, `call` makes the voice call instead of fetching the page, `thin` the thin pipe, `photo` fetches the photo, `ping`/`traceroute` the probe option, `phone` opens it from the phone over Wi-Fi, `noise:0.5` makes that Wi-Fi lose half its frames |
 | `node scripts/make-voice-clip.mjs` | Regenerate the two synthesised one-second voice clips of the call as G.711 µ-law (`src/sim/scenarios/voiceClip.ts`); deterministic, no randomness |
