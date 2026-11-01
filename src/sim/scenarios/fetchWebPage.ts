@@ -1,6 +1,6 @@
 import { inSubnet } from '../bytes/addr';
 import { ascii, fromBase64 } from '../bytes/bytes';
-import type { AppSpec, DeviceKind, DeviceSpec, IfaceSpec, Job, LinkSpec, RouteSpec, Scenario } from '../model';
+import type { Action, AppSpec, DeviceKind, DeviceSpec, IfaceSpec, Job, LinkSpec, RouteSpec, Scenario } from '../model';
 import { dnsAddresses, parseDns } from '../proto/dns';
 import { DNS_TRACES } from './dnsTraceCapture';
 import {
@@ -34,8 +34,10 @@ import { VOICE_CLIP_CALLER_BASE64, VOICE_CLIP_FRIEND_BASE64 } from './voiceClip'
 export const ADDR = {
   laptop: { ip: '192.168.1.23', mac: '3c:22:fb:5a:10:e4' },
   phone: { ip: '192.168.1.42', mac: 'f0:5c:77:3e:91:2a' },
+  sensor: { ip: '192.168.1.60', mac: '84:f3:eb:2c:41:9e' },
   homeLan: { ip: '192.168.1.1', mac: 'a4:91:b1:7d:02:01' },
   homeWlan: { ip: '192.168.1.1', mac: 'a4:91:b1:7d:02:03' },
+  homeSensor: { ip: '192.168.1.1', mac: 'a4:91:b1:7d:02:04' },
   homeWan: { ip: '203.0.113.7', mac: 'a4:91:b1:7d:02:02' },
   ispCustomer: { ip: '203.0.113.1', mac: '00:1b:21:3a:4c:01' },
   ispToResolver: { ip: '198.51.100.1', mac: '00:1b:21:3a:4c:02' },
@@ -143,6 +145,13 @@ export interface FetchWebPageOptions {
   noise?: number;
   /** Attackers on the table. See `Attack`. */
   attacks?: Attack[];
+  /** A smart home: a sensor on the Wi-Fi, and an MQTT broker out on the internet that it and your apps connect to. */
+  smart?: boolean;
+  /**
+   * Instead of a job on the laptop or phone, the sensor takes a reading (with `smart`, which this turns on). Everyone has
+   * been connected for a while by then, as in any home: that part really runs, before `READING_AT`, and is not told.
+   */
+  reading?: boolean;
 }
 
 /**
@@ -180,7 +189,12 @@ const FLOODED_LINE_BPS = 280e3;
 /** Ports a scan tries, and those the server has open besides its web server: the usual doors anyone knocks on. */
 const SCAN = { ports: [21, 22, 23, 25, 80, 443, 3306, 8080], open: [22, 443], gap: 0.01 };
 
-export type { Job };
+export type { Action, Job };
+
+/** When a reading is taken, in seconds: long after the sensor and the apps are connected, even over a satellite. */
+export const READING_AT = 10;
+const BROKER_NAME = 'broker.example';
+const TEMPERATURE_TOPIC = 'home/livingroom/temperature';
 
 /** The real address blocks the web server's addresses are part of: Cloudflare's, with example.com, and CERN's own. */
 const SERVER_BLOCKS = [
@@ -214,7 +228,7 @@ export interface HomeDevice {
   /** The home router's end of its link. The first device's port holds the home network's route. */
   port: Pick<IfaceSpec, 'id' | 'name' | 'ip' | 'mac' | 'wifi'>;
   link: Pick<LinkSpec, 'id' | 'bitsPerSecond' | 'delay' | 'label' | 'name'>;
-  actions: Job[];
+  actions: Action[];
   /** Its colour, once several devices' packets are on the table at once. */
   color: string;
 }
@@ -249,6 +263,20 @@ export const HOME_DEVICES: HomeDevice[] = [
     color: '#d6488f',
   },
 ];
+
+/** In a smart home, the sensor. A real one speaks to the router on its own at 2.4 GHz, at a far lower rate than the phone. */
+const SENSOR: HomeDevice = {
+  id: 'sensor',
+  label: 'Sensor',
+  kind: 'sensor',
+  layout: { x: 380, y: 585 },
+  ...ADDR.sensor,
+  iface: { name: 'wlan0', wifi: 'station' },
+  port: { id: 'home.wlan2', name: 'wlan2', ...ADDR.homeSensor, wifi: 'ap' },
+  link: { id: 'wlan2', bitsPerSecond: 72e6, delay: 3e-8, label: 'Wi-Fi · 72 Mbit/s', name: "the sensor's Wi-Fi" },
+  actions: ['reading'],
+  color: '#c98a1b',
+};
 
 /** What the scenario needs to know about each real site. */
 const SITES = {
@@ -297,7 +325,7 @@ function nameServers(host: string): { devices: DeviceSpec[]; links: LinkSpec[]; 
 }
 
 /** A device on the far side of the internet, on its own cable into the ISP router, and what the ISP needs to reach it. */
-function outsider(n: number, id: string, label: string, kind: 'bot' | 'scanner', apps: AppSpec[]): { device: DeviceSpec; link: LinkSpec; port: IfaceSpec; route: RouteSpec; arp: [string, string] } {
+function outsider(n: number, id: string, label: string, kind: 'bot' | 'scanner' | 'mqtt-broker', apps: AppSpec[]): { device: DeviceSpec; link: LinkSpec; port: IfaceSpec; route: RouteSpec; arp: [string, string] } {
   // Public addresses from the documentation block the ISP's own links use.
   const ip = `198.51.100.${100 + n}`;
   const mac = `02:66:00:00:00:${n.toString(16).padStart(2, '0')}`;
@@ -336,8 +364,10 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
   const tls = opts.https ? { host: site.tls.TLS_HOST, flights: site.tls.TLS_FLIGHTS, secrets: site.tls.TLS_SECRETS } : undefined;
   const url = opts.https ? site.url.replace(/^http:/, 'https:') : site.url;
   const warm = revisit || !!opts.warmArp;
-  const homes = opts.home ?? HOME_DEVICES;
-  const from = opts.from ?? homes[0]!.id;
+  const reading = !!opts.reading;
+  const smart = reading || !!opts.smart;
+  const homes = opts.home ?? (smart ? [...HOME_DEVICES, SENSOR] : HOME_DEVICES);
+  const from = opts.from ?? (reading ? SENSOR.id : homes[0]!.id);
   const idle = homes.map((d) => d.id).filter((id) => id !== from && !opts.joins?.some((j) => j.device === id));
   const joins = (opts.joins ?? []).map((j) => {
     const device = j.device ?? idle.shift();
@@ -381,7 +411,8 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
     ? Array.from({ length: BOTS }, (_, i) => outsider(i + 1, `bot${i + 1}`, `Bot ${i + 1}`, 'bot', [{ kind: 'flood', to: server.ip, port: 80, packets: FLOOD.packets, burst: FLOOD.burst, gap: FLOOD.gap, bytes: FLOOD.bytes }]))
     : [];
   const scanner = attacks.has('scan') ? [outsider(BOTS + 1, 'scanner', 'Scanner', 'scanner', [{ kind: 'port-scan', to: server.ip, ports: SCAN.ports, gap: SCAN.gap }])] : [];
-  const outsiders = [...bots, ...scanner];
+  const broker = smart ? [outsider(BOTS + 2, 'broker', 'MQTT broker', 'mqtt-broker', [{ kind: 'mqtt-broker', processing: 0.0003 }])] : [];
+  const outsiders = [...bots, ...scanner, ...broker];
   const resolver = ADDR.resolver.ip;
   const jobs: Record<Job, () => AppSpec> = {
     page: () => ({ kind: 'browser', url: SITES['example.com'].url, resolver, request: ascii(HTTP_REQUEST) }),
@@ -395,6 +426,8 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
     apps: [jobs[job]()],
   });
   const appsOf = (d: HomeDevice) => {
+    const client = { kind: 'mqtt-client' as const, clientId: d.id, broker: BROKER_NAME, resolver };
+    if (reading) return { apps: [d.id === from ? { ...client, publish: { topic: TEMPERATURE_TOPIC, at: READING_AT } } : { ...client, subscribe: TEMPERATURE_TOPIC }] };
     const join = joins.find((j) => j.device === d.id);
     return d.id === from ? browser(d.port) : join ? joined(join.job, d.port) : { apps: [] };
   };
@@ -429,10 +462,12 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
   const macsOf = (ids: string[]) => Object.fromEntries(homes.filter((d) => ids.includes(d.id)).map((d) => [d.ip, d.mac]));
   return {
     id: 'fetch-web-page',
-    title: opts.call ? `Call ${ADDR.friend.name}` : opts.probe === 'ping' ? `Ping ${host}` : opts.probe === 'traceroute' ? `Trace the path to ${host}` : `Fetch ${url}`,
+    title: reading ? 'Take a reading' : opts.call ? `Call ${ADDR.friend.name}` : opts.probe === 'ping' ? `Ping ${host}` : opts.probe === 'traceroute' ? `Trace the path to ${host}` : `Fetch ${url}`,
     startDevice: from,
     ...(joins.length ? { companions: joins.map(({ device, at }) => ({ device, at })) } : {}),
-    ...(outsiders.length ? { attackers: [...bots.map((b, i) => ({ device: b.device.id, at: i * FLOOD.stagger })), ...scanner.map((s) => ({ device: s.device.id, at: 0 }))] } : {}),
+    // Your apps are jobs of their own, already connected by the time anything is told.
+    ...(reading ? { quietUntil: READING_AT, companions: homes.filter((d) => d.id !== from).map((d) => ({ device: d.id, at: 0 })) } : {}),
+    ...(bots.length || scanner.length ? { attackers: [...bots.map((b, i) => ({ device: b.device.id, at: (reading ? READING_AT : 0) + i * FLOOD.stagger })), ...scanner.map((s) => ({ device: s.device.id, at: reading ? READING_AT : 0 }))] } : {}),
     tcp: { clientMss: opts.vpn ? Math.min(mss, 1380) : mss, serverMss: 1460 },
     devices: [
       ...homes.map(homeDevice),
@@ -555,6 +590,8 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
                 [PHOTO_HOST]: { ips: [...PHOTO_A_RECORDS], ttl: PHOTO_DNS_TTL },
                 // The friend's name is invented (no real walk was captured for it), so the resolver always has it cached.
                 [ADDR.friend.name]: { ips: [ADDR.friend.ip], ttl: ADDR.friend.ttl },
+                // The broker's name is invented like the friend's, so it is always cached too.
+                ...(broker[0] ? { [BROKER_NAME]: { ips: [broker[0].device.ifaces[0]!.ip], ttl: ADDR.friend.ttl } } : {}),
               }).filter(([name]) => !(cold && name === host)),
             ),
             ...(cold ? { upstream: { hops: DNS_TRACES[host]!.hops.map((h) => ({ server: h.server })) } } : {}),

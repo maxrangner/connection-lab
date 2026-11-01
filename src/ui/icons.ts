@@ -125,6 +125,13 @@ export function drawTrace(g: SVGGElement): void {
   for (const [x, y] of [[-24, 14], [-8, -6], [8, 8], [24, -14]] as const) el('circle', { cx: x, cy: y, r: 4.5, class: 'trace-hop' }, g);
 }
 
+/** A thermometer: the sensor of a smart home. */
+export function drawThermometer(g: SVGGElement): void {
+  el('path', { d: 'M-6 8 V-20 A6 6 0 0 1 6 -20 V8 A12 12 0 1 1 -6 8 Z', class: 'ear-line' }, g);
+  el('circle', { cx: 0, cy: 18, r: 6, class: 'ping-dot' }, g);
+  el('path', { d: 'M0 18 V-10', class: 'ear-line' }, g);
+}
+
 /** An ear: the stranger, listening. */
 export function drawEar(g: SVGGElement): void {
   el('path', { d: 'M-14 6 C-20 -24 22 -30 18 -2 C16 10 2 8 2 20 C2 28 -10 28 -12 18', class: 'ear-line' }, g);

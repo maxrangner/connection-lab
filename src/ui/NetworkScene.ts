@@ -1,4 +1,4 @@
-import type { Job } from '../sim';
+import type { Action } from '../sim';
 import { el, setAttr, setText } from './svg';
 import { box, cylinder, line, rbox, tile } from './prims';
 import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, easeOutBounce, iso, isoV, lerp, U, unproject, v3, type Pt, type Vec3 } from './project';
@@ -601,7 +601,7 @@ export class NetworkScene {
   }
 
   /** Screen points (in SVG units) where your devices accept a dropped card, and what each can do. */
-  dropPoints(): { id: string; actions: Job[]; sx: number; sy: number }[] {
+  dropPoints(): { id: string; actions: Action[]; sx: number; sy: number }[] {
     return this.story.devices.flatMap((d) => {
       const p = this.tl.pos.get(d.id);
       return p && d.actions.length ? [{ id: d.id, actions: d.actions, ...iso(p.x, p.y - 0.3, d.kind === 'phone' ? 1.4 : 1.0) }] : [];
@@ -869,6 +869,22 @@ export class NetworkScene {
         box(g, { x: x - 0.7, y: y - 0.12, z: 0, w: 1.4, d: 0.22, h: 2.3, ...neutral });
         const a = iso(x - 0.6, y + 0.1, 2.18);
         el('rect', { x: 0, y: 0, width: 1.2 * U, height: 2.0 * U, fill: '#3b4049', transform: faceTf(a, '+y') }, g);
+        return null;
+      }
+      case 'sensor': {
+        // A small box on the wall, with a round grille.
+        box(g, { x: x - 0.6, y: y - 0.6, z: 0, w: 1.2, d: 1.2, h: 0.9, ...neutral });
+        const c = iso(x, y + 0.6, 0.45);
+        el('circle', { cx: c.sx.toFixed(1), cy: c.sy.toFixed(1), r: 7, class: 'sensor-eye' }, g);
+        return null;
+      }
+      case 'mqtt-broker': {
+        // A server box, with a row of ports: it is all connections.
+        box(g, { x: x - 0.9, y: y - 0.9, z: 0, w: 1.8, d: 1.8, h: 1.5, ...neutral });
+        for (const [i, dx] of [-0.5, 0, 0.5].entries()) {
+          const c = iso(x + dx, y + 0.9, 0.75 + (i % 2) * 0.1);
+          el('circle', { cx: c.sx.toFixed(1), cy: c.sy.toFixed(1), r: 3.6, class: 'sensor-eye' }, g);
+        }
         return null;
       }
       case 'bot': {
@@ -1309,7 +1325,7 @@ export class NetworkScene {
       const d = this.tl.pos.get(step.device) ?? { x: 0, y: 0 };
       const part = seg.trip.part;
       // A part of a bigger page goes onto its band of the sheet; anything else into the screen or the device.
-      const target = step.device !== seg.trip.client ? v3(d.x, d.y, this.deviceTop(step.device)) : part ? this.paperSlot(part.n, part.of) : this.screenPoint(step.device);
+      const target = !this.story.clients.includes(step.device) ? v3(d.x, d.y, this.deviceTop(step.device)) : part ? this.paperSlot(part.n, part.of) : this.screenPoint(step.device);
       pose.pos = v3(lerp(pose.pos.x, target.x, sink), lerp(pose.pos.y, target.y, sink), lerp(pose.pos.z, target.z, sink));
       for (const p of parts) {
         if (p.key !== 'card') continue;

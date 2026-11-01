@@ -37,6 +37,8 @@ function lineOf(t: Trip): string | null {
   if (card === 'bye' || t.l4Label.includes('FIN')) return 'Bye!';
   if (t.l4Label.includes('RST')) return 'No, sorry';
   if (card === 'unreachable') return "Can't get there";
+  // The broker says this once, for everyone: it sends a copy to each app.
+  if (t.message?.kind === 'reading') return t.outward ? `It's ${card}` : 'A copy for everyone listening';
   switch (t.chapter) {
     case 'address': {
       const [kind = '', ip = ''] = card.split(' ');
@@ -113,7 +115,7 @@ export function buildSpeech(story: Story, segs: Seg[]): Bubble[] {
       const line = lineOf(seg.trip);
       const leaves = segs.find((x) => x.trip === seg.trip && (x.step.kind === 'travel' || x.step.kind === 'lost'));
       // A certificate takes several packets, and it only needs saying once.
-      if (line && (seg.trip.chapter !== 'secret' || once(line))) say(seg.trip.origin, seg.t0, line, leaves?.t0);
+      if (line && ((seg.trip.chapter !== 'secret' && seg.trip.message?.kind !== 'reading') || once(line))) say(seg.trip.origin, seg.t0, line, leaves?.t0);
     }
     if (s.kind === 'nat' && once(`nat-${s.which}`)) say(s.device, seg.t0, s.which === 'from' ? "I'll put my address on it" : 'Back to the right device', seg.t1);
     if (s.kind === 'unwrap' && kindOf.get(s.device) === 'router' && once('pass')) say(s.device, seg.t0, 'Not for me, pass it on');

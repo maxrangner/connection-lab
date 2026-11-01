@@ -2,7 +2,7 @@ import type { PacketInfo, PduSnapshot } from './core/Simulator';
 import type { SimEvent } from './events/SimEvent';
 import { NO_FAULTS, type FaultPlan } from './faults';
 import type { Scenario } from './model';
-import { startBrowser, startDnsAuthority, startDnsServer, startFlood, startHttpServer, startPing, startPortScan, startTcpService, startTraceroute, startVoiceCall, startVoicePeer } from './stack/apps';
+import { startBrowser, startDnsAuthority, startDnsServer, startFlood, startHttpServer, startMqttBroker, startMqttClient, startPing, startPortScan, startTcpService, startTraceroute, startVoiceCall, startVoicePeer } from './stack/apps';
 import { startDhcpClient } from './stack/dhcp';
 import { startHttpsServer } from './stack/https';
 import { TunnelClient, VpnServer } from './stack/vpn';
@@ -57,6 +57,7 @@ export function runScenario(scenario: Scenario, opts: RunOptions): SimResult {
         if (app.tls) startHttpsServer(dev, app.tls, app.processing, scenario.tcp.serverMss);
       } else if (app.kind === 'voice-peer') startVoicePeer(dev, app);
       else if (app.kind === 'tcp-service') startTcpService(dev, app.port, scenario.tcp.serverMss);
+      else if (app.kind === 'mqtt-broker') startMqttBroker(dev, app, scenario.tcp.serverMss);
     }
   }
   // The user starts the browser, a voice call, a ping or a traceroute at t = 0; after DHCP if the device needs an address first.
@@ -70,6 +71,7 @@ export function runScenario(scenario: Scenario, opts: RunOptions): SimResult {
     const dhcp = apps.find((a) => a.kind === 'dhcp-client');
     const flood = apps.find((a) => a.kind === 'flood');
     const scan = apps.find((a) => a.kind === 'port-scan');
+    const mqtt = apps.find((a) => a.kind === 'mqtt-client');
     if (!(start instanceof Host)) continue;
     const open = (resolver?: string): void => {
       if (call?.kind === 'voice-call') startVoiceCall(start, call, resolver);
@@ -80,6 +82,7 @@ export function runScenario(scenario: Scenario, opts: RunOptions): SimResult {
     world.sim.job = job;
     if (flood?.kind === 'flood') world.sim.at(s.at, () => startFlood(start, flood));
     if (scan?.kind === 'port-scan') world.sim.at(s.at, () => startPortScan(start, scan));
+    if (mqtt?.kind === 'mqtt-client') world.sim.at(s.at, () => startMqttClient(start, mqtt, scenario.tcp.clientMss));
     if (call || probe || browser) world.sim.at(s.at, () => (dhcp?.kind === 'dhcp-client' ? startDhcpClient(start, dhcp, (lease) => open(lease.dns[0])) : open()));
   }
   world.sim.run(opts.maxTime ?? 600);

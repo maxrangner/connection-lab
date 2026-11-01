@@ -114,6 +114,8 @@ const UNKNOWN_TONE = { hz: 300, pitch: 0.5, loud: 0.3 };
 
 export interface Timeline {
   segs: Seg[];
+  /** The sim time the story starts at: nothing that comes after can change what came before it. */
+  startsAt: number;
   reactions: Reaction[];
   /** A call's notes, in order. */
   notes: Note[];
@@ -160,6 +162,8 @@ const POS: Record<string, { x: number; y: number }> = {
   laptop: { x: 0, y: 0 },
   // The phone sits in front of the home router, talking to it over Wi-Fi.
   phone: { x: 8, y: 8 },
+  // The sensor is on the wall behind the cable to the router, clear of the cards and of whoever turns up in front.
+  sensor: { x: 4, y: -4 },
   'home-router': { x: 8, y: 0 },
   router: { x: 16, y: 0 },
   'web-server': { x: 24, y: 0 },
@@ -170,6 +174,8 @@ const POS: Record<string, { x: number; y: number }> = {
   'root-server': { x: 8, y: -16 },
   'tld-server': { x: 16, y: -16 },
   'auth-server': { x: 24, y: -16 },
+  // Out on the internet, right below the ISP router.
+  'mqtt-broker': { x: 16, y: 8 },
   // The friend's phone, on the far side of the internet, in front of the web server.
   peer: { x: 24, y: 8 },
   // Red, once dragged in. The stranger sits within reach of the Wi-Fi, the others out on the internet by the ISP router.
@@ -180,7 +186,7 @@ const POS: Record<string, { x: number; y: number }> = {
   bot3: { x: 9, y: -7 },
 };
 
-export const DEVICE_TOP: Record<string, number> = { laptop: 1.7, phone: 2.0, 'home-router': 0.55, router: 0.8, 'web-server': 2.6, 'dns-resolver': 1.1, 'vpn-server': 1.3, 'root-server': 1.5, 'tld-server': 1.1, 'auth-server': 1.1, peer: 2.0, stranger: 1.7, scanner: 1.7, bot: 1.8 };
+export const DEVICE_TOP: Record<string, number> = { laptop: 1.7, phone: 2.0, 'home-router': 0.55, router: 0.8, 'web-server': 2.6, 'dns-resolver': 1.1, 'vpn-server': 1.3, 'root-server': 1.5, 'tld-server': 1.1, 'auth-server': 1.1, peer: 2.0, stranger: 1.7, scanner: 1.7, bot: 1.8, sensor: 0.9, 'mqtt-broker': 1.5 };
 /** The servers only a cold resolver talks to; off the table otherwise. */
 export const UPSTREAM_KINDS = new Set(['root-server', 'tld-server', 'auth-server']);
 /** The attackers switched on from the Attack popup. */
@@ -464,7 +470,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   ];
   for (const f of [...readout.flags, ...joinReadouts.flatMap((x) => x.readout.flags)]) cues.push({ t: f.t, sound: 'found' });
   const speech = [...buildSpeech(story, segs), ...(story.listener ? listenerSpeech(story.listener, story.heard, heardAt) : [])];
-  return { segs, reactions, notes, readout, joinReadouts, attackReadouts, speech, keys, halves, real: realClock(segs, story), cues, total: t, pos, kind, trayZ, isRouter, sky, air, client: story.client, pages, answers, reveals, laid, stretch };
+  return { segs, startsAt: story.startsAt, reactions, notes, readout, joinReadouts, attackReadouts, speech, keys, halves, real: realClock(segs, story), cues, total: t, pos, kind, trayZ, isRouter, sky, air, client: story.client, pages, answers, reveals, laid, stretch };
 }
 
 /**
@@ -506,7 +512,7 @@ function timing(segs: Seg[]): Map<string, { t0: number; t1: number }> {
 function realClock(segs: Seg[], story: Story): Timeline['real'] {
   const delay = new Map(story.links.map((l) => [l.id, l.delay]));
   const points = crossings({ segs })
-    .flatMap((c) => [{ v: c.t0, sim: c.at }, { v: c.t1, sim: c.at + (delay.get(c.link) ?? 0) }])
+    .flatMap((c) => [{ v: c.t0, sim: c.at - story.startsAt }, { v: c.t1, sim: c.at - story.startsAt + (delay.get(c.link) ?? 0) }])
     .sort((a, b) => a.v - b.v);
   let most = 0;
   return points.map((p) => ({ v: p.v, sim: (most = Math.max(most, p.sim)) }));
@@ -965,7 +971,7 @@ export function spyLog(tl: Timeline, line: string, v: number, from = -Infinity):
  */
 export function seenSoFar(tl: Timeline, v: number, line?: string): { decided: Record<string, boolean>; now: number } {
   const decided: Record<string, boolean> = {};
-  let now = 0;
+  let now = tl.startsAt;
   let next = Infinity;
   for (const c of crossings(tl)) {
     if (c.t0 > v) {
