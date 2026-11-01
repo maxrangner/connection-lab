@@ -89,13 +89,15 @@ export class Menu<T extends string> {
     b?.setAttribute('aria-pressed', String(on));
   }
 
-  /** Keeps the popup above its button, inside the screen. */
+  /** Keeps the popup by its button, inside the screen: above it, unless that does not fit. */
   place(): void {
     if (!this.isOpen) return;
     const r = this.button.getBoundingClientRect();
     const w = this.panel.offsetWidth;
     const left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2));
     this.panel.style.left = `${left.toFixed(0)}px`;
-    this.panel.style.bottom = `${(window.innerHeight - r.top + 10).toFixed(0)}px`;
+    const above = r.top - this.panel.offsetHeight - 18 >= 0;
+    this.panel.style.bottom = above ? `${(window.innerHeight - r.top + 10).toFixed(0)}px` : 'auto';
+    this.panel.style.top = above ? 'auto' : `${(r.bottom + 10).toFixed(0)}px`;
   }
 }

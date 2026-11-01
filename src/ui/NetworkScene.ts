@@ -206,7 +206,9 @@ export class NetworkScene {
   private bar = 0;
   /** The stretch of the table in view, for what must not be cut off at its edges. */
   private viewX = 0;
+  private viewY = 0;
   private viewW = 0;
+  private viewScale = 1;
   private remembered: ReadonlyMap<string, { site: string; ip: string }> = new Map();
   /** The kind of frame around the packet being drawn. */
   private l2: L2 = 'ethernet';
@@ -605,6 +607,17 @@ export class NetworkScene {
     this.bar = height;
   }
 
+  get barHeight(): number {
+    return this.bar;
+  }
+
+  /** Where a device's "+ action" goes on the screen, in pixels: just under its name, however far back the camera is. */
+  actionSpot(device: string): { x: number; y: number } {
+    const p = this.tl.pos.get(device) ?? { x: 0, y: 0 };
+    const name = iso(p.x, p.y + 1.9, 0);
+    return { x: (name.sx - this.viewX) * this.viewScale, y: (name.sy + 30 - this.viewY) * this.viewScale + 24 };
+  }
+
   /** Everything else lying on the table, which the whole-network view must keep in frame. */
   setOnTable(points: { sx: number; sy: number }[]): void {
     this.onTable = points;
@@ -775,8 +788,10 @@ export class NetworkScene {
     const w = (this.svg.clientWidth || 1) / c.scale;
     const h = (this.svg.clientHeight || 1) / c.scale;
     this.viewX = c.cx - w / 2;
+    this.viewY = c.cy - h / 2;
     this.viewW = w;
-    setAttr(this.svg, 'viewBox', `${this.viewX.toFixed(1)} ${(c.cy - h / 2).toFixed(1)} ${w.toFixed(1)} ${h.toFixed(1)}`);
+    this.viewScale = c.scale;
+    setAttr(this.svg, 'viewBox', `${this.viewX.toFixed(1)} ${this.viewY.toFixed(1)} ${w.toFixed(1)} ${h.toFixed(1)}`);
   }
 
   /**

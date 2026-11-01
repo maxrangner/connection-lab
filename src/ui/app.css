@@ -1054,18 +1054,43 @@ body {
   min-width: 78px;
 }
 
-/* Add starts something, like the cards it stands in for */
-.net-controls button.add-menu {
+/* On a device with nothing to do. It starts something, like the cards. It moves with the camera, so on a layer of its own. */
+button.action-menu {
+  position: fixed;
+  top: -17px;
+  left: -52px;
+  width: 104px;
+  min-width: 0;
+  height: 34px;
+  padding: 0;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
   color: #fff;
   background: var(--app);
-  border-color: #3d7a52;
+  border: 1px solid #3d7a52;
+  border-radius: 999px;
+  box-shadow: 0 2px 6px rgb(var(--shadow) / 0.25);
+  cursor: pointer;
+  will-change: transform;
 }
 
-.net-controls button.add-menu::after {
-  color: inherit;
+button.action-menu[hidden] {
+  display: none;
 }
 
-.menu-panel.add-menu .menu-item svg {
+/* Small to look at, big to hit: 48px high however small the phone */
+button.action-menu::before {
+  content: '';
+  position: absolute;
+  inset: -8px;
+}
+
+button.action-menu::after {
+  content: none;
+}
+
+.menu-panel.action-menu .menu-item svg {
   border-radius: 12px;
   background: var(--app);
 }
