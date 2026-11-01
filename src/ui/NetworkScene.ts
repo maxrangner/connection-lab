@@ -57,8 +57,23 @@ const NOTE_SIDE = 70;
 /** How far to the side of its cable a small block rides, in tiles, so blocks going opposite ways pass each other; and how soon it gets there. */
 const LANE = 0.55;
 const LANE_IN = 0.14;
-/** Seconds a device or cable takes to fade in when a packet first gets to it. */
-const REVEAL = 0.4;
+/** How small a device starts when it springs up, and how soon it is solid. */
+const SPRING_SIZE = 0.5;
+const SPRING_SOLID = 0.35;
+/** How far back what a run does not use steps, and how many seconds that takes. */
+const UNUSED_OPACITY = 0.28;
+const STEP_BACK = 0.4;
+/** A cable, and the circle that lets it out as it is laid. */
+interface CableView {
+  id: string;
+  g: SVGGElement;
+  a: string;
+  b: string;
+  tip: SVGCircleElement;
+  /** How far the circle has to grow to show all of it, once it has been measured. */
+  reach: number;
+}
+
 /** The terminal ping and traceroute print to: the width of a character and the height of a line at its font size, and its margin. */
 const TERM_CHAR = 7.3;
 const TERM_LINE = 17;
@@ -208,7 +223,7 @@ export class NetworkScene {
   /** The line a tool would work on, highlighted. */
   private readonly hover: SVGGElement;
   /** Each drawn cable (or satellite hop) and the devices at its ends, to grey out the unused ones. */
-  private cableViews: { g: SVGGElement; a: string; b: string }[] = [];
+  private cableViews: CableView[] = [];
   /** Devices that take part in this run; the rest are greyed out once it starts. */
   private used = new Set<string>();
   /** What the last run showed, which stays until the next one starts. */
@@ -446,7 +461,12 @@ export class NetworkScene {
           el('text', { x: note.sx, y: note.sy, 'text-anchor': 'middle', class: 'link-note' }, g).textContent = `${Math.round(l.delay * KM_PER_SECOND)} km · ${formatWait(l.delay)}`;
         }
       }
-      this.cableViews.push({ g, a: l.a, b: l.b });
+      // A circle growing out of the end it is laid from: that shows a dotted arc and a satellite as well as it does a cable.
+      const start = this.tl.pos.get(this.tl.laid.get(l.id)?.from ?? l.a) ?? { x: 0, y: 0 };
+      const origin = iso(start.x, start.y);
+      const clip = el('clipPath', { id: `laying-${l.id}` }, this.cables);
+      const tip = el('circle', { cx: origin.sx.toFixed(1), cy: origin.sy.toFixed(1) }, clip);
+      this.cableViews.push({ id: l.id, g, a: l.a, b: l.b, tip, reach: 0 });
     }
     if (this.story.vpn) this.buildTunnel();
     // The stranger joins nothing: a dotted line says what it has its ear on.
@@ -493,7 +513,15 @@ export class NetworkScene {
     const kind = this.tl.kind.get(device) ?? '';
     if (PERSONAL_KINDS.has(kind) || ATTACKER_KINDS.has(kind) || this.revealed.has(device)) return 1;
     const at = this.tl.reveals.get(device);
-    return at === undefined || v < at ? 0 : Math.max(0.01, clamp01((v - at) / REVEAL));
+    return !at || v < at.t0 ? 0 : Math.max(0.01, clamp01((v - at.t0) / (at.t1 - at.t0)));
+  }
+
+  /** How far a cable is laid at visual time v, from 0 to 1. One nothing crosses this run comes with its two ends. */
+  private layingOf(c: { id: string; a: string; b: string }, v: number): number {
+    const ends = Math.min(this.present(c.a, v), this.present(c.b, v));
+    const at = this.tl.laid.get(c.id);
+    if (!at || this.revealed.size) return ends;
+    return v < at.t0 ? 0 : Math.max(0.01, clamp01((v - at.t0) / (at.t1 - at.t0)));
   }
 
   /** What the last run showed stays on the table. An empty list clears it, and the next run shows it all again. */
@@ -503,8 +531,22 @@ export class NetworkScene {
 
   /** Is this link really on the table right now? */
   hasLink(id: string): boolean {
-    const l = this.story.links.find((x) => x.id === id);
-    return !!l && this.present(l.a, this.now) > 0 && this.present(l.b, this.now) > 0;
+    const c = this.cableViews.find((x) => x.id === id);
+    return !!c && this.layingOf(c, this.now) > 0;
+  }
+
+  /** Lets a cable out as far as it is laid. */
+  private layCable(c: CableView, k: number): void {
+    const laying = k > 0 && k < 1;
+    if (laying) {
+      if (!c.reach) {
+        const box = c.g.getBBox();
+        const [cx, cy] = [Number(c.tip.getAttribute('cx')), Number(c.tip.getAttribute('cy'))];
+        c.reach = Math.hypot(Math.max(cx - box.x, box.x + box.width - cx), Math.max(cy - box.y, box.y + box.height - cy));
+      }
+      setAttr(c.tip, 'r', (easeOut(k) * c.reach).toFixed(1));
+    }
+    setAttr(c.g, 'clip-path', laying ? `url(#laying-${c.id})` : 'none');
   }
 
   /** Which cables are cut. */
@@ -859,28 +901,35 @@ export class NetworkScene {
     this.now = v;
     // Once a run starts, whatever it doesn't use steps back.
     const greying = v >= 0;
+    const stepped = lerp(1, UNUSED_OPACITY, clamp01(v / STEP_BACK));
+    // Opacity comes from v alone: a CSS transition restarted every frame splits the page into layers, and what is on top flickers.
     const fadeIn = (e: SVGGElement | SVGLineElement, on: number): void => {
       e.classList.toggle('absent', on === 0);
-      const opacity = on > 0 && on < 1 ? on.toFixed(3) : '';
+      const opacity = on > 0 && on < 1 ? String(Number(on.toFixed(3))) : '';
       if (e.style.opacity !== opacity) e.style.opacity = opacity;
     };
     for (const d of this.devices) {
       // Devices come onto the table as packets reach them. Without a VPN its server never does, nor the name servers without
       // a cold resolver.
       const on = this.present(d.id, v);
-      fadeIn(d.g, on);
-      d.g.classList.toggle('unused', on > 0 && greying && !this.used.has(d.id));
+      const unused = on > 0 && greying && !this.used.has(d.id);
+      fadeIn(d.g, clamp01(on / SPRING_SOLID) * (unused ? stepped : 1));
+      d.g.classList.toggle('unused', unused);
     }
     for (const c of this.cableViews) {
-      fadeIn(c.g, Math.min(this.present(c.a, v), this.present(c.b, v)));
-      c.g.classList.toggle('unused', greying && (!this.used.has(c.a) || !this.used.has(c.b)));
+      const k = this.layingOf(c, v);
+      const unused = greying && (!this.used.has(c.a) || !this.used.has(c.b));
+      fadeIn(c.g, (k > 0 ? 1 : 0) * (unused ? stepped : 1));
+      c.g.classList.toggle('unused', unused);
+      this.layCable(c, k);
     }
     const vpn = this.story.devices.find((d) => d.kind === 'vpn-server');
     if (this.tube && vpn) fadeIn(this.tube, this.present(vpn.id, v));
-    if (this.earBeam) fadeIn(this.earBeam, this.hasLink('wlan') ? 1 : 0);
+    const wifi = this.cableViews.find((c) => c.id === 'wlan');
+    if (this.earBeam) fadeIn(this.earBeam, wifi ? this.layingOf(wifi, v) : 0);
     for (const d of this.devices) {
       setAttr(d.trays, 'opacity', trayOpacity(tl, d.id, v).toFixed(3));
-      setAttr(d.g, 'transform', `translate(0 ${(-this.hop(d.id, v) * U).toFixed(2)})`);
+      setAttr(d.g, 'transform', `translate(0 ${(-this.hop(d.id, v) * U).toFixed(2)})${this.springing(d.id, v)}`);
       if (d.l4Name && hit) {
         const udp = hit.seg.trip.l4 === 'udp';
         setText(d.l4Name, layerName('l4', hit.seg.trip));
@@ -931,6 +980,16 @@ export class NetworkScene {
       const failed = !!shows?.browsing && !shows.pageTitle && !!last && v >= last.t1;
       screen.fail.setAttribute('opacity', failed ? '1' : '0');
     }
+  }
+
+  /** A device coming onto the table springs up from where it stands, a little too far and back. */
+  private springing(device: string, v: number): string {
+    const on = this.present(device, v);
+    if (on <= 0 || on >= 1) return '';
+    const p = this.tl.pos.get(device) ?? { x: 0, y: 0 };
+    const c = iso(p.x, p.y);
+    const size = lerp(SPRING_SIZE, 1, easeOutBack(on));
+    return ` translate(${c.sx.toFixed(1)} ${c.sy.toFixed(1)}) scale(${size.toFixed(3)}) translate(${(-c.sx).toFixed(1)} ${(-c.sy).toFixed(1)})`;
   }
 
   private blank(screen: Screen): void {
