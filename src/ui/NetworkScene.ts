@@ -203,6 +203,7 @@ export class NetworkScene {
   private readonly photo: SVGImageElement;
   private overview = { x: 0, y: 0, w: 1, h: 1 };
   private onTable: { sx: number; sy: number }[] = [];
+  private bar = 0;
   private remembered: ReadonlyMap<string, { site: string; ip: string }> = new Map();
   /** The kind of frame around the packet being drawn. */
   private l2: L2 = 'ethernet';
@@ -596,6 +597,11 @@ export class NetworkScene {
     });
   }
 
+  /** How much of the bottom of the view the bar covers, in screen pixels. */
+  setBar(height: number): void {
+    this.bar = height;
+  }
+
   /** Everything else lying on the table, which the whole-network view must keep in frame. */
   setOnTable(points: { sx: number; sy: number }[]): void {
     this.onTable = points;
@@ -654,18 +660,21 @@ export class NetworkScene {
   overviewCamera(): Camera {
     const cw = this.svg.clientWidth || 1;
     const ch = this.svg.clientHeight || 1;
-    if (ch > cw * 1.2) {
-      return { cx: -20, cy: 60, scale: Math.max(this.baseScale(), cw / 560) };
-    }
-    if (this.revealed.size) return this.wholeCamera();
+    const tall = ch > cw * 1.2;
+    if (!tall && this.revealed.size) return this.wholeCamera();
     // Only your own things are on the table: no need to leave room for what has not shown up yet.
     const pts = this.story.devices.filter((d) => PERSONAL_KINDS.has(d.kind)).flatMap((d) => {
       const p = this.tl.pos.get(d.id) ?? { x: 0, y: 0 };
       const c = iso(p.x, p.y);
       return [{ sx: c.sx - 130, sy: c.sy - 130 }, { sx: c.sx + 130, sy: c.sy + 70 }];
     });
-    const view = this.framing([...pts, ...this.onTable]);
-    return { ...view, scale: Math.min(view.scale, this.followScale()) };
+    const xs = [...pts, ...this.onTable].map((p) => p.sx);
+    const ys = [...pts, ...this.onTable].map((p) => p.sy);
+    const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+    const fit = Math.min(cw / (x1 - x0), (ch - this.bar) / (y1 - y0));
+    const scale = tall ? Math.min(fit, Math.max(this.baseScale(), cw / 560)) : Math.min(fit, this.followScale());
+    // In the middle of what the bar leaves free.
+    return { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 + this.bar / 2 / scale, scale };
   }
 
   /** Whether the whole network has anything to show that the view between runs leaves out. */

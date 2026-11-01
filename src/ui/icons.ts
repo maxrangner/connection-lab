@@ -12,6 +12,16 @@ export function drawScissors(g: SVGGElement): void {
   el('circle', { cx: 0, cy: 0, r: 2.5, class: 'scissor-pin' }, g);
 }
 
+/** Two bars, to pause. */
+export function drawPause(g: SVGGElement): void {
+  for (const x of [-6.5, 2]) el('rect', { x, y: -8, width: 4.5, height: 16, rx: 1, fill: 'currentColor' }, g);
+}
+
+/** A triangle, to play. */
+export function drawPlay(g: SVGGElement): void {
+  el('path', { d: 'M-5.5 -8.5 L8 0 L-5.5 8.5 Z', fill: 'currentColor', stroke: 'currentColor', 'stroke-width': 1.5, 'stroke-linejoin': 'round' }, g);
+}
+
 /** The moon, for the dark theme. */
 export function drawMoon(g: SVGGElement): void {
   el('path', { d: 'M4 -9 A9.5 9.5 0 1 0 9 5 A7.5 7.5 0 0 1 4 -9 Z', fill: 'currentColor' }, g);
