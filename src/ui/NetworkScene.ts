@@ -64,10 +64,11 @@ const SPRING_SOLID = 0.35;
 /** How far back what a run does not use steps, and how many seconds that takes. */
 const UNUSED_OPACITY = 0.28;
 const STEP_BACK = 0.4;
-/** How small a device's button gets. */
+/** How wide a device's button is (see app.css), and how small it gets. */
+const ACTION_W = 104;
 const MIN_ACTION_SIZE = 0.7;
 /** What a device takes up around where it stands, with its trays above it and its name below, in SVG units. */
-const DEVICE_ROOM = { side: 75, up: 130, down: 95 };
+const DEVICE_ROOM = { side: 75, up: 130, down: 70 };
 /** A cable, and the circle that lets it out as it is laid. */
 interface CableView {
   id: string;
@@ -193,6 +194,7 @@ export class NetworkScene {
   /** What ping or traceroute printed, and the hops flagged; behind the packet, which still has to get past them. */
   private readonly readoutLayer: SVGGElement;
   private readonly speechLayer: SVGGElement;
+  private readonly over: SVGSVGElement;
   /** What that layer was last drawn as, so it is not drawn again every frame. */
   private readoutDrawn = '';
   private readonly fx: SVGGElement;
@@ -294,7 +296,9 @@ export class NetworkScene {
     this.keys = el('g', { class: 'keys' }, world);
     this.moods = el('g', { class: 'moods' }, world);
     this.noteLayer = el('g', { class: 'moods' }, world);
-    this.speechLayer = el('g', { class: 'moods' }, world);
+    // What the devices say goes over everything, the bar and the buttons too: it matters, and it is gone in a moment.
+    this.over = el('svg', { class: 'net-over', preserveAspectRatio: 'xMidYMid meet', 'aria-hidden': 'true' }, host);
+    this.speechLayer = el('g', { class: 'moods' }, this.over);
     this.spyGlass = el('g', { class: 'spy' }, world);
 
     this.buildDevices();
@@ -645,16 +649,20 @@ export class NetworkScene {
     return Math.max(MIN_ACTION_SIZE, Math.min(1, this.viewScale / this.followScale()));
   }
 
-  /** Where a device's button can go on the screen, in pixels, best first: just under its name, or over its head. */
-  actionSpots(device: string): { x: number; y: number; points: 'up' | 'down' }[] {
+  /** Where a device's button can go on the screen, in pixels, best first: just under its name, over its head, or beside it. */
+  actionSpots(device: string): { x: number; y: number; points: 'up' | 'down' | 'left' | 'right' }[] {
     const p = this.tl.pos.get(device) ?? { x: 0, y: 0 };
     const size = this.actionSize();
     const name = iso(p.x, p.y + 1.9, 0);
     const under = this.onScreen({ sx: name.sx, sy: name.sy + 26 });
     const head = this.onScreen(iso(p.x, p.y, this.deviceTop(device) + 1.7));
+    const middle = this.onScreen(iso(p.x, p.y, this.deviceTop(device) / 2));
+    const beside = DEVICE_ROOM.side * this.viewScale + (ACTION_W / 2 + 14) * size;
     return [
       { x: under.x, y: under.y + 5 + 29 * size, points: 'up' },
       { x: head.x, y: head.y - 24 * size, points: 'down' },
+      { x: middle.x + beside, y: middle.y, points: 'left' },
+      { x: middle.x - beside, y: middle.y, points: 'right' },
     ];
   }
 
@@ -889,7 +897,9 @@ export class NetworkScene {
     this.viewY = c.cy - h / 2;
     this.viewW = w;
     this.viewScale = c.scale;
-    setAttr(this.svg, 'viewBox', `${this.viewX.toFixed(1)} ${this.viewY.toFixed(1)} ${w.toFixed(1)} ${h.toFixed(1)}`);
+    const box = `${this.viewX.toFixed(1)} ${this.viewY.toFixed(1)} ${w.toFixed(1)} ${h.toFixed(1)}`;
+    setAttr(this.svg, 'viewBox', box);
+    setAttr(this.over, 'viewBox', box);
   }
 
   /**

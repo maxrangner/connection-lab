@@ -68,6 +68,16 @@ body {
   cursor: grab;
 }
 
+/* Over the stage, the bar and the buttons, under an open popup */
+.net-over {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
 .net-stage.panning {
   cursor: grabbing;
 }
@@ -1210,6 +1220,24 @@ button.action-menu[data-points='up']::after {
 button.action-menu[data-points='down']::after {
   bottom: -11px;
   clip-path: polygon(0 0, 100% 0, 50% 100%);
+}
+
+button.action-menu[data-points='left']::after,
+button.action-menu[data-points='right']::after {
+  top: calc(50% - 9px);
+  width: 11px;
+  height: 18px;
+}
+
+button.action-menu[data-points='left']::after {
+  left: -11px;
+  clip-path: polygon(100% 0, 100% 100%, 0 50%);
+}
+
+button.action-menu[data-points='right']::after {
+  left: auto;
+  right: -11px;
+  clip-path: polygon(0 0, 100% 50%, 0 100%);
 }
 
 .menu-panel.action-menu .menu-item svg {
