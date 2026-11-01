@@ -3,7 +3,7 @@ import { fetchWebPage, runScenario, ulawDecodeAll, type Attack, type Cut, type J
 import { el } from './svg';
 import { clamp01, easeInOut, easeOutBack, iso, ISO_X, ISO_Y, lerp, U } from './project';
 import { HexCard } from './hexCard';
-import { drawDoor, drawEar, drawHandset, drawHush, drawMoon, drawPadlock, drawPage, drawPing, drawPipe, drawQuestion, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawSun, drawSwarm, drawTag, drawTrace } from './icons';
+import { drawDoor, drawEar, drawHandset, drawHush, drawMoon, drawPadlock, drawPage, drawPause, drawPing, drawPlay, drawPipe, drawQuestion, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawSun, drawSwarm, drawTag, drawTrace } from './icons';
 import { Menu } from './menus';
 import { NetworkScene, type Camera } from './NetworkScene';
 import { screenAt } from './readout';
@@ -134,8 +134,11 @@ try {
 type Mode = 'idle' | 'drag' | 'spring' | 'drop' | 'play' | 'return';
 let mode: Mode = 'idle';
 
-// The site card rests on the table between the laptop and the phone.
-const home = iso(0, 7.4, 0.5);
+// The cards rest on the table beside your devices, the middle of the stack level with the middle of the two of them.
+const STACK_TOP = -60;
+const STACK_BOTTOM = 270;
+const middleOfYours = (iso(0, 0).sy + iso(8, 8).sy) / 2 - 30;
+const home = { sx: iso(0, 7.4, 0.5).sx, sy: middleOfYours - (STACK_TOP + STACK_BOTTOM) / 2 };
 const HOMES: Record<Wanted, { sx: number; sy: number }> = {
   page: home,
   photo: { sx: home.sx, sy: home.sy + 62 },
@@ -185,7 +188,7 @@ const toolCard = (text: string, draw: (g: SVGGElement) => void): SVGGElement => 
 };
 const CARDS: Record<Wanted, SVGGElement> = { page: card, photo: photoCard, call: callCard, ping: toolCard('ping', drawPing), trace: toolCard('trace route', drawTrace) };
 
-scene.setOnTable([home, { sx: home.sx - 110, sy: home.sy + 50 }, { sx: home.sx + 110, sy: home.sy - 40 }, { sx: HOMES.trace.sx - 110, sy: HOMES.trace.sy + 50 }]);
+scene.setOnTable([{ sx: home.sx - 110, sy: home.sy + STACK_TOP }, { sx: home.sx + 110, sy: home.sy + STACK_BOTTOM }]);
 
 /** A setting changed before a run: show the network it will use, with a clean screen. */
 function preview(): void {
@@ -401,6 +404,12 @@ const button = (text: string, label: string, onClick: () => void): HTMLButtonEle
   controls.appendChild(b);
   return b;
 };
+/** An icon for the bar. Some phones draw the pause sign as an orange emoji, so it cannot be a character. */
+const barIcon = (draw: (g: SVGGElement) => void): SVGSVGElement => {
+  const icon = el('svg', { viewBox: '-12 -12 24 24', width: 24, height: 24, 'aria-hidden': 'true' });
+  draw(el('g', {}, icon));
+  return icon;
+};
 const backBtn = button('⏮', 'Step back', () => step(-1));
 const pauseBtn = button('', 'Pause', togglePause);
 const nextBtn = button('⏭', 'Step forward', () => step(1));
@@ -465,6 +474,7 @@ for (const menu of menus) {
 }
 const placeMenus = (): void => {
   for (const menu of menus) menu.place();
+  scene.setBar(window.innerHeight - controls.getBoundingClientRect().top);
   heardCard.style.bottom = `${window.innerHeight - controls.getBoundingClientRect().top + 8}px`;
   spyCard.place(controls);
 };
@@ -489,9 +499,7 @@ let dark = savedTheme ? savedTheme === 'dark' : window.matchMedia('(prefers-colo
 const showTheme = (): void => {
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
   themeBtn.setAttribute('aria-label', dark ? 'Light theme' : 'Dark theme');
-  const icon = el('svg', { viewBox: '-12 -12 24 24', width: 24, height: 24, 'aria-hidden': 'true' });
-  (dark ? drawSun : drawMoon)(el('g', {}, icon));
-  themeBtn.replaceChildren(icon);
+  themeBtn.replaceChildren(barIcon(dark ? drawSun : drawMoon));
 };
 const themeBtn = button('', 'Dark theme', () => {
   dark = !dark;
@@ -644,6 +652,8 @@ let anim = { from: { ...home }, to: { ...home }, t: 0, dur: 0.4 };
 let grab = { dx: 0, dy: 0 };
 cam = scene.overviewCamera();
 let snapCamera = false;
+let showsPlay: boolean | null = null;
+placeMenus();
 /** Set once the viewer pans or zooms by hand; the camera stops following until they ask again. */
 let camFree = false;
 /** "Show all" was pressed: between runs the camera keeps the whole network in view until the next run. */
@@ -1080,7 +1090,7 @@ function frame(now: number): void {
     const resting = CARDS[w];
     const rest = HOMES[w];
     resting.style.display = mode === 'play' ? 'none' : '';
-    resting.setAttribute('transform', `translate(${rest.sx.toFixed(1)} ${(rest.sy - bob).toFixed(1)})`);
+    resting.setAttribute('transform', `translate(${rest.sx.toFixed(1)} ${(rest.sy + bob).toFixed(1)})`);
     resting.setAttribute('opacity', '1');
   }
   hint.style.display = mode === 'idle' ? '' : 'none';
@@ -1130,8 +1140,11 @@ function frame(now: number): void {
   }
 
   const stopped = paused || !!peekTarget;
-  setText(pauseBtn, stopped ? '▶' : '⏸');
-  pauseBtn.setAttribute('aria-label', stopped ? 'Play' : 'Pause');
+  if (stopped !== showsPlay) {
+    showsPlay = stopped;
+    pauseBtn.replaceChildren(barIcon(stopped ? drawPlay : drawPause));
+    pauseBtn.setAttribute('aria-label', stopped ? 'Play' : 'Pause');
+  }
   svg.classList.toggle('between', canSetUp());
   soundBtn.classList.toggle('off', sound.muted);
   soundBtn.setAttribute('aria-pressed', String(sound.muted));
