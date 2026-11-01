@@ -64,6 +64,10 @@ const SPRING_SOLID = 0.35;
 /** How far back what a run does not use steps, and how many seconds that takes. */
 const UNUSED_OPACITY = 0.28;
 const STEP_BACK = 0.4;
+/** How small a device's button gets. */
+const MIN_ACTION_SIZE = 0.7;
+/** What a device takes up around where it stands, with its trays above it and its name below, in SVG units. */
+const DEVICE_ROOM = { side: 75, up: 130, down: 95 };
 /** A cable, and the circle that lets it out as it is laid. */
 interface CableView {
   id: string;
@@ -622,11 +626,44 @@ export class NetworkScene {
     return this.bar;
   }
 
-  /** Where a device's "+ action" goes on the screen, in pixels: just under its name, however far back the camera is. */
-  actionSpot(device: string): { x: number; y: number } {
+  /** Screen pixels of a point in the world. */
+  private onScreen(p: { sx: number; sy: number }): { x: number; y: number } {
+    return { x: (p.sx - this.viewX) * this.viewScale, y: (p.sy - this.viewY) * this.viewScale };
+  }
+
+  /** Where a device stands on the screen, in pixels. */
+  deviceSpot(device: string): { x: number; y: number } {
     const p = this.tl.pos.get(device) ?? { x: 0, y: 0 };
+    return this.onScreen(iso(p.x, p.y, this.deviceTop(device) / 2));
+  }
+
+  /** How big a device's button is drawn: smaller as the camera goes back, as far as a finger can still hit it. */
+  actionSize(): number {
+    return Math.max(MIN_ACTION_SIZE, Math.min(1, this.viewScale / this.followScale()));
+  }
+
+  /** Where a device's button can go on the screen, in pixels, best first: just under its name, or over its head. */
+  actionSpots(device: string): { x: number; y: number; points: 'up' | 'down' }[] {
+    const p = this.tl.pos.get(device) ?? { x: 0, y: 0 };
+    const size = this.actionSize();
     const name = iso(p.x, p.y + 1.9, 0);
-    return { x: (name.sx - this.viewX) * this.viewScale, y: (name.sy + 30 - this.viewY) * this.viewScale + 24 };
+    const under = this.onScreen({ sx: name.sx, sy: name.sy + 30 });
+    const head = this.onScreen(iso(p.x, p.y, this.deviceTop(device) + 1.7));
+    return [
+      { x: under.x, y: under.y + 24 * size, points: 'up' },
+      { x: head.x, y: head.y - 24 * size, points: 'down' },
+    ];
+  }
+
+  /** Would something this big, centred here on the screen, stand in front of another device on the table? */
+  hides(device: string, spot: { x: number; y: number }, w: number, h: number): boolean {
+    return this.devices.some(({ id }) => {
+      if (id === device || !this.present(id, this.now)) return false;
+      const p = this.tl.pos.get(id) ?? { x: 0, y: 0 };
+      const c = this.onScreen(iso(p.x, p.y));
+      const [side, up, down] = [DEVICE_ROOM.side * this.viewScale, DEVICE_ROOM.up * this.viewScale, DEVICE_ROOM.down * this.viewScale];
+      return spot.x + w / 2 > c.x - side && spot.x - w / 2 < c.x + side && spot.y + h / 2 > c.y - up && spot.y - h / 2 < c.y + down;
+    });
   }
 
   /** Everything else lying on the table, which the whole-network view must keep in frame. */
@@ -763,6 +800,9 @@ export class NetworkScene {
       p = packetPos(this.tl, hit.seg, hit.k);
       if (hit.seg.step.kind === 'read' && hit.seg.step.device === hit.seg.trip.client) p = v3(p.x, p.y, lerp(p.z, 1.2, hit.k));
     } else {
+      // A reading ends out where the last of it landed: there is nothing to go back to the sensor for.
+      const last = this.story.reading ? this.tl.segs.at(-1) : undefined;
+      if (last) return this.followCamera(last.t1 - 1e-6);
       p = v3(laptop.x, laptop.y, 1.6);
     }
     // Aim a little below the packet so the device it hovers over stays in view.
@@ -982,15 +1022,15 @@ export class NetworkScene {
     return out;
   }
 
-  /** Devices, trays and the laptop screen at visual time v. */
-  render(v: number): void {
+  /** Devices, trays and the laptop screen at visual time v. `over`: how far the run is behind us, from 0 to 1. */
+  render(v: number, over = 0): void {
     const tl = this.tl;
     const hit = segAt(tl, v);
     this.now = v;
     this.frameTable();
-    // Once a run starts, whatever it doesn't use steps back.
-    const greying = v >= 0;
-    const stepped = lerp(1, UNUSED_OPACITY, clamp01(v / STEP_BACK));
+    // Once a run starts, whatever it doesn't use steps back, until the run is over.
+    const greying = v >= 0 && over < 1;
+    const stepped = lerp(1, UNUSED_OPACITY, clamp01(v / STEP_BACK) * (1 - over));
     // Opacity comes from v alone: a CSS transition restarted every frame splits the page into layers, and what is on top flickers.
     const fadeIn = (e: SVGGElement | SVGLineElement, on: number): void => {
       e.classList.toggle('absent', on === 0);
@@ -1130,10 +1170,12 @@ export class NetworkScene {
     const c = isoV(this.screenPoint(device));
     const w = Math.max(...readout.screens.flatMap((s) => s.lines.map((l) => l.length))) * TERM_CHAR + TERM_PAD * 2;
     const h = Math.max(...readout.screens.map((s) => s.lines.length)) * TERM_LINE + TERM_PAD * 2;
-    // An attacker's goes under it, where the view has room.
-    if (ATTACKER_KINDS.has(this.tl.kind.get(device) ?? '')) return { x: c.sx - w / 2, y: c.sy + 112, w, h };
+    const kind = this.tl.kind.get(device) ?? '';
+    // An attacker's goes under it, where the view has room. The phone's goes under it too and out to the left, with the stranger beside it.
+    if (ATTACKER_KINDS.has(kind)) return { x: c.sx - w / 2, y: c.sy + 112, w, h };
+    if (kind === 'phone' && this.story.listener) return { x: c.sx + 30 - w, y: c.sy + 112, w, h };
     // Above the laptop is open table. Up from the phone is the home router and left of it the cards, so it goes below.
-    return this.tl.kind.get(device) === 'phone' ? { x: c.sx + 50, y: c.sy + 40, w, h } : { x: c.sx - w / 2, y: c.sy - 150 - h, w, h };
+    return kind === 'phone' ? { x: c.sx + 50, y: c.sy + 40, w, h } : { x: c.sx - w / 2, y: c.sy - 150 - h, w, h };
   }
 
   /** Everything that prints this run, with the device it prints beside. */

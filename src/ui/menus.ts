@@ -16,6 +16,8 @@ export class Menu<T extends string> {
   readonly button = document.createElement('button');
   private readonly panel = document.createElement('div');
   private readonly items = new Map<T, HTMLButtonElement>();
+  /** A popup that hangs off this one, and closes with it. */
+  private inner?: { setOpen(open: boolean): void };
 
   constructor(
     bar: HTMLElement,
@@ -73,6 +75,7 @@ export class Menu<T extends string> {
 
   setOpen(open: boolean): void {
     if (open === this.isOpen) return;
+    if (!open) this.inner?.setOpen(false);
     // Focus goes into the popup and back out with it: the popups sit outside the bar, away from its tab order.
     if (!open && this.panel.contains(document.activeElement)) this.button.focus();
     this.panel.hidden = !open;
@@ -93,6 +96,11 @@ export class Menu<T extends string> {
   setShown(id: T, shown: boolean): void {
     const b = this.items.get(id);
     if (b) b.style.display = shown ? '' : 'none';
+  }
+
+  /** Hangs a popup off this one. */
+  hold(inner: { setOpen(open: boolean): void }): void {
+    this.inner = inner;
   }
 
   /** Gives an item a row of its own in the popup, for something else to go beside it. */

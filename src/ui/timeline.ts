@@ -163,7 +163,7 @@ const POS: Record<string, { x: number; y: number }> = {
   // The phone sits in front of the home router, talking to it over Wi-Fi.
   phone: { x: 8, y: 8 },
   // A broker at home, on its own cable from the router, on the far side from your own things.
-  'local-broker': { x: 14, y: 3 },
+  'local-broker': { x: 8, y: -6 },
   // The sensor is on the wall well behind the cable to the router, so the button under it stays clear of the router.
   sensor: { x: 1, y: -9 },
   'home-router': { x: 8, y: 0 },
@@ -184,8 +184,8 @@ const POS: Record<string, { x: number; y: number }> = {
   stranger: { x: 13, y: 7 },
   scanner: { x: 20, y: 8 },
   bot1: { x: -2, y: -13 },
-  bot2: { x: 5, y: -9 },
-  bot3: { x: 9, y: -7 },
+  bot2: { x: 6, y: -12 },
+  bot3: { x: 11, y: -8 },
 };
 
 export const DEVICE_TOP: Record<string, number> = { laptop: 1.7, phone: 2.0, 'home-router': 0.55, router: 0.8, 'web-server': 2.6, 'dns-resolver': 1.1, 'vpn-server': 1.3, 'root-server': 1.5, 'tld-server': 1.1, 'auth-server': 1.1, peer: 2.0, stranger: 1.7, scanner: 1.7, bot: 1.8, sensor: 0.9, 'mqtt-broker': 1.5 };
@@ -559,8 +559,11 @@ export function formatWait(s: number): string {
   return ms >= 1000 ? `${Number(s.toFixed(1))} s` : `${ms} ms`;
 }
 
-/** The small blocks that say what they are: the first few plain ACKs of a stream, and a QoS step. A SYN or a reset has no data either, and is no ACK. */
-export const namedAcks = (flow: FlowPacket[]): FlowPacket[] => flow.filter((p) => p.trip.l4Label === 'ACK' || p.trip.message?.kind === 'mqtt-control').slice(0, NAMED_ACKS);
+/** The small blocks that say what they are: the first few plain ACKs of a stream, and every QoS step. A SYN or a reset has no data either, and is no ACK. */
+export function namedAcks(flow: FlowPacket[]): FlowPacket[] {
+  const first = flow.filter((p) => p.trip.l4Label === 'ACK').slice(0, NAMED_ACKS);
+  return flow.filter((p) => first.includes(p) || p.trip.message?.kind === 'mqtt-control');
+}
 
 /** What a stream has heard and sent so far. Traffic carries on from a stream that a dropped card cut short. */
 interface FlowState {

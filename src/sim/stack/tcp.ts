@@ -362,8 +362,7 @@ export class TcpConnection {
       if (this.state === 'FIN_WAIT_1') this.setState('FIN_WAIT_2');
       else if (this.state === 'CLOSING') this.enterTimeWait();
       else if (this.state === 'LAST_ACK') {
-        this.setState('CLOSED');
-        this.host.tcpRemove(this);
+        this.closeNow();
         this.handlers.onClosed?.(this);
       }
     }
@@ -610,8 +609,7 @@ export class TcpConnection {
       if (!first) return;
       const limit = first.syn ? SYN_RETRIES : DATA_RETRIES;
       if (first.retransmits >= limit) {
-        this.setState('CLOSED');
-        this.host.tcpRemove(this);
+        this.closeNow();
         this.handlers.onError?.(this, 'connection timed out');
         return;
       }
@@ -624,9 +622,13 @@ export class TcpConnection {
 
   /** Gives up on the connection without a word: when the far end has gone silent, there is nobody to say it to. */
   abort(): void {
-    this.host.sim.cancel(this.rtoTimer);
-    this.rtoTimer = undefined;
+    this.closeNow();
+  }
+
+  /** The end of the connection, however it came: nothing left to send, no timer left running. */
+  private closeNow(): void {
     this.outstanding = [];
+    this.restartRtoTimer();
     this.setState('CLOSED');
     this.host.tcpRemove(this);
   }
@@ -638,8 +640,7 @@ export class TcpConnection {
     sim.emit({ type: 'timer:set', deviceId: this.host.id, timerId, kind: 'tcp-timewait', fireAt: sim.now + TIME_WAIT, connId: this.id });
     this.twTimer = sim.after(TIME_WAIT, () => {
       sim.emit({ type: 'timer:fire', deviceId: this.host.id, timerId, kind: 'tcp-timewait' });
-      this.setState('CLOSED');
-      this.host.tcpRemove(this);
+      this.closeNow();
       this.handlers.onClosed?.(this);
     });
   }
@@ -653,10 +654,7 @@ export class TcpConnection {
     const calling = this.state === 'SYN_SENT';
     if (calling ? !(seg.flags & TCP_ACK) || seg.ack !== seqAdd(this.iss, 1) : seg.seq !== this.rcvNxt) return;
     const inUse = calling || this.state === 'SYN_RCVD' || this.state === 'ESTABLISHED' || this.state === 'CLOSE_WAIT';
-    this.host.sim.cancel(this.rtoTimer);
-    this.rtoTimer = undefined;
-    this.setState('CLOSED');
-    this.host.tcpRemove(this);
+    this.closeNow();
     if (inUse) this.handlers.onError?.(this, calling ? 'connection refused' : 'connection reset');
     this.handlers.onClosed?.(this);
   }
