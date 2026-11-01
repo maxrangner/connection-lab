@@ -92,12 +92,6 @@ export class Menu<T extends string> {
     b?.setAttribute('aria-pressed', String(on));
   }
 
-  /** Takes an item out of the popup, or puts it back. */
-  setShown(id: T, shown: boolean): void {
-    const b = this.items.get(id);
-    if (b) b.style.display = shown ? '' : 'none';
-  }
-
   /** Hangs a popup off this one. */
   hold(inner: { setOpen(open: boolean): void }): void {
     this.inner = inner;
