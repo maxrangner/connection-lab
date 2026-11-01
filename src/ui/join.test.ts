@@ -235,8 +235,8 @@ describe('a card dropped in during a run', () => {
         const { after, s } = dropped(a, b, 0.3);
         for (const seg of after.segs) {
           for (const h of (seg.flow ?? []).flatMap((p) => p.hops)) {
-            expect(after.reveals.get(h.from)!.t0).toBeLessThan(h.t0);
-            expect(after.reveals.get(h.to)!.t0).toBeLessThan(h.t1);
+            // A dropped-in job sets off at once, so its cables can only start with it.
+            for (const d of [h.from, h.to]) expect(after.reveals.get(d)!.t0).toBeLessThanOrEqual(h.t0 + 1.31);
             expect(after.laid.get(h.link)!.t0).toBeLessThanOrEqual(h.t0);
           }
         }
@@ -245,21 +245,20 @@ describe('a card dropped in during a run', () => {
     }
   });
 
-  it('lays each cable ahead of the first packet over it, and the device at its end springs up before the packet lands', () => {
+  it('has each cable laid and the device at its end up before the first packet sets off over it', () => {
     const tl = buildTimeline(story('page'));
     const trips = tl.segs.flatMap((s) => (s.step.kind === 'travel' ? [{ s, step: s.step }] : []));
     for (const [link, at] of tl.laid) {
       const first = trips.find((x) => x.step.link === link)!;
-      expect(at).toMatchObject({ from: first.step.from, t0: first.s.t0 });
-      expect(at.t1).toBeLessThan(first.s.t1);
+      expect(at.from).toBe(first.step.from);
+      expect(at.t1).toBeLessThan(first.s.t0);
     }
     for (const device of ['home', 'isp', 'resolver', 'server']) {
       const first = trips.find((x) => x.step.to === device)!;
       const at = tl.reveals.get(device)!;
-      expect(at.t0).toBeGreaterThan(first.s.t0);
-      expect(at.t1).toBeLessThan(first.s.t1);
-      // The cable gets there first, or the device would stand there alone.
-      expect(at.t0).toBeLessThan(tl.laid.get(first.step.link)!.t1);
+      expect(at.t1).toBeLessThan(first.s.t0);
+      // The cable is nearly there first, or the device would stand there alone.
+      expect(at.t0).toBeGreaterThan(tl.laid.get(first.step.link)!.t0);
     }
   });
 

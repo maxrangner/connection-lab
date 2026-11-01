@@ -252,6 +252,11 @@ body {
   line-height: 1;
 }
 
+/* The note is a small glyph: at the size of the others it hardly fills the circle */
+.net-controls button.sound-button {
+  font-size: 32px;
+}
+
 .follow {
   position: fixed;
   top: calc(14px + env(safe-area-inset-top, 0px));

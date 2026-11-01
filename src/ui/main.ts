@@ -476,6 +476,7 @@ const soundBtn = button('♪', 'Mute', () => {
     // Not remembered; fine.
   }
 });
+soundBtn.classList.add('sound-button');
 button('↺', 'Reset', reset);
 // On a narrow screen the bar breaks into two rows here (see app.css).
 controls.appendChild(Object.assign(document.createElement('span'), { className: 'bar-break' }));
