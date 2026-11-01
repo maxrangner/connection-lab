@@ -43,7 +43,7 @@ ${css}
 </style>
 </head>`)
   .replace('</body>', () => `<script type="module">
-${js.replace(/<\/script/gi, '<\/script')}
+${js.replace(/<\/script/gi, '<\\/script')}
 </script>
 </body>`);
 fs.mkdirSync(path.dirname(outFile), { recursive: true });
