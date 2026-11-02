@@ -1,9 +1,10 @@
 import { el } from './svg';
-import { groundShadow, line, plate, ring, slab, tiles } from './prims';
+import { groundShadow, line, plate, ring, slab, tiltedBar, tiltedRing, tiltedTo, tiles } from './prims';
 import { v3 } from './project';
 
 /** The things you handle, drawn from simple shapes around the origin, for the menus and the scene alike. */
 
+const TOOL_LINE = '#1f2633';
 const TOOL_BODY = '#f2ebdd';
 const TOOL_BLUE = '#5b8ec4';
 const TOOL_STEEL = '#d9dde3';
@@ -11,13 +12,17 @@ const TOOL_STEEL = '#d9dde3';
 /** One half of a pair of scissors: one straight piece through the pivot at the origin, from the tip to its grip on the other side. */
 const BLADE = 'M-15.2 -28.1 L3 -3.9 L10.3 13.7 L5.9 16.1 L-4 -0.1 Z';
 
-/** A pair of scissors, for the menu. */
+/**
+ * A pair of scissors, in the menu and in the hand: main.ts makes the cursor from this drawing, and a cursor has no stylesheet,
+ * so everything here is said on the shapes themselves.
+ */
 export function drawScissors(g: SVGGElement): void {
+  for (const s of [-1, 1]) el('path', { d: BLADE, transform: `scale(${s} 1)`, fill: TOOL_BODY, stroke: TOOL_LINE, 'stroke-width': 3, 'stroke-linejoin': 'round' }, g);
+  el('circle', { cx: 0, cy: 0, r: 2.5, fill: TOOL_LINE }, g);
   for (const s of [-1, 1]) {
-    el('path', { d: BLADE, transform: `scale(${s} 1)`, class: 'scissor-blade' }, g);
-    el('circle', { cx: s * 12.9, cy: 23.7, r: 8, class: 'scissor-grip' }, g);
+    el('circle', { cx: s * 12.9, cy: 23.7, r: 8, fill: 'none', stroke: TOOL_LINE, 'stroke-width': 10 }, g);
+    el('circle', { cx: s * 12.9, cy: 23.7, r: 8, fill: 'none', stroke: TOOL_BLUE, 'stroke-width': 4.5 }, g);
   }
-  el('circle', { cx: 0, cy: 0, r: 2.5, class: 'scissor-pin' }, g);
 }
 
 /** How far each half of the scissors on the table stands open, in radians. */
@@ -60,19 +65,23 @@ export function drawSun(g: SVGGElement): void {
   }
 }
 
-/** A magnifying glass, for the menu. */
+/** A magnifying glass, in the menu and in the hand. As for the scissors, main.ts makes the cursor from this drawing. */
 export function drawSpyglass(g: SVGGElement): void {
-  el('line', { x1: 15, y1: 15, x2: 30, y2: 30, class: 'spy-handle-line' }, g);
-  el('line', { x1: 15, y1: 15, x2: 30, y2: 30, class: 'spy-handle' }, g);
-  el('circle', { cx: 0, cy: 0, r: 19, class: 'spy-lens' }, g);
-  el('path', { d: 'M-11 -6 A12 12 0 0 1 -4 -12', class: 'spy-shine' }, g);
+  el('line', { x1: 15, y1: 15, x2: 30, y2: 30, stroke: TOOL_LINE, 'stroke-width': 12, 'stroke-linecap': 'round' }, g);
+  el('line', { x1: 15, y1: 15, x2: 30, y2: 30, stroke: TOOL_BODY, 'stroke-width': 6.5, 'stroke-linecap': 'round' }, g);
+  el('circle', { cx: 0, cy: 0, r: 19, fill: TOOL_BODY, stroke: TOOL_LINE, 'stroke-width': 3 }, g);
+  el('circle', { cx: 0, cy: 0, r: 13.5, fill: TOOL_BLUE, 'fill-opacity': 0.6, stroke: TOOL_LINE, 'stroke-width': 3 }, g);
 }
 
-/** The magnifying glass on the table, held flat over the cable and built as the devices are. See-through, for the cable under it. */
+/**
+ * The magnifying glass on the table, held up at an angle and built as the devices are. It is held on the viewer's side of the
+ * cable, on the line of sight to the cable's middle, so that is what shows through the lens.
+ */
 export function drawBoardSpyglass(g: SVGGElement): void {
-  groundShadow(g, { x: -0.5, y: -0.5, w: 1.2, d: 1.2, r: 0.6 });
-  ring(g, { x: 0, y: 0, z: 0.42, h: 0.14, r: 0.62, hole: 0.47, color: TOOL_BODY, glass: 'board-lens' });
-  slab(g, { x: 0.6, y: -0.11, z: 0.42, w: 0.95, d: 0.22, h: 0.14, r: 0.1, color: TOOL_BODY });
+  groundShadow(g, { x: 0.65, y: 1, w: 1.2, d: 0.55, r: 0.27 });
+  const held = tiltedTo(v3(1.2, 1.2, 1.2), v3(0.1, 1, 0.3));
+  tiltedBar(g, held, { from: 0.6, to: 1.35, wid: 0.24, t: 0.14, turn: -0.95, color: TOOL_BODY });
+  tiltedRing(g, held, { r: 0.68, hole: 0.5, t: 0.14, color: TOOL_BODY, glass: 'board-lens', shine: 'spy-shine' });
 }
 
 /** A small satellite, the same boxes and panels as a device. */

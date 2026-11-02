@@ -540,6 +540,14 @@ const speedMenu = new Menu<string>(controls, root, '1×', 'Speed', SPEEDS.map((i
 });
 speedMenu.setOn('1', true);
 speedMenu.button.classList.add('speed-button');
+/** A cursor from the same drawing as the tool's menu icon, 32px square, as big as browsers reliably allow. */
+const cursorOf = (draw: (g: SVGGElement) => void, viewBox: string): string => {
+  const icon = el('svg', { viewBox, width: 32, height: 32 });
+  draw(el('g', {}, icon));
+  return `url("data:image/svg+xml,${encodeURIComponent(new XMLSerializer().serializeToString(icon))}")`;
+};
+root.style.setProperty('--cursor-spy', cursorOf(drawSpyglass, '-22 -22 58 58'));
+root.style.setProperty('--cursor-cut', cursorOf(drawScissors, '-36 -32 72 72'));
 const toolsMenu = new Menu<Tool>(
   controls,
   root,

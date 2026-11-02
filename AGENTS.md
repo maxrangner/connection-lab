@@ -102,7 +102,7 @@ src/ui/                      presentation (vanilla DOM + SVG, no framework, no a
   readout.ts                 what ping and traceroute print, line by line, and the hops they flag
   speech.ts                  what the devices say: a plain line per packet, from what the packet really is; routers speak once
   icons.ts                   bolt, scissors, spyglass, satellite, shield, padlock, page; drawn around the origin, used by menus and scene.
-                             Spyglass and scissors come twice: flat for the menus, and on the table as isometric objects from the same prims as the devices (`drawBoardSpyglass`, `drawBoardScissors`, which lie across the cut). The tool cursors in app.css have the devices' outline and colours
+                             Spyglass and scissors come twice: one flat drawing for the menus, the spy popup and the cursor, which main.ts makes from it (`cursorOf`), and on the table as isometric objects from the same prims as the devices (`drawBoardSpyglass`, held up at an angle, and `drawBoardScissors`, lying across the cut)
   project.ts, prims.ts       2:1 isometric projection and easing; extruded boxes, tiles, lines; shade.ts face colours
   svg.ts                     SVG helpers
   app.css                    all styling (warm off-white table, layer colours)

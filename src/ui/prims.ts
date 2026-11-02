@@ -198,6 +198,72 @@ export function leaf(parent: Element, s: { x: number; y: number; z: number; w: n
   outline(parent, [...inner, ...outer]);
 }
 
+/** A flat thing held up at an angle: `at` is its middle, `u` runs across its face and `v` up it, `n` comes out of the face. */
+export interface Tilt {
+  at: Vec3;
+  u: Vec3;
+  v: Vec3;
+  n: Vec3;
+}
+
+/** The tilt of a face looking towards this direction, level from side to side. */
+export function tiltedTo(at: Vec3, toward: Vec3): Tilt {
+  const unit = (p: Vec3): Vec3 => {
+    const k = Math.hypot(p.x, p.y, p.z);
+    return { x: p.x / k, y: p.y / k, z: p.z / k };
+  };
+  const n = unit(toward);
+  const u = unit({ x: n.y, y: -n.x, z: 0 });
+  return { at, u, n, v: { x: u.y * n.z - u.z * n.y, y: u.z * n.x - u.x * n.z, z: u.x * n.y - u.y * n.x } };
+}
+
+const onTilt = (f: Tilt, a: number, b: number, behind = 0): Pt =>
+  iso(f.at.x + a * f.u.x + b * f.v.x - behind * f.n.x, f.at.y + a * f.u.y + b * f.v.y - behind * f.n.y, f.at.z + a * f.u.z + b * f.v.z - behind * f.n.z);
+
+/** The edge of a tilted shape where it faces the viewer, as deep as `t`. `inside`: the edge of a hole, seen from within it. */
+function tiltedWalls(parent: Element, f: Tilt, shape: [number, number][], t: number, base: string, inside = false): void {
+  const ma = shape.reduce((sum, p) => sum + p[0], 0) / shape.length;
+  const mb = shape.reduce((sum, p) => sum + p[1], 0) / shape.length;
+  shape.forEach(([a0, b0], i) => {
+    const [a1, b1] = shape[(i + 1) % shape.length]!;
+    const long = Math.hypot(a1 - a0, b1 - b0);
+    const away = (b1 - b0) * ((a0 + a1) / 2 - ma) - (a1 - a0) * ((b0 + b1) / 2 - mb) < 0 !== inside ? -1 : 1;
+    const [na, nb] = [(away * (b1 - b0)) / long, (away * (a0 - a1)) / long];
+    const w = { x: na * f.u.x + nb * f.v.x, y: na * f.u.y + nb * f.v.y, z: na * f.u.z + nb * f.v.z };
+    if (w.x + w.y + w.z <= 0) return;
+    const color = shade(base, ROUNDED.left * w.y ** 2 + ROUNDED.right * w.x ** 2 + FACE.top * w.z ** 2);
+    el('path', { d: pathOf([onTilt(f, a0, b0), onTilt(f, a1, b1), onTilt(f, a1, b1, t), onTilt(f, a0, b0, t)]), fill: color, stroke: color, 'stroke-width': 0.7 }, parent);
+  });
+}
+
+/** A bar on a tilted face, `from` and `to` along the direction `turn` radians from `u`, with rounded ends. */
+export function tiltedBar(parent: Element, f: Tilt, s: { from: number; to: number; wid: number; t: number; turn: number; color: string }): void {
+  const [cos, sin] = [Math.cos(s.turn), Math.sin(s.turn)];
+  const shape = roundedRect(s.to - s.from, s.wid, s.wid / 2 - 0.001).map(([x, y]): [number, number] => {
+    const [along, across] = [s.from + x, y - s.wid / 2];
+    return [along * cos - across * sin, along * sin + across * cos];
+  });
+  tiltedWalls(parent, f, shape, s.t, s.color);
+  const front = shape.map(([a, b]) => onTilt(f, a, b));
+  el('path', { d: pathOf(front), fill: shade(s.color, FACE.top) }, parent);
+  outline(parent, [...front, ...shape.map(([a, b]) => onTilt(f, a, b, s.t))]);
+}
+
+/** A ring held up on a tilted face, with a pane of see-through glass in it, drawn with the class `glass`, and the light on it. */
+export function tiltedRing(parent: Element, f: Tilt, s: { r: number; hole: number; t: number; color: string; glass: string; shine: string }): void {
+  const circle = (r: number): [number, number][] => Array.from({ length: 48 }, (_, i) => [r * Math.cos((i * Math.PI) / 24), r * Math.sin((i * Math.PI) / 24)]);
+  const [outer, hole] = [circle(s.r), circle(s.hole)] as [[number, number][], [number, number][]];
+  const face = (shape: [number, number][]): Pt[] => shape.map(([a, b]) => onTilt(f, a, b));
+  tiltedWalls(parent, f, hole, s.t, s.color, true);
+  el('path', { d: pathOf(face(hole)), class: s.glass }, parent);
+  tiltedWalls(parent, f, outer, s.t, s.color);
+  el('path', { d: `${pathOf(face(outer))}${pathOf(face(hole))}`, 'fill-rule': 'evenodd', fill: shade(s.color, FACE.top) }, parent);
+  outline(parent, [...face(outer), ...outer.map(([a, b]) => onTilt(f, a, b, s.t))]);
+  el('path', { d: pathOf(face(hole)), class: 'dev-line dev-glass-line' }, parent);
+  const light = Array.from({ length: 9 }, (_, i) => onTilt(f, s.hole * 0.68 * Math.cos(1.9 + i * 0.13), s.hole * 0.68 * Math.sin(1.9 + i * 0.13)));
+  el('path', { d: pathOf(light).replace(/Z$/, ''), class: s.shine }, parent);
+}
+
 /** The shadow a thing with this footprint throws on the table. */
 export function groundShadow(parent: Element, s: { x: number; y: number; w: number; d: number; r: number }): void {
   el('path', { d: pathOf(roundedRect(s.w, s.d, s.r).map(([a, b]) => iso(s.x + a, s.y + b))), class: 'dev-shadow' }, parent);
