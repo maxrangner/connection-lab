@@ -139,16 +139,11 @@ describe('a photo down a thin pipe: the first loss with no cut', () => {
   const flow = flowOf(tl);
   const travelOn = (t: Trip, link: string) => t.steps.find((x): x is Extract<Step, { kind: 'travel' }> => x.kind === 'travel' && x.link === link);
 
-  it('the story knows, and each part carries how long it waited at the ISP’s port', () => {
+  it('the story knows', () => {
     expect(s.thin).toBe(true);
     expect(photo().thin).toBe(false);
     expect(s.links.find((l) => l.id === 'wan')?.queue).toBe(THIN_QUEUE);
     expect(photo().links.find((l) => l.id === 'wan')?.queue).toBeUndefined();
-    const waits = packets(s).filter((t) => t.part && !t.retry && !t.lost).map((t) => travelOn(t, 'wan')?.queued ?? 0);
-    expect(waits[0]).toBe(0);
-    expect(waits[1]).toBeGreaterThan(0);
-    expect(waits[2]).toBeGreaterThan(waits[1]!);
-    expect(packets(photo()).every((t) => travelOn(t, 'wan')?.queued === undefined)).toBe(true);
   });
 
   it('one part falls off the full tray at the ISP router, never reaching the cable, and its resend fills the gap', () => {

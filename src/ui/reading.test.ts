@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fetchWebPage, OFFLINE_AT, READING_AT, runScenario, type Attack, type SimResult } from '../sim';
-import { buildStory, type Story, type Trip } from './story';
+import { buildStory, unrolled, type Story, type Trip } from './story';
 import { buildTimeline, crossings, namedAcks, realAt, seenSoFar, type Timeline } from './timeline';
 import { buildSpeech } from './speech';
 
@@ -317,7 +317,7 @@ describe('an app that is away', () => {
 
   it('the story shows the laptop trying, coming back, and the reading landing', () => {
     const s = buildStory(run(1, mended(READING_AT + 1)));
-    const all = s.trips.flatMap((t) => (t.steps.some((x) => x.kind === 'flow') ? t.steps.flatMap((x) => (x.kind === 'flow' ? x.packets : [])) : [t]));
+    const all = s.trips.flatMap(unrolled);
     expect(all.some((t) => t.origin === 'laptop' && t.l4Label === 'SYN')).toBe(true);
     expect(all.some((t) => t.card === 'CONNECT')).toBe(true);
     expect(s.screens.laptop!.pageTitle).toBe(s.screens.phone!.pageTitle);

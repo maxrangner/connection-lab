@@ -88,7 +88,6 @@ describe('stretching the fibre to the ISP', () => {
     const wan = (t: typeof tl) => travelOn(t, 'wan');
     expect(wan(far).t1 - wan(far).t0).toBeCloseTo((wan(tl).t1 - wan(tl).t0) * Math.sqrt(6), 5);
     expect(travelOn(far, 'lan').t1 - travelOn(far, 'lan').t0).toBeCloseTo(travelOn(tl, 'lan').t1 - travelOn(tl, 'lan').t0, 5);
-    expect(far.stretch).toBe(40);
   });
 
   it('turns tiles into a real delay: 400 km of fibre is 2 ms, an ocean away is 40 ms', () => {

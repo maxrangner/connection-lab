@@ -1,6 +1,7 @@
 import {
   clientHelloSni,
   flagNames,
+  hexBytes,
   openRecords,
   sessionStream,
   TCP_ACK,
@@ -9,6 +10,7 @@ import {
   TCP_SYN,
   TLS_ALERT,
   TLS_APPLICATION_DATA,
+  TLS_HANDSHAKE,
   type Action,
   type AppAction,
   type Field,
@@ -74,7 +76,7 @@ export type Step = (
   | { kind: 'wrap'; device: string; layer: Wrap; /** For the frame (layer 'eth'): which kind and its sizes. */ frame?: Frame; /** For the VPN case: the addresses showing from here on. */ addr?: { from: string; to: string } }
   | { kind: 'unwrap'; device: string; layer: Wrap; frame?: Frame; addr?: { from: string; to: string } }
   | { kind: 'nat'; device: string; which: 'from' | 'to'; before: string; after: string; /** The port changes with the address: it is how the way back is found. */ beforePort: number; afterPort: number }
-  | { kind: 'travel'; from: string; to: string; link: string; /** Sim time the frame was sent. */ at: number; /** What anyone on this line could read. */ seen?: Seen; /** Seconds it waited in the port's buffer before it started on the cable; absent when it did not wait. */ queued?: number; /** Noisy Wi-Fi: the same frame sent again by the radio after an earlier copy was lost (the `lost` step just before it on this link). */ retry?: boolean; /** Noisy Wi-Fi: the receiver's Ack for this copy came back. */ acked?: boolean }
+  | { kind: 'travel'; from: string; to: string; link: string; /** Sim time the frame was sent. */ at: number; /** What anyone on this line could read. */ seen?: Seen; /** Noisy Wi-Fi: the same frame sent again by the radio after an earlier copy was lost (the `lost` step just before it on this link). */ retry?: boolean; }
   /**
    * Knocked off the cable on the way from `from` to `to`. For a packet the port's full buffer turned away (`Trip.droppedAtQueue`)
    * `at` is when it was dropped and there is nothing `seen`: it never reached the cable.
@@ -225,15 +227,11 @@ export interface Story {
   vpn: boolean;
   /** The resolver has nothing cached and walks root → TLD → authoritative: those three servers are on the table. */
   cold: boolean;
-  /** The device starts with no address and gets one by DHCP first. */
-  dhcp: boolean;
-  /** A voice call to the friend instead of a page. */
-  call: boolean;
   /**
-   * The call's sound, as G.711 µ-law bytes (decode with ulawDecode): what the caller says, and what it heard, one entry per
-   * packet of the friend's clip: the bytes that came, or null for a packet that never arrived.
+   * A voice call to the friend instead of a page, and its sound as G.711 µ-law bytes (decode with ulawDecode): what the caller
+   * heard, one entry per packet of the friend's clip: the bytes that came, or null for a packet that never arrived.
    */
-  voice?: { sent: Uint8Array; heard: (Uint8Array | null)[] };
+  voice?: { heard: (Uint8Array | null)[] };
   /** A thin pipe: the line to the ISP is slow and its port's buffer small, so packets queue there and the tail can be dropped. */
   thin: boolean;
   /** Noisy Wi-Fi: the chance any one frame on the air is lost to interference; 0 when the radio is a perfect cable. */
@@ -328,14 +326,13 @@ export function icmpCardLabel(summary: string, count?: number): string {
   return summary.startsWith('ICMP destination unreachable') ? 'unreachable' : 'ICMP';
 }
 
-const TLS_HANDSHAKE = 22;
 const SERVER_HELLO = 2;
 
 const printable = (s: string): string => s.replace(/[^\x20-\x7e]/g, '·');
 const clip = (s: string, n = 36): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 /** The start of some bytes as hex, the way scrambled data looks to anyone without the key. */
-const hexStart = (b: Uint8Array): string => [...b.subarray(0, 12)].map((x) => x.toString(16).padStart(2, '0')).join(' ') + (b.length > 12 ? ' …' : '');
+const hexStart = (b: Uint8Array): string => hexBytes(b, 0, Math.min(12, b.length)) + (b.length > 12 ? ' …' : '');
 
 /** The most telling readable lines of plain text: its first line, and the Host or the page title if they are there. */
 function readable(b: Uint8Array): string[] {
@@ -440,7 +437,7 @@ function chosen(r: SimResult, arp: boolean): { packets: PacketInfo[]; hellos: Se
   const hellos = new Set<string>();
   const helloAckFrom = new Set<string>();
   for (const p of r.packets.values()) {
-    // A Wi-Fi Ack is the radio's own business: the frame it answers gets `acked` on its travel step instead.
+    // A Wi-Fi Ack is the radio's own business.
     if (p.kind === 'wifi-ack') continue;
     if (p.kind === 'dns' || p.kind === 'dhcp' || p.kind === 'rtp' || p.kind === 'icmp' || p.kind === 'probe' || p.kind === 'flood' || (p.kind === 'arp' && arp)) {
       packets.push(p);
@@ -479,7 +476,7 @@ function answersFin(r: SimResult, ack: PacketInfo): boolean {
   return (ack.tcp?.relAck ?? 0) > Math.max(...other.map((q) => (q.tcp?.relSeq ?? 0) + (q.tcp?.len ?? 0)));
 }
 
-function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: string[], attackers: string[]): Trip | null {
+function trip(r: SimResult, p: PacketInfo, events: SimEvent[], asked: Map<string, number>, clients: string[], attackers: string[]): Trip | null {
   const steps: Step[] = [];
   let frame: PduSnapshot | undefined;
   /** The packet as the sender first made it, before any VPN sealed it. */
@@ -491,9 +488,6 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
   /** The last time this packet was on `link`: a travel that got across, or a lost copy. */
   const lastOn = (link: string): Extract<Step, { kind: 'travel' | 'lost' }> | undefined =>
     [...steps].reverse().find((s): s is Extract<Step, { kind: 'travel' | 'lost' }> => (s.kind === 'travel' || s.kind === 'lost') && s.link === link);
-  /** Seconds the frame about to travel waited in a port's buffer, from the queue event just before its tx. */
-  let queued = 0;
-  let firstSeq = -1;
   let done = false;
   /** The frame on the current link, so the receiver unwraps the same kind it was sent in. */
   let onLink: Frame | undefined;
@@ -504,10 +498,8 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
     nowPdu = r.pdus.get(pduId);
     now = { ...now, ...detailsOf(nowPdu) };
   };
-  for (const e of r.events as SimEvent[]) {
+  for (const e of events) {
     if (done) break;
-    if (!('packetId' in e) || e.packetId !== p.id) continue;
-    if (firstSeq < 0) firstSeq = e.seq;
     const count = steps.length;
     switch (e.type) {
       case 'encapsulate': {
@@ -559,27 +551,18 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
           afterPort: e.after.port,
         });
         break;
-      case 'queue':
-        queued = e.wait;
-        break;
       case 'tx': {
         const before = lastOn(e.linkId);
         // Sent again on a noisy radio after it had already got across: its Ack was lost, and the far end throws the copy
         // away. The trip has moved on; the copy is not shown.
         if (before?.kind === 'travel' && noisy(e.linkId)) break;
-        steps.push({ kind: 'travel', from: e.fromDevice, to: e.toDevice, link: e.linkId, at: e.start, seen: seenOn(r.pdus.get(e.frameId), p), ...(queued > 0 ? { queued } : {}), ...(before?.kind === 'lost' ? { retry: true } : {}) });
-        queued = 0;
+        steps.push({ kind: 'travel', from: e.fromDevice, to: e.toDevice, link: e.linkId, at: e.start, seen: seenOn(r.pdus.get(e.frameId), p), ...(before?.kind === 'lost' ? { retry: true } : {}) });
         break;
       }
       case 'wifi:retry':
         // The copy about to go has the Retry bit set: that is the frame the next travel shows, unless it is a needless copy.
         if (lastOn(e.linkId)?.kind === 'lost') update(e.frameId);
         break;
-      case 'wifi:ack': {
-        const got = lastOn(e.linkId);
-        if (got?.kind === 'travel') got.acked = true;
-        break;
-      }
       case 'drop': {
         const last = steps[steps.length - 1];
         if (e.reason === 'duplicate-frame') break;
@@ -640,7 +623,7 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
   const ownDhcp = (p.kind === 'dhcp' || (p.kind === 'arp' && !!card?.startsWith('who has'))) && clients.includes(origin);
   const askedAt = p.kind === 'dns' || ownDhcp ? asked.get(askKey) : undefined;
   if ((p.kind === 'dns' && packet.layers.some((x) => x.summary.startsWith('DNS query'))) || ownDhcp) asked.set(askKey, p.createdAt);
-  const resend = r.events.find((e) => e.type === 'tcp:retransmit' && e.packetId === p.id);
+  const resend = events.find((e) => e.type === 'tcp:retransmit');
   const timer = resend?.type === 'tcp:retransmit' && resend.cause === 'rto' ? resend.rto : askedAt !== undefined ? p.createdAt - askedAt : undefined;
   // A reading is one story, whoever's connection a packet is on; an app coming back is part of it.
   const client = r.scenario.quietUntil !== undefined && !attackers.includes(clients[p.job]!) ? r.scenario.startDevice : clients[p.job]!;
@@ -746,7 +729,7 @@ function voiceOf(r: SimResult, client: string): Story['voice'] {
     const part = pdu && r.packets.get(pdu.packetId)?.rtp?.part;
     if (rtp && part) heard[part - 1] = pdu.bytes.slice(rtp.headerEnd, rtp.payloadEnd);
   }
-  return { sent: call.clip, heard };
+  return { heard };
 }
 
 /** What ping or traceroute reported, from its own events, for the owner to show as it likes. */
@@ -836,8 +819,15 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
   const listener = r.scenario.links.find((l) => l.overheardBy)?.overheardBy;
   const scan = scanOf(r);
   const { packets, hellos } = chosen(r, !!opts.arp);
+  const events = new Map<string, SimEvent[]>();
+  for (const e of r.events as SimEvent[]) {
+    if (!('packetId' in e)) continue;
+    const own = events.get(e.packetId);
+    if (own) own.push(e);
+    else events.set(e.packetId, [e]);
+  }
   const trips = packets
-    .map((p) => trip(r, p, asked, clients, attackers))
+    .map((p) => trip(r, p, events.get(p.id) ?? [], asked, clients, attackers))
     .filter((t): t is Trip => !!t)
     .sort((a, b) => a.sent - b.sent || a.start - b.start);
   for (const t of trips) if (hellos.has(t.packetId)) t.hello = true;
@@ -891,8 +881,6 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
     screens,
     vpn: r.scenario.devices.some((d) => d.tunnel),
     cold: r.scenario.devices.some((d) => d.apps.some((a) => a.kind === 'dns-server' && !!a.upstream)),
-    dhcp: r.scenario.devices.some((d) => d.id === client && d.apps.some((a) => a.kind === 'dhcp-client')),
-    call: !!voice,
     ...(voice ? { voice } : {}),
     thin: r.scenario.links.some((l) => l.id === 'wan' && l.queue !== undefined),
     noise: Math.max(0, ...r.scenario.links.map((l) => l.noise ?? 0)),
@@ -918,6 +906,12 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
   };
 }
 
+/** The packets a trip still has to send, one by one: a flow is told apart into what it is made of. */
+export const unrolled = (t: Trip): Trip[] => (t.steps.some((s) => s.kind === 'flow') ? t.steps.flatMap((s) => (s.kind === 'flow' ? s.packets.flatMap(unrolled) : [])) : [t]);
+
+/** These packets told as one flow, under the first of them. What became of that one is not the flow's. */
+export const flowOf = (first: Trip, packets: Trip[], extra: Partial<Trip> = {}): Trip => ({ ...first, part: undefined, retry: false, timedOut: false, lost: false, locked: false, steps: [{ kind: 'flow', packets }], ...extra });
+
 /** QoS on the sensor's own connection is told in full. The same steps with each app are the same again, as small blocks. */
 const appLeg = (t: Trip): boolean => {
   const read = [...t.steps].reverse().find((s) => s.kind === 'read');
@@ -935,8 +929,18 @@ function smallAcks(trips: Trip[], from: Chapter = 'dns'): Trip[] {
       chapter = t.chapter;
       return t;
     }
-    return { ...t, chapter, lost: false, retry: false, timedOut: false, steps: [{ kind: 'flow', packets: [t] }] };
+    return flowOf(t, [t], { chapter });
   });
+}
+
+/** From the first trip that `starts` on, all that `belongs` becomes one step, with any lookup in front of it. What else was said then goes on after it. */
+function gather(trips: Trip[], starts: (t: Trip) => boolean, belongs: (t: Trip) => boolean, after: Chapter, extra: Partial<Trip> = {}): Trip[] {
+  const first = trips.findIndex(starts);
+  if (first < 0) return smallAcks(trips);
+  const packets = trips.slice(first).filter(belongs);
+  const lookups = packets.flatMap((t) => t.steps.filter((s) => s.kind === 'lookup'));
+  const whole = flowOf(trips[first]!, packets, { ...extra, steps: [...lookups, { kind: 'flow', packets }] });
+  return [...smallAcks(trips.slice(0, first)), whole, ...smallAcks(trips.slice(first).filter((t) => !belongs(t)), after)];
 }
 
 /**
@@ -944,13 +948,7 @@ function smallAcks(trips: Trip[], from: Chapter = 'dns'): Trip[] {
  * for that, another device's own fetch) goes on after it. A lookup stays in front of the stream.
  */
 function gatherStream(trips: Trip[], client: string): Trip[] {
-  const inStream = (t: Trip): boolean => t.client === client && (!!t.part || (t.l4Label === 'ACK' && !t.hello && t.outward));
-  const first = trips.findIndex((t) => t.part);
-  if (first < 0) return smallAcks(trips);
-  const packets = trips.slice(first).filter(inStream);
-  const lookups = packets.flatMap((t) => t.steps.filter((s) => s.kind === 'lookup'));
-  const stream: Trip = { ...trips[first]!, part: undefined, retry: false, timedOut: false, lost: false, locked: false, steps: [...lookups, { kind: 'flow', packets }] };
-  return [...smallAcks(trips.slice(0, first)), stream, ...smallAcks(trips.slice(first).filter((t) => !inStream(t)), 'page')];
+  return gather(trips, (t) => !!t.part, (t) => t.client === client && (!!t.part || (t.l4Label === 'ACK' && !t.hello && t.outward)), 'page');
 }
 
 /**
@@ -958,11 +956,8 @@ function gatherStream(trips: Trip[], client: string): Trip[] {
  * photo's reply does), each packet keeping its own part number and client. What is not voice goes on after it.
  */
 function gatherCall(trips: Trip[]): Trip[] {
-  const first = trips.findIndex((t) => t.chapter === 'call');
-  if (first < 0) return smallAcks(trips);
-  const packets = trips.slice(first).filter((t) => t.chapter === 'call');
-  const call: Trip = { ...trips[first]!, part: undefined, retry: false, timedOut: false, lost: false, kind: 'call', steps: [{ kind: 'flow', packets }] };
-  return [...smallAcks(trips.slice(0, first)), call, ...smallAcks(trips.slice(first).filter((t) => t.chapter !== 'call'), 'call')];
+  const voice = (t: Trip): boolean => t.chapter === 'call';
+  return gather(trips, voice, voice, 'call', { kind: 'call' });
 }
 
 /**
@@ -974,7 +969,7 @@ function quickLookup(trips: Trip[]): Trip[] {
   let end = first;
   while (trips[end]?.chapter === 'dns') end++;
   const packets = trips.slice(first, end);
-  return [...trips.slice(0, first), { ...packets[0]!, retry: false, timedOut: false, lost: false, steps: [{ kind: 'flow', packets }] }, ...trips.slice(end)];
+  return [...trips.slice(0, first), flowOf(packets[0]!, packets), ...trips.slice(end)];
 }
 
 /**
@@ -987,7 +982,7 @@ function gatherProbes(trips: Trip[]): Trip[] {
   const seen = new Set<number>();
   let quick: Trip[] = [];
   const flush = (): void => {
-    if (quick.length) shown.push({ ...quick[0]!, retry: false, timedOut: false, lost: false, steps: [{ kind: 'flow', packets: quick }] });
+    if (quick.length) shown.push(flowOf(quick[0]!, quick));
     quick = [];
   };
   for (const t of trips) {

@@ -1,4 +1,4 @@
-import { ulawDecodeAll } from '../sim';
+import { ulawDecodeAll, VOICE_SAMPLE_RATE } from '../sim';
 
 /** What one 20 ms voice packet sounds like, measured from its real samples. */
 export interface Tone {
@@ -9,7 +9,6 @@ export interface Tone {
   loud: number;
 }
 
-const SAMPLE_RATE = 8000;
 /** The pitches looked for. */
 const LOW_HZ = 100;
 const HIGH_HZ = 1000;
@@ -25,8 +24,8 @@ const FULL = 12000;
  * so the shortest one that does nearly as well as the best is the pitch, not an octave below it.
  */
 function pitchOf(s: Int16Array): number {
-  const shortest = Math.floor(SAMPLE_RATE / HIGH_HZ);
-  const longest = Math.min(Math.ceil(SAMPLE_RATE / LOW_HZ), Math.floor(s.length / 2));
+  const shortest = Math.floor(VOICE_SAMPLE_RATE / HIGH_HZ);
+  const longest = Math.min(Math.ceil(VOICE_SAMPLE_RATE / LOW_HZ), Math.floor(s.length / 2));
   const scores: number[] = [];
   for (let lag = 0; lag <= longest; lag++) {
     let sum = 0;
@@ -36,9 +35,9 @@ function pitchOf(s: Int16Array): number {
   const best = Math.max(...scores.slice(shortest));
   // The first peak near the best: past the dip that follows lag 0.
   for (let lag = shortest; lag < longest; lag++) {
-    if (scores[lag]! >= best * 0.9 && scores[lag]! >= scores[lag - 1]! && scores[lag]! >= scores[lag + 1]!) return SAMPLE_RATE / lag;
+    if (scores[lag]! >= best * 0.9 && scores[lag]! >= scores[lag - 1]! && scores[lag]! >= scores[lag + 1]!) return VOICE_SAMPLE_RATE / lag;
   }
-  return SAMPLE_RATE / scores.lastIndexOf(best);
+  return VOICE_SAMPLE_RATE / scores.lastIndexOf(best);
 }
 
 /** The tone of a packet's µ-law bytes, or null for a pause. */

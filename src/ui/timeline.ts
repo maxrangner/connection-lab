@@ -4,7 +4,7 @@ import type { Parts } from './paper';
 import { clamp01, easeIn, easeInOut, easeOutBack, easeOutBounce, lerp, lerpV, v3, type Vec3 } from './project';
 import { buildReadout, listenReadout, scanReadout, type Readout } from './readout';
 import { buildSpeech, listenerSpeech, type Bubble } from './speech';
-import { SLOW_DELAY, type Details, type Frame, type Seen, type Step, type Story, type Trip, type Wrap } from './story';
+import { flowOf, SLOW_DELAY, unrolled, type Details, type Frame, type Seen, type Step, type Story, type Trip, type Wrap } from './story';
 
 /**
  * Story → visual timeline. Every trip's steps get a start and end in visual seconds, one packet at a time.
@@ -156,8 +156,6 @@ export interface Timeline {
   reveals: Map<string, Entrance>;
   /** When each cable is laid, before the first packet over it, and the device it starts from. */
   laid: Map<string, Entrance & { from: string }>;
-  /** How far the cable to the ISP has been stretched, in tiles. */
-  stretch: number;
 }
 
 /** World positions (tiles) by device kind: the chain runs along +x, the DNS resolver branches off along −y. */
@@ -258,8 +256,6 @@ export const MAX_STRETCH = 160;
 /** The one-way delay of the fibre to the ISP when it is stretched this many tiles. */
 export const wanDelayFor = (stretch: number): number => ((WAN_TILES + stretch) * KM_PER_TILE) / KM_PER_SECOND;
 
-/** The packets a trip still has to send, one by one: a flow is told apart into what it is made of. */
-const unrolled = (t: Trip): Trip[] => (t.steps.some((s) => s.kind === 'flow') ? t.steps.flatMap((s) => (s.kind === 'flow' ? s.packets.flatMap(unrolled) : [])) : [t]);
 const crosses = (t: Trip): boolean => t.steps.some((s) => s.kind === 'travel' || s.kind === 'lost');
 
 /**
@@ -435,8 +431,8 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
 
   const traffic = left.flatMap(unrolled).filter(crosses).sort((a, b) => a.sent - b.sent || a.start - b.start);
   if (traffic.length) {
-    const step: TStep = { kind: 'flow', packets: traffic };
-    const trip: Trip = { ...traffic[0]!, chapter: 'traffic', part: undefined, retry: false, timedOut: false, lost: false, steps: [step] };
+    const trip = flowOf(traffic[0]!, traffic, { chapter: 'traffic' });
+    const step = trip.steps[0]!;
     const p = at(story.client, LEVEL.eth);
     // A page in parts carries on from what has landed so far, whether those parts came as a stream or one by one.
     const { packets, waits } = planFlow(traffic, t, story, knocks, linkPace, cues, reactions, TRAFFIC_HOP, notes, { ...(cutShort ?? { ...newFlow(), filled }), queued: true, dropped: drops, started: past.started });
@@ -484,7 +480,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   ];
   for (const f of [...readout.flags, ...joinReadouts.flatMap((x) => x.readout.flags)]) cues.push({ t: f.t, sound: 'found' });
   const speech = [...buildSpeech(story, segs, t), ...(story.listener ? listenerSpeech(story.listener, story.heard, heardAt) : [])];
-  return { segs, startsAt: story.startsAt, reactions, notes, readout, joinReadouts, attackReadouts, speech, keys, halves, real: realClock(segs, story), cues, settled: t, total: Math.max(t, ...speech.map((b) => b.t1)), pos, kind, trayZ, isRouter, sky, air, client: story.client, pages, answers, reveals, laid, stretch };
+  return { segs, startsAt: story.startsAt, reactions, notes, readout, joinReadouts, attackReadouts, speech, keys, halves, real: realClock(segs, story), cues, settled: t, total: Math.max(t, ...speech.map((b) => b.t1)), pos, kind, trayZ, isRouter, sky, air, client: story.client, pages, answers, reveals, laid };
 }
 
 /**

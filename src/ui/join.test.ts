@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fetchWebPage, runScenario, type Cut, type Job, type ManualFault } from '../sim';
-import { buildStory, type Story, type Trip } from './story';
+import { buildStory, unrolled, type Story } from './story';
 import { buildTimeline, crossings, joinAt, pageParts, seenSoFar, type Timeline } from './timeline';
 import { buildSpeech } from './speech';
 
@@ -8,7 +8,6 @@ const JOBS: Job[] = ['page', 'photo', 'call', 'ping', 'trace'];
 const CLEAN = { randomLoss: 0, manual: [] };
 const OPTIONS = { page: {}, photo: { site: 'httpbin.org' }, call: { call: true }, ping: { probe: 'ping' }, trace: { probe: 'traceroute' } } as const;
 const story = (a: Job, extra: object = {}, faults: object = CLEAN): Story => buildStory(runScenario(fetchWebPage({ ...OPTIONS[a], ...extra }), { seed: 1, faults: { ...CLEAN, ...faults }, maxTime: 1000 }));
-const everyPacket = (t: Trip): Trip[] => (t.steps.some((s) => s.kind === 'flow') ? t.steps.flatMap((s) => (s.kind === 'flow' ? s.packets.flatMap(everyPacket) : [])) : [t]);
 
 /** The runs that cards are dropped into: only ever read. */
 const plain = new Map<string, Timeline>();
@@ -38,7 +37,7 @@ describe('a card dropped in during a run', () => {
           // Everything that had started by then is as it was.
           expect(shownBy(after, v)).toEqual(shownBy(before, v));
           // Every frame on a cable is drawn once.
-          const onCables = s.trips.flatMap(everyPacket).flatMap((t) => t.steps.flatMap((x) => (x.kind === 'travel' || x.kind === 'lost' ? [`${t.packetId}@${x.link} ${x.at}`] : [])));
+          const onCables = s.trips.flatMap(unrolled).flatMap((t) => t.steps.flatMap((x) => (x.kind === 'travel' || x.kind === 'lost' ? [`${t.packetId}@${x.link} ${x.at}`] : [])));
           expect(crossings(after).map((c) => `${c.trip.packetId}@${c.link} ${c.at}`).sort()).toEqual(onCables.sort());
           expect(after.total).toBeGreaterThan(v);
           expect(after.segs.every((x) => x.t1 >= x.t0)).toBe(true);
@@ -56,7 +55,7 @@ describe('a card dropped in during a run', () => {
             const { before, after, s, v } = dropped(a, b, share, setup);
             const what = `${b} into ${a} at ${share} with ${JSON.stringify(setup)}`;
             expect(shownBy(after, v), what).toEqual(shownBy(before, v));
-            for (const t of s.trips.flatMap(everyPacket).filter((x) => x.steps.some((y) => y.kind === 'travel'))) {
+            for (const t of s.trips.flatMap(unrolled).filter((x) => x.steps.some((y) => y.kind === 'travel'))) {
               const hops = t.steps.flatMap((x) => (x.kind === 'travel' ? [x] : []));
               const ends = [hops[0]!.from, hops.at(-1)!.to].filter((d) => s.clients.includes(d));
               expect(ends.every((d) => d === t.client), `${what}: ${t.card} from ${t.origin}`).toBe(true);
@@ -103,7 +102,7 @@ describe('a card dropped in during a run', () => {
     const answers = blocks.filter((p) => p.trip.chapter === 'trace' && p.trip.probeTtl === undefined);
     expect(answers.length).toBe(9);
     expect(Math.min(...answers.map((p) => p.t0))).toBeGreaterThanOrEqual(first.t1);
-    expect(s.trips.flatMap(everyPacket).filter((t) => t.origin === 'home' || t.origin === 'isp').every((t) => t.client === 'phone')).toBe(true);
+    expect(s.trips.flatMap(unrolled).filter((t) => t.origin === 'home' || t.origin === 'isp').every((t) => t.client === 'phone')).toBe(true);
   });
 
   it('a dropped-in trace flags the hops it finds', () => {
@@ -169,7 +168,7 @@ describe('a card dropped in during a run', () => {
   it("the resolver's walk for the other device is no resend", () => {
     for (const at of [0.008, 0.015, 0.03]) {
       const s = story('page', { cold: true, joins: [{ job: 'page', at }] });
-      expect(s.trips.flatMap(everyPacket).filter((t) => t.chapter === 'dns' && t.timedOut)).toEqual([]);
+      expect(s.trips.flatMap(unrolled).filter((t) => t.chapter === 'dns' && t.timedOut)).toEqual([]);
     }
   });
 
@@ -189,7 +188,7 @@ describe('a card dropped in during a run', () => {
   });
 
   it('teardown stays hidden when the other job sends more', () => {
-    const acks = (s: Story): number => s.trips.flatMap(everyPacket).filter((t) => t.client === 'laptop' && t.l4Label === 'ACK').length;
+    const acks = (s: Story): number => s.trips.flatMap(unrolled).filter((t) => t.client === 'laptop' && t.l4Label === 'ACK').length;
     expect(acks(dropped('page', 'photo', 0.02).s)).toBe(acks(story('page')));
   });
 

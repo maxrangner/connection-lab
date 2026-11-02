@@ -1,5 +1,5 @@
 import { clamp01, easeIn, easeInOut, ISO_X, ISO_Y, lerp, type Pt } from './project';
-import { el } from './svg';
+import { el, setAttr } from './svg';
 
 /** A sheet of paper standing beside the device, filling up as the parts of what was asked for arrive. */
 
@@ -72,8 +72,8 @@ export class Paper {
     const s = lerp(1, 0.3, slide) * (1 + 0.04 * bump);
     const at = { sx: lerp(c.sx, to.sx, slide), sy: lerp(c.sy, to.sy, slide) };
     const op = clamp01((v - parts.shownFrom) / 0.4) * (1 - easeIn(clamp01((gone - 0.7) / 0.3)));
-    this.g.setAttribute('opacity', op.toFixed(3));
-    this.g.setAttribute('transform', `matrix(${(ISO_X * s).toFixed(3)} ${(ISO_Y * s).toFixed(3)} 0 ${s.toFixed(3)} ${at.sx.toFixed(1)} ${at.sy.toFixed(1)})`);
+    setAttr(this.g, 'opacity', op.toFixed(3));
+    setAttr(this.g, 'transform', `matrix(${(ISO_X * s).toFixed(3)} ${(ISO_Y * s).toFixed(3)} 0 ${s.toFixed(3)} ${at.sx.toFixed(1)} ${at.sy.toFixed(1)})`);
     this.drawGaps(parts, v);
   }
 

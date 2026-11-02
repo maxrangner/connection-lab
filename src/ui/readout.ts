@@ -1,4 +1,4 @@
-import type { Probe, Scan, Story, Trip } from './story';
+import { unrolled, type Probe, type Scan, type Story, type Trip } from './story';
 
 /**
  * What ping and traceroute print, and when. A line goes up when the answer reaches the program, since that is when the
@@ -20,17 +20,10 @@ const ADDRESS = 15;
 const short = (ms: number): string => (ms < 1 ? '<1' : String(Math.round(ms)));
 const long = (ms: number): string => (ms < 1 ? 'under 1 ms' : `${Math.round(ms)} ms`);
 
-/** Every packet of the run, also those gathered into a flow. */
-const packetsOf = (trips: Trip[]): Trip[] =>
-  trips.flatMap((t) => {
-    const flow = t.steps.find((s) => s.kind === 'flow');
-    return flow?.kind === 'flow' ? flow.packets : [t];
-  });
-
 export function buildReadout(story: Story, client: string, probe: Probe | undefined, timing: Timing, total: number): Readout {
   if (!probe) return { screens: [], flags: [] };
   const title = `${probe.kind} ${probe.to}`;
-  const trips = packetsOf(story.trips).filter((t) => t.client === client);
+  const trips = story.trips.flatMap(unrolled).filter((t) => t.client === client);
   const readout = probe.kind === 'ping' ? pingReadout(probe, title, trips, timing, total) : traceReadout(probe, title, trips, timing, total);
   // The name never turned into an address, so nothing went out.
   if (!readout.screens.length) readout.screens.push({ t: total, lines: [title, `can't find ${probe.to}`] });

@@ -1,3 +1,4 @@
+import { VOICE_SAMPLE_RATE } from '../sim';
 import type { Cue } from './timeline';
 
 /**
@@ -94,7 +95,7 @@ export class Sound {
       return;
     }
     const c = this.ctx;
-    const buf = c.createBuffer(1, heard.length * perPacket, 8000);
+    const buf = c.createBuffer(1, heard.length * perPacket, VOICE_SAMPLE_RATE);
     const data = buf.getChannelData(0);
     heard.forEach((pcm, i) => {
       if (!pcm) return;

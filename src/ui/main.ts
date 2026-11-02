@@ -1,11 +1,11 @@
 import './app.css';
-import { crossingKey, EVERY_JOB, fetchWebPage, OFFLINE_AT, runScenario, ulawDecodeAll, type Attack, type Cut, type Job, type ManualFault } from '../sim';
-import { el } from './svg';
+import { crossingKey, EVERY_JOB, fetchWebPage, OFFLINE_AT, RTP_SAMPLES_PER_PACKET, runScenario, ulawDecodeAll, type Attack, type Cut, type Job, type ManualFault } from '../sim';
+import { el, setAttr, setText } from './svg';
 import { clamp01, easeInOut, easeOutBack, iso, ISO_X, ISO_Y, lerp, U } from './project';
 import { HexCard } from './hexCard';
 import logoDark from './logo/logo-dark.png';
 import logoLight from './logo/logo-light.png';
-import { drawDoor, drawEar, drawHandset, drawMoon, drawPadlock, drawPage, drawPause, drawPing, drawPlay, drawPipe, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawSun, drawSwarm, drawTag, drawTalk, drawThermometer, drawTrace } from './icons';
+import { drawDoor, drawEar, drawGlobe, drawHandset, drawMoon, drawPadlock, drawPage, drawPause, drawPhoto, drawPing, drawPlay, drawPipe, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawSun, drawSwarm, drawTag, drawTalk, drawThermometer, drawTrace } from './icons';
 import { KeepAwake } from './awake';
 import { Menu } from './menus';
 import { NetworkScene, type Camera, type CutSpan } from './NetworkScene';
@@ -26,31 +26,42 @@ const LINGER = 1.4;
 /** Seconds after the start of a step in which back goes to the step before it. */
 const BACK_GRACE = 1;
 
+/** What this browser remembers. Storage can be blocked, or hold anything: then nothing is remembered, and the page starts plain. */
+const load = (key: string): string | null => {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+};
+const loadJson = <T>(key: string): Partial<T> => {
+  try {
+    return (JSON.parse(load(key) ?? '{}') ?? {}) as Partial<T>;
+  } catch {
+    return {};
+  }
+};
+const save = (key: string, value: string): void => {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Not remembered; fine.
+  }
+};
+
 /** What the next run is like, set from the Setup menu between runs: changing it mid-run would rewrite what happened. */
-type Setting = 'https' | 'big' | 'slow' | 'vpn' | 'dhcp' | 'cold' | 'thin' | 'smart';
+const SETTINGS = ['https', 'big', 'slow', 'vpn', 'dhcp', 'cold', 'thin', 'smart'] as const;
+type Setting = (typeof SETTINGS)[number];
 type Features = Record<Setting, boolean>;
-const SETTINGS: Setting[] = ['https', 'big', 'slow', 'vpn', 'dhcp', 'cold', 'thin', 'smart'];
-const features: Features = { https: false, big: false, slow: false, vpn: false, dhcp: false, cold: false, thin: false, smart: false };
+// Only the Setup is remembered across visits: a cable left cut or a spyglass left out would make the next visit fail for no visible reason.
+const savedFeatures = loadJson<Features>('net.features');
+const features = Object.fromEntries(SETTINGS.map((k) => [k, !!savedFeatures[k]])) as Features;
 /** The line the spyglass is on, if any. */
 let spyLine: string | null = null;
 /** The visual time it was put there: it can only read what passes from then on. */
 let spyFrom = -Infinity;
 /** The cables that are cut. They can change any time, before or during a run. */
 const cutLines = new Set<string>();
-// Only the Setup is remembered across visits: a cable left cut or a spyglass left out would make the next visit fail for no visible reason.
-try {
-  const saved = JSON.parse(localStorage.getItem('net.features') ?? '{}') as Partial<Features>;
-  for (const k of SETTINGS) features[k] = !!saved[k];
-} catch {
-  // Nothing remembered; start plain.
-}
-function remember(): void {
-  try {
-    localStorage.setItem('net.features', JSON.stringify(features));
-  } catch {
-    // Not remembered; fine.
-  }
-}
 /** Packets that fell when their cable was cut, and how far along it they were (only for drawing the fall). */
 const faults: ManualFault[] = [];
 const knocks = new Map<string, number>();
@@ -83,15 +94,9 @@ const isProbe = (w: Job): boolean => w === 'ping' || w === 'trace';
 /** This run is the sensor taking a reading, not a card on a device. */
 let reading = false;
 /** The smart home's broker is out on the internet instead of at home, and how sure a reading is of arriving. */
-let cloud = false;
-let qos: 0 | 1 | 2 = 0;
-try {
-  const saved = JSON.parse(localStorage.getItem('net.smart') ?? '{}') as { cloud?: boolean; qos?: number };
-  cloud = !!saved.cloud;
-  if (saved.qos === 1 || saved.qos === 2) qos = saved.qos;
-} catch {
-  // Nothing remembered; start plain.
-}
+const savedSmart = loadJson<{ cloud: boolean; qos: number }>('net.smart');
+let cloud = !!savedSmart.cloud;
+let qos: 0 | 1 | 2 = savedSmart.qos === 1 || savedSmart.qos === 2 ? savedSmart.qos : 0;
 /** The card picked up last. */
 let carried: Job = 'page';
 const pageSite = (): 'info.cern.ch' | 'example.com' => (features.big ? 'info.cern.ch' : 'example.com');
@@ -169,13 +174,8 @@ const svg = scene.svg;
 const sound = new Sound();
 const awake = new KeepAwake();
 /** No speech bubbles. It changes nothing about a run, so unlike the Setup it can change during one. */
-let quiet = false;
-try {
-  sound.muted = localStorage.getItem('net.muted') === '1';
-  quiet = localStorage.getItem('net.quiet') === '1';
-} catch {
-  // Storage can be blocked; sound simply starts on.
-}
+let quiet = load('net.quiet') === '1';
+sound.muted = load('net.muted') === '1';
 
 type Mode = 'idle' | 'drag' | 'spring' | 'drop' | 'play' | 'return';
 let mode: Mode = 'idle';
@@ -196,44 +196,31 @@ const HOMES: Record<Job, { sx: number; sy: number }> = {
 let played = false;
 // Above the stack, as it goes for every card in it. The first card's badges stick out above it, so this clears them.
 const hint = el('text', { class: 'cards-hint', 'text-anchor': 'middle', x: home.sx, y: home.sy - 46 }, svg);
-const card = el('g', { class: 'site-card' }, svg);
-const cardBody = el('g', {}, card);
-el('rect', { x: -88, y: -22, width: 176, height: 44, rx: 10, class: 'site-card-bg' }, cardBody);
-el('circle', { cx: -66, cy: 0, r: 9, class: 'site-card-globe' }, cardBody);
-el('ellipse', { cx: -66, cy: 0, rx: 4, ry: 9, class: 'site-card-globe' }, cardBody);
-const cardText = el('text', { x: 12, y: 0, dy: '0.35em', 'text-anchor': 'middle' }, cardBody);
-cardText.textContent = 'example.com';
-let cardPop = 9;
-/** Small badges on the card for what is set up. */
-const cardBadges = el('g', {}, card);
-
-// The photo card: the same kind of card, with a little picture on it.
-const photoCard = el('g', { class: 'site-card' }, svg);
-const photoBody = el('g', {}, photoCard);
-el('rect', { x: -88, y: -22, width: 176, height: 44, rx: 10, class: 'site-card-bg' }, photoBody);
-el('rect', { x: -77, y: -10, width: 24, height: 20, rx: 2, class: 'site-card-globe' }, photoBody);
-el('path', { d: 'M-75 7l7-8 5 5 3-3 5 6', class: 'site-card-globe' }, photoBody);
-el('text', { x: 12, y: 0, dy: '0.35em', 'text-anchor': 'middle' }, photoBody).textContent = 'photo.jpg';
-const photoBadges = el('g', {}, photoCard);
-
-// The call card: a handset, and the friend's name.
-const callCard = el('g', { class: 'site-card' }, svg);
-const callBody = el('g', {}, callCard);
-el('rect', { x: -88, y: -22, width: 176, height: 44, rx: 10, class: 'site-card-bg' }, callBody);
-drawHandset(el('g', { transform: 'translate(-69 -2) scale(0.36)', class: 'site-card-globe' }, callBody));
-el('text', { x: 12, y: 0, dy: '0.35em', 'text-anchor': 'middle' }, callBody).textContent = 'call Sam';
-const callBadges = el('g', {}, callCard);
-
-// Two small tools as cards too: a ping, and a trace of the path.
-const toolCard = (text: string, draw: (g: SVGGElement) => void): SVGGElement => {
+const card = (text: string, draw: (g: SVGGElement) => void, transform: string): SVGGElement => {
   const c = el('g', { class: 'site-card' }, svg);
   const body = el('g', {}, c);
   el('rect', { x: -88, y: -22, width: 176, height: 44, rx: 10, class: 'site-card-bg' }, body);
-  draw(el('g', { transform: 'translate(-66 0) scale(0.42)', class: 'site-card-globe' }, body));
+  draw(el('g', { transform, class: 'site-card-globe' }, body));
   el('text', { x: 12, y: 0, dy: '0.35em', 'text-anchor': 'middle' }, body).textContent = text;
   return c;
 };
-const CARDS: Record<Job, SVGGElement> = { page: card, photo: photoCard, call: callCard, ping: toolCard('ping', drawPing), trace: toolCard('trace route', drawTrace) };
+const pageCard = card('example.com', drawGlobe, 'translate(-66 0)');
+const cardText = pageCard.querySelector('text')!;
+let cardPop = 9;
+/** Small badges on the card for what is set up. */
+const cardBadges = el('g', {}, pageCard);
+
+// The photo card: the same kind of card, with a little picture on it.
+const photoCard = card('photo.jpg', drawPhoto, 'translate(-65 0)');
+const photoBadges = el('g', {}, photoCard);
+
+// The call card: a handset, and the friend's name.
+const callCard = card('call Sam', drawHandset, 'translate(-69 -2) scale(0.36)');
+const callBadges = el('g', {}, callCard);
+
+// Two small tools as cards too: a ping, and a trace of the path.
+const TOOL_ICON = 'translate(-66 0) scale(0.42)';
+const CARDS: Record<Job, SVGGElement> = { page: pageCard, photo: photoCard, call: callCard, ping: card('ping', drawPing, TOOL_ICON), trace: card('trace route', drawTrace, TOOL_ICON) };
 
 /** What each card does, in a beginner's words: it goes along to the right of the card for as long as the card is held. */
 const CARD_HELP: Record<Job, [string, string]> = {
@@ -255,7 +242,7 @@ scene.setOnTable([{ sx: home.sx - 110, sy: home.sy + STACK_TOP }, { sx: home.sx 
 
 /** A setting changed before a run: show the network it will use, with a clean screen. */
 function preview(): void {
-  remember();
+  save('net.features', JSON.stringify(features));
   joined = [];
   idleV = -1;
   if (reading) {
@@ -354,6 +341,11 @@ function toggleCut(line: string): void {
 function clearLine(line: string): void {
   if (cutLines.has(line)) toggleCut(line);
 }
+/** These lines go from the table: mended, and the spyglass off them. */
+function clearLines(lines: string[]): void {
+  for (const l of lines) clearLine(l);
+  if (spyLine && lines.includes(spyLine)) setSpyLine(null);
+}
 
 let cam: Camera = scene.overviewCamera();
 
@@ -388,36 +380,28 @@ scene.setCut(cutSpans);
 
 const VPN_LINKS = ['bb3', 'bb4', 'bb5'];
 const COLD_LINKS = ['up1', 'up2', 'up3'];
-const SETUP: { id: Setting; label: string; hint: string; draw: (g: SVGGElement) => void; span: number }[] = [
-  { id: 'https', label: 'Secure page (HTTPS)', hint: "Hides the page, not where it's going", draw: drawPadlock, span: 34 },
-  { id: 'big', label: 'Bigger page', hint: 'Too big for one packet', draw: drawPage, span: 34 },
-  { id: 'slow', label: 'Satellite internet', hint: 'To space and back: long waits', draw: drawSatellite, span: 64 },
-  { id: 'vpn', label: 'VPN', hint: 'Sealed tunnel past your provider', draw: drawShield, span: 34 },
-  { id: 'dhcp', label: 'New on the network', hint: 'Gets an address, then finds the router', draw: drawTag, span: 34 },
-  { id: 'cold', label: 'DNS has to ask around', hint: "The site's address isn't saved yet", draw: drawSnowflake, span: 34 },
-  { id: 'thin', label: 'Slow home line', hint: 'Queues fill up and drop packets', draw: drawPipe, span: 34 },
-  { id: 'smart', label: 'Smart home', hint: 'A sensor that reports to apps', draw: drawThermometer, span: 34 },
-];
+const SETUP_ROWS: Record<Setting, { label: string; hint: string; draw: (g: SVGGElement) => void; span: number }> = {
+  https: { label: 'Secure page (HTTPS)', hint: "Hides the page, not where it's going", draw: drawPadlock, span: 34 },
+  big: { label: 'Bigger page', hint: 'Too big for one packet', draw: drawPage, span: 34 },
+  slow: { label: 'Satellite internet', hint: 'To space and back: long waits', draw: drawSatellite, span: 64 },
+  vpn: { label: 'VPN', hint: 'Sealed tunnel past your provider', draw: drawShield, span: 34 },
+  dhcp: { label: 'New on the network', hint: 'Gets an address, then finds the router', draw: drawTag, span: 34 },
+  cold: { label: 'DNS has to ask around', hint: "The site's address isn't saved yet", draw: drawSnowflake, span: 34 },
+  thin: { label: 'Slow home line', hint: 'Queues fill up and drop packets', draw: drawPipe, span: 34 },
+  smart: { label: 'Smart home', hint: 'A sensor that reports to apps', draw: drawThermometer, span: 34 },
+};
+const SETUP = SETTINGS.map((id) => ({ id, ...SETUP_ROWS[id] }));
 /** The lines that go when the smart home changes. */
 const SMART_LINKS = ['wlan2', 'lan2', 'broker-link'];
 function setSetting(id: Setting, on: boolean): void {
   features[id] = on;
-  if (id === 'smart' && !on) {
-    for (const l of SMART_LINKS) clearLine(l);
-    if (spyLine && SMART_LINKS.includes(spyLine)) setSpyLine(null);
-  }
+  if (id === 'smart' && !on) clearLines(SMART_LINKS);
   // The line to the ISP becomes radio, which cannot be cut.
   if (id === 'slow' && on && cutLines.has('wan')) toggleCut('wan');
   // The servers a lookup walks go with it, and their cables.
-  if (id === 'cold' && !on) {
-    for (const l of COLD_LINKS) clearLine(l);
-    if (spyLine && COLD_LINKS.includes(spyLine)) setSpyLine(null);
-  }
+  if (id === 'cold' && !on) clearLines(COLD_LINKS);
   // The VPN's cables go with it.
-  if (id === 'vpn' && !on) {
-    for (const l of VPN_LINKS) clearLine(l);
-    if (spyLine && VPN_LINKS.includes(spyLine)) setSpyLine(null);
-  }
+  if (id === 'vpn' && !on) clearLines(VPN_LINKS);
   showSetup();
   preview();
   sound.play(id === 'https' || id === 'vpn' ? 'lock' : 'snap');
@@ -431,7 +415,7 @@ function showSetup(): void {
 const CHAPTERS: Record<Chapter, string> = { address: 'Get an address', arp: 'Find the router', dns: "Find the site's address", hello: 'Say hello', secret: 'Check and agree', page: 'Get the page', call: 'Make a call', ping: 'Ping the server', trace: 'Trace the path', traffic: 'All at once', attack: 'Attack' };
 /** Chapter number in this run (a second visit skips the address, HTTPS adds the secret). */
 const chapterName = (ch: Chapter): string => {
-  if (ch === 'dns' && story.call) return "Find Sam's address";
+  if (ch === 'dns' && story.voice) return "Find Sam's address";
   if (ch === 'dns' && story.reading) return 'Find the broker';
   return ch === 'page' && story.reading ? 'Send the reading' : ch === 'page' && story.photo ? 'Get the photo' : CHAPTERS[ch];
 };
@@ -549,10 +533,9 @@ const smartMenu = new Menu<SmartOption>(
   (id) => {
     if (id === 'home' || id === 'cloud') {
       cloud = id === 'cloud';
-      for (const l of ['lan2', 'broker-link']) clearLine(l);
-      if (spyLine === 'lan2' || spyLine === 'broker-link') setSpyLine(null);
+      clearLines(['lan2', 'broker-link']);
     } else qos = Number(id.slice(3)) as 0 | 1 | 2;
-    rememberSmart();
+    saveSmart();
     showSmart();
     if (features.smart) preview();
     else setSetting('smart', true);
@@ -561,13 +544,7 @@ const smartMenu = new Menu<SmartOption>(
 );
 smartMenu.mark('smart-menu');
 setupMenu.hold(smartMenu);
-function rememberSmart(): void {
-  try {
-    localStorage.setItem('net.smart', JSON.stringify({ cloud, qos }));
-  } catch {
-    // Not remembered; fine.
-  }
-}
+const saveSmart = (): void => save('net.smart', JSON.stringify({ cloud, qos }));
 function showSmart(): void {
   // Anything but the plain choice shows without opening the popup.
   smartMenu.button.classList.toggle('on', cloud || qos > 0);
@@ -581,20 +558,8 @@ const ACTION_H = 34;
 const ACTION_TOP = 110;
 /** What can start on a device with nothing to do, in the white of the cards. */
 const ACTIONS: Record<Job, { label: string; draw: (g: SVGGElement) => void }> = {
-  page: {
-    label: 'Page',
-    draw: (g) => {
-      el('circle', { r: 9 }, g);
-      el('ellipse', { rx: 4, ry: 9 }, g);
-    },
-  },
-  photo: {
-    label: 'Photo',
-    draw: (g) => {
-      el('rect', { x: -12, y: -10, width: 24, height: 20, rx: 2 }, g);
-      el('path', { d: 'M-10 7l7-8 5 5 3-3 5 6' }, g);
-    },
-  },
+  page: { label: 'Page', draw: drawGlobe },
+  photo: { label: 'Photo', draw: drawPhoto },
   // The handset is not drawn around the origin: this centres it, or it runs out of its tile.
   call: { label: 'Call', draw: (g) => drawHandset(el('g', { transform: 'translate(-3.2 -2.4) scale(0.4)' }, g)) },
   ping: { label: 'Ping', draw: (g) => drawPing(el('g', { transform: 'scale(0.42)' }, g)) },
@@ -647,10 +612,7 @@ function setAttack(id: Attack, on: boolean): void {
   else attacks.delete(id);
   attackMenu.setOn(id, on);
   // Its cables go with it.
-  if (!on) {
-    for (const l of ATTACK_LINKS[id]) clearLine(l);
-    if (spyLine && ATTACK_LINKS[id].includes(spyLine)) setSpyLine(null);
-  }
+  if (!on) clearLines(ATTACK_LINKS[id]);
   preview();
   sound.play(on ? 'pop' : 'thud');
 }
@@ -721,22 +683,14 @@ const placeMenus = (): void => {
 };
 const soundBtn = button('♪', 'Mute', () => {
   sound.muted = !sound.muted;
-  try {
-    localStorage.setItem('net.muted', sound.muted ? '1' : '0');
-  } catch {
-    // Not remembered; fine.
-  }
+  save('net.muted', sound.muted ? '1' : '0');
 });
 soundBtn.classList.add('sound-button');
 const quietBtn = button('', 'Quiet devices', () => {
   quiet = !quiet;
   scene.setQuiet(quiet);
   showQuiet();
-  try {
-    localStorage.setItem('net.quiet', quiet ? '1' : '0');
-  } catch {
-    // Not remembered; fine.
-  }
+  save('net.quiet', quiet ? '1' : '0');
 });
 quietBtn.appendChild(barIcon(drawTalk));
 const showQuiet = (): void => {
@@ -750,13 +704,7 @@ logo.className = 'logo';
 logo.alt = 'Connection Lab';
 root.appendChild(logo);
 /** Dark as the system is, until the viewer chooses. */
-const savedTheme = ((): string | null => {
-  try {
-    return localStorage.getItem('net.theme');
-  } catch {
-    return null;
-  }
-})();
+const savedTheme = load('net.theme');
 let dark = savedTheme ? savedTheme === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
 const showTheme = (): void => {
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
@@ -768,11 +716,7 @@ const themeBtn = button('', 'Dark theme', () => {
   dark = !dark;
   themeChosen = true;
   showTheme();
-  try {
-    localStorage.setItem('net.theme', dark ? 'dark' : 'light');
-  } catch {
-    // Not remembered; fine.
-  }
+  save('net.theme', dark ? 'dark' : 'light');
 });
 showTheme();
 // Until a theme is chosen here, it follows the system's.
@@ -935,16 +879,19 @@ scene.packet.addEventListener('pointerdown', () => {
 
 // Pan and zoom by hand: drag the stage, pinch, or use the wheel. Any of these lets go of the follow camera.
 const pointers = new Map<number, { x: number; y: number }>();
-/** A press on a device's screen between runs, which is a "forget" if it does not turn into a drag. */
-let screenPress: { device: string; x: number; y: number } | null = null;
-/** A press with a tool in hand: a click on a line if it does not turn into a drag. */
-let toolPress: { x: number; y: number } | null = null;
-/** A press on the table: it only takes the view over once it really moves. */
-let panPress: { x: number; y: number } | null = null;
-/** A press on the Wi-Fi arc between runs: it shakes the radio if it does not turn into a drag. */
-let airPress: { x: number; y: number } | null = null;
-/** A press on the ISP router between runs: along its cable it stretches the fibre, any other way it pans. */
-let grabPress: { x: number; y: number } | null = null;
+/** A press on the stage that has not turned into a drag yet: it only takes the view over once it really moves. */
+let press: {
+  x: number;
+  y: number;
+  /** On the Wi-Fi arc between runs: it shakes the radio if it stays a tap. */
+  air: boolean;
+  /** On the ISP router between runs: along its cable it stretches the fibre, any other way it pans. */
+  grab: boolean;
+  /** With a tool in hand: a click on a line if it stays a tap. */
+  tool: boolean;
+  /** On a device's screen between runs: a "forget" if it stays a tap. */
+  device: string | null;
+} | null = null;
 /** The ISP router being dragged along its cable, from where. */
 let stretchPress: { x: number; y: number; from: number } | null = null;
 /** How closely a drag must follow the cable to stretch it (the cosine of the angle between them). */
@@ -997,33 +944,36 @@ svg.addEventListener('pointerdown', (e) => {
   if (target.closest('.site-card') || (!tool && target.closest('.packet'))) return;
   // One finger only: a second one down means a pinch, whatever the first was on.
   const onTable = !tool && canSetUp() && e.isPrimary;
-  // A tap on the Wi-Fi arc between runs shakes it: noisy, or calm again. A drag from there pans, like anywhere else.
-  airPress = onTable && target.closest('[data-air]') ? { x: e.clientX, y: e.clientY } : null;
-  // The ISP router can be dragged further away between runs: the fibre to it gets longer.
-  grabPress = onTable && target.closest('[data-grab]') ? { x: e.clientX, y: e.clientY } : null;
-  toolPress = tool ? { x: e.clientX, y: e.clientY } : null;
   const device = target.closest('[data-device]')?.getAttribute('data-device');
-  screenPress = device && !tool && mode === 'idle' && known.has(device) ? { device, x: e.clientX, y: e.clientY } : null;
+  press = {
+    x: e.clientX,
+    y: e.clientY,
+    // A tap on the Wi-Fi arc between runs shakes it: noisy, or calm again. A drag from there pans, like anywhere else.
+    air: onTable && !!target.closest('[data-air]'),
+    // The ISP router can be dragged further away between runs: the fibre to it gets longer.
+    grab: onTable && !!target.closest('[data-grab]'),
+    tool: !!tool,
+    device: device && !tool && mode === 'idle' && known.has(device) ? device : null,
+  };
   // Listed only once captured: a finger that cannot be followed must not stay listed as down.
   svg.setPointerCapture(e.pointerId);
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-  panPress = !screenPress && !toolPress ? { x: e.clientX, y: e.clientY } : null;
   svg.classList.add('panning');
 });
 svg.addEventListener('pointermove', (e) => {
   if (tool) scene.setHover(toolLine(e));
-  if (grabPress) {
-    const dx = e.clientX - grabPress.x;
-    const dy = e.clientY - grabPress.y;
+  if (press?.grab) {
+    const dx = e.clientX - press.x;
+    const dy = e.clientY - press.y;
     const moved = Math.hypot(dx, dy);
     if (moved < 6) return;
+    press.grab = false;
     if (Math.abs(alongCable(dx, dy)) >= moved * ALONG_CABLE) {
-      stretchPress = { ...grabPress, from: stretch };
-      panPress = null;
+      stretchPress = { x: press.x, y: press.y, from: stretch };
+      press = null;
       // The view holds still while the router moves, so nothing zooms under the finger.
       camFree = true;
     }
-    grabPress = null;
   }
   if (stretchPress) {
     // Along the cable, in tiles: the layout moves with the pointer, the simulation catches up when the router is let go.
@@ -1039,20 +989,9 @@ svg.addEventListener('pointermove', (e) => {
   }
   const prev = pointers.get(e.pointerId);
   if (!prev) return;
-  if (panPress) {
-    if (Math.hypot(e.clientX - panPress.x, e.clientY - panPress.y) < 6) return;
-    panPress = null;
-    airPress = null;
-    camFree = true;
-  }
-  if (toolPress) {
-    if (Math.hypot(e.clientX - toolPress.x, e.clientY - toolPress.y) < 6) return;
-    toolPress = null;
-    camFree = true;
-  }
-  if (screenPress) {
-    if (Math.hypot(e.clientX - screenPress.x, e.clientY - screenPress.y) < 6) return;
-    screenPress = null;
+  if (press) {
+    if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < 6) return;
+    press = null;
     camFree = true;
   }
   if (pointers.size === 1) {
@@ -1074,21 +1013,18 @@ const release = (e: PointerEvent): void => {
     preview();
     sound.play('snap');
   }
-  if (airPress && e.type === 'pointerup') {
+  const tap = e.type === 'pointerup' ? press : null;
+  press = null;
+  if (tap?.air) {
     noise = noise > 0 ? 0 : NOISY;
     preview();
     sound.play(noise > 0 ? 'bonk' : 'snap');
   }
-  airPress = null;
-  grabPress = null;
-  if (screenPress && e.type === 'pointerup') forget(screenPress.device);
-  screenPress = null;
-  if (toolPress && tool && e.type === 'pointerup') {
+  if (tap?.device) forget(tap.device);
+  if (tap?.tool && tool) {
     const line = toolLine(e);
     if (line) USE[tool](line);
   }
-  toolPress = null;
-  panPress = null;
 };
 svg.addEventListener('pointerup', release);
 svg.addEventListener('pointercancel', release);
@@ -1172,7 +1108,7 @@ function reset(): void {
   for (const id of Object.keys(ATTACK_LINKS) as Attack[]) attackMenu.setOn(id, false);
   cloud = false;
   qos = 0;
-  rememberSmart();
+  saveSmart();
   showSmart();
   for (const menu of menus) menu.setOpen(false);
   showChapterMenu(false);
@@ -1239,7 +1175,7 @@ function endRun(): void {
   const ip = story.remembered ?? story.dnsAnswer;
   if (ip && !revisit && !reading) noteDown(client, { site: story.site, ip, until: performance.now() + (story.dnsTtl ?? 0) * 1000 });
   // A call over: hear what came through, holes and all.
-  if (story.voice) sound.playVoice(story.voice.heard.map((b) => (b ? ulawDecodeAll(b) : null)), 160);
+  if (story.voice) sound.playVoice(story.voice.heard.map((b) => (b ? ulawDecodeAll(b) : null)), RTP_SAMPLES_PER_PACKET);
   idleV = tl.total;
   // Over: a cable cut during it is simply cut now.
   cutSpans = [...cutLines].map((link) => ({ link, from: -Infinity }));
@@ -1256,10 +1192,6 @@ let last = performance.now();
 let clock = 0;
 /** The viewer asked their system for less motion: the idle card keeps still. */
 const stillness = window.matchMedia('(prefers-reduced-motion: reduce)');
-/** Text in the bar only changes when it has to: setting it every frame makes the browser lay the bar out again. */
-const setText = (e: HTMLElement, text: string): void => {
-  if (e.textContent !== text) e.textContent = text;
-};
 function frame(now: number): void {
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
@@ -1309,27 +1241,26 @@ function frame(now: number): void {
   const cardOp = (1 - dropK) * riseK;
   const moving = CARDS[carried];
   moving.style.display = mode === 'play' ? 'none' : '';
-  moving.setAttribute('transform', `translate(${cardPos.sx.toFixed(1)} ${(cardPos.sy + bob).toFixed(1)}) scale(${scale.toFixed(3)})`);
-  moving.setAttribute('opacity', cardOp.toFixed(3));
+  setAttr(moving, 'transform', `translate(${cardPos.sx.toFixed(1)} ${(cardPos.sy + bob).toFixed(1)}) scale(${scale.toFixed(3)})`);
+  setAttr(moving, 'opacity', cardOp.toFixed(3));
   cardHelp.style.display = mode === 'drag' ? '' : 'none';
   if (mode === 'drag') {
     // Readable however far back the camera is. To the right of the card, away from the finger holding it, even past the screen's edge.
     const size = Math.max(1, HELP_FLOOR / cam.scale);
     const x = cardPos.sx + 100 + (CARD_HELP_W / 2) * size;
     const y = cardPos.sy - (CARD_HELP_H / 2) * size;
-    cardHelp.setAttribute('transform', `translate(${x.toFixed(1)} ${y.toFixed(1)}) scale(${size.toFixed(3)})`);
+    setAttr(cardHelp, 'transform', `translate(${x.toFixed(1)} ${y.toFixed(1)}) scale(${size.toFixed(3)})`);
   }
   for (const w of EVERY_JOB) {
     if (w === carried) continue;
     const resting = CARDS[w];
     const rest = HOMES[w];
     resting.style.display = mode === 'play' ? 'none' : '';
-    resting.setAttribute('transform', `translate(${rest.sx.toFixed(1)} ${(rest.sy + bob).toFixed(1)})`);
-    resting.setAttribute('opacity', '1');
+    setAttr(resting, 'transform', `translate(${rest.sx.toFixed(1)} ${(rest.sy + bob).toFixed(1)})`);
+    setAttr(resting, 'opacity', '1');
   }
   hint.style.display = mode === 'idle' ? '' : 'none';
-  const nextMove = played ? 'drag a card onto a device' : `Start: drag ${pageSite()} onto Laptop`;
-  if (hint.textContent !== nextMove) hint.textContent = nextMove;
+  setText(hint, played ? 'drag a card onto a device' : `Start: drag ${pageSite()} onto Laptop`);
 
   // The camera eases between the whole network (between runs) and a close follow of the packet,
   // unless the viewer has taken it over. More than one action at a time needs the whole network.
@@ -1343,26 +1274,24 @@ function frame(now: number): void {
   snapCamera = false;
   scene.applyCamera(cam);
   const lowest = (spyCard.top ?? window.innerHeight - scene.barHeight) - ACTION_H / 2 - 8;
-  /** A button stands by its device and moves only as the device does: out of view with it, and not over the bar. */
-  const putAction = (b: HTMLButtonElement, device: string): void => {
+  /** A button stands by its device and moves only as the device does: out of view with it, and not over the bar. Says whether it is in view. */
+  const putAction = (b: HTMLButtonElement, device: string): boolean => {
     const spot = scene.actionSpot(device);
     const size = scene.actionSize();
-    b.hidden = spot.y < (mode === 'play' ? ACTION_TOP : 0) || spot.y > lowest;
     b.style.transform = `translate(${spot.x.toFixed(0)}px, ${spot.y.toFixed(0)}px) scale(${size.toFixed(3)})`;
     b.style.setProperty('--size', size.toFixed(3));
     b.dataset.points = spot.points;
+    return spot.y >= (mode === 'play' ? ACTION_TOP : 0) && spot.y <= lowest;
   };
   for (const { device, menu } of deviceActions) {
     // It needs something left to run alongside. Closed first: the popup hands focus back to the button.
     const free = mode === 'play' && v < tl.settled && canAdd(device);
     if (!free) menu.setOpen(false);
-    menu.button.hidden = !free;
     // Open, it stays put: the run goes on, and what you are aiming for must not move.
-    if (free && !menu.isOpen) putAction(menu.button, device);
+    menu.button.hidden = !free || (!menu.isOpen && !putAction(menu.button, device));
   }
   const reader = mode === 'idle' ? story.devices.find((d) => d.actions.includes('reading')) : undefined;
-  readingBtn.hidden = !reader;
-  if (reader) putAction(readingBtn, reader.id);
+  readingBtn.hidden = !reader || !putAction(readingBtn, reader.id);
 
   const shown = mode === 'play' ? v : idleV;
   scene.render(shown, mode === 'play' ? 0 : riseK);
@@ -1393,7 +1322,7 @@ function frame(now: number): void {
   }
   svg.classList.toggle('between', canSetUp());
   soundBtn.classList.toggle('off', sound.muted);
-  soundBtn.setAttribute('aria-pressed', String(sound.muted));
+  setAttr(soundBtn, 'aria-pressed', String(sound.muted));
   awake.set(mode === 'play' && !paused);
   // A tall screen starts close on the laptop, so the rest of the network has to be a press away.
   const closeUp = mode !== 'play' && !showAll && !attacks.size && scene.anythingRevealed && scene.overviewCamera().scale > scene.wholeCamera().scale;

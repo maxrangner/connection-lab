@@ -155,6 +155,18 @@ export function drawDoor(g: SVGGElement): void {
 }
 
 /** A long page: the bigger page. */
+/** A globe, for a site. */
+export function drawGlobe(g: SVGGElement): void {
+  el('circle', { r: 9 }, g);
+  el('ellipse', { rx: 4, ry: 9 }, g);
+}
+
+/** A little picture, for a photo. */
+export function drawPhoto(g: SVGGElement): void {
+  el('rect', { x: -12, y: -10, width: 24, height: 20, rx: 2 }, g);
+  el('path', { d: 'M-10 7l7-8 5 5 3-3 5 6' }, g);
+}
+
 export function drawPage(g: SVGGElement): void {
   el('path', { d: 'M-17 -27 H9 L19 -17 V27 H-17 Z', class: 'page-sheet' }, g);
   el('path', { d: 'M9 -27 V-17 H19', class: 'page-fold' }, g);

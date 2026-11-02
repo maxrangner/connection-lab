@@ -119,17 +119,14 @@ describe('a voice call in the story', () => {
   });
 
   it('is a call, not a page: no title, the friend’s address from DNS, the sound both ways', () => {
-    expect(s.call).toBe(true);
     expect(s.site).toBe('sam.example');
     expect(s.pageTitle).toBeNull();
     expect(s.image).toBeNull();
     expect(s.dnsAnswer).toBe('198.51.100.42');
     expect(s.dnsTtl).toBe(300);
-    expect(s.voice!.sent).toHaveLength(8000);
     expect(s.voice!.heard).toHaveLength(50);
     expect(s.voice!.heard.every((h) => h?.length === 160)).toBe(true);
     expect(s.names['198.51.100.42']).toBe("Sam's phone");
-    expect(story.call).toBe(false);
     expect(story.voice).toBeUndefined();
   });
 
@@ -446,8 +443,6 @@ describe('noisy Wi-Fi in the story', () => {
       expect(again.details?.ethH?.some((row) => row.name === 'Retry' && row.value === '1 (sent again)')).toBe(true);
       expect(again.seen).toBeTruthy();
     }
-    // Every copy of a frame that got across was acknowledged, one way or another.
-    expect(s.trips.some((t) => onWlan(t).some((x) => x.kind === 'travel' && x.acked))).toBe(true);
     const first = s.trips.find((t) => onWlan(t).length === 1 && onWlan(t)[0]!.kind === 'travel')!;
     expect(onWlan(first)[0]).not.toHaveProperty('retry');
   });
