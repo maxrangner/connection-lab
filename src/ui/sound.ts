@@ -1,4 +1,3 @@
-import { VOICE_SAMPLE_RATE } from '../sim';
 import type { Cue } from './timeline';
 
 /**
@@ -83,30 +82,6 @@ export class Sound {
         [660, 830, 990].forEach((f, i) => this.tone(c, t + i * 0.09, 'sine', f, f, 0.35, 0.08));
         break;
     }
-  }
-
-  /** What a call's receiver heard: one second of 8 kHz samples, with silence where a packet never came. */
-  playVoice(heard: (Int16Array | number[] | null)[], perPacket: number): void {
-    if (this.muted) return;
-    try {
-      this.ctx ??= new AudioContext();
-      if (this.ctx.state !== 'running') void this.ctx.resume();
-    } catch {
-      return;
-    }
-    const c = this.ctx;
-    const buf = c.createBuffer(1, heard.length * perPacket, VOICE_SAMPLE_RATE);
-    const data = buf.getChannelData(0);
-    heard.forEach((pcm, i) => {
-      if (!pcm) return;
-      for (let k = 0; k < perPacket; k++) data[i * perPacket + k] = (pcm[k] ?? 0) / 32768;
-    });
-    const src = c.createBufferSource();
-    src.buffer = buf;
-    const g = c.createGain();
-    g.gain.value = 0.9;
-    src.connect(g).connect(c.destination);
-    src.start(c.currentTime + 0.1);
   }
 
   private tone(c: AudioContext, t: number, type: OscillatorType, f0: number, f1: number, dur: number, gain: number): void {

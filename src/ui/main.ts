@@ -1,6 +1,6 @@
 import './app.css';
 import { version } from '../../package.json';
-import { crossingKey, EVERY_JOB, fetchWebPage, OFFLINE_AT, RTP_SAMPLES_PER_PACKET, runScenario, ulawDecodeAll, type Attack, type Cut, type Job, type ManualFault } from '../sim';
+import { crossingKey, EVERY_JOB, fetchWebPage, OFFLINE_AT, runScenario, type Attack, type Cut, type Job, type ManualFault } from '../sim';
 import { el, setAttr, setText } from './svg';
 import { clamp01, easeInOut, easeOutBack, iso, ISO_X, ISO_Y, lerp, U } from './project';
 import { HexCard } from './hexCard';
@@ -1219,8 +1219,6 @@ function beginRun(): void {
 function endRun(): void {
   const ip = story.remembered ?? story.dnsAnswer;
   if (ip && !revisit && !reading) noteDown(client, { site: story.site, ip, until: performance.now() + (story.dnsTtl ?? 0) * 1000 });
-  // A call over: hear what came through, holes and all.
-  if (story.voice) sound.playVoice(story.voice.heard.map((b) => (b ? ulawDecodeAll(b) : null)), RTP_SAMPLES_PER_PACKET);
   idleV = tl.total;
   // Over: a cable cut during it is simply cut now.
   cutSpans = [...cutLines].map((link) => ({ link, from: -Infinity }));
