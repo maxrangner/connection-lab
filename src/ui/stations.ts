@@ -1,5 +1,5 @@
 import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, iso, ISO_X, ISO_Y, lerp, v3, type Pt, type Vec3 } from './project';
-import { box, tile } from './prims';
+import { box, leaf, slab, tile } from './prims';
 import { el } from './svg';
 import type { Step } from './story';
 import { lookupBeats } from './timeline';
@@ -10,12 +10,17 @@ type Lookup = Extract<Step, { kind: 'lookup' }>;
 
 /** The web server's tower, shared with its drawing in the scene. `slots`: the heights of its shelves. */
 export const SERVER = { half: 0.8, height: 2.6, slotHalf: 0.55, slots: [2.25, 1.75, 1.25, 0.75] };
+/** The books' covers, shared with the ones on the cabinets in the scene. */
+export const BOOK = '#b0824f';
+const PAPER = '#f8f1e4';
 
 const ROWS = 6;
 /** The row of the book that holds the name. */
 const FOUND_ROW = 3;
 const PAGE_W = 2.6;
 const PAGE_D = 2.9;
+/** How far the cover reaches past the pages. */
+const COVER_OVER = 0.12;
 /** Grey bars stand for lines nobody asked for: only what the real messages carry is ever readable. */
 const BARS = [0.74, 0.58, 0.82, 0.66, 0.5, 0.78];
 
@@ -34,14 +39,6 @@ function flatText(parent: SVGGElement, p: Vec3, text: string, cls: string): void
   t.textContent = text;
 }
 
-/** A page hinged on the spine at x, turned by an angle: 0 lies to the right, π to the left. */
-function page(parent: SVGGElement, x: number, y0: number, y1: number, z: number, angle: number, fill: string): void {
-  const ex = x + PAGE_W * Math.cos(angle);
-  const ez = z + PAGE_W * Math.sin(angle);
-  const pts = [iso(x, y0, z), iso(ex, y0, ez), iso(ex, y1, ez), iso(x, y1, z)];
-  el('path', { d: `M${pts.map((p) => `${p.sx.toFixed(1)} ${p.sy.toFixed(1)}`).join('L')}Z`, fill, class: 'book-page' }, parent);
-}
-
 /** The resolver's book: it opens, pages turn, the question runs down the names, the line lights up, the address lifts off. */
 export function drawBook(parent: SVGGElement, c: Vec3, top: Vec3, s: Lookup, k: number): void {
   const b = lookupBeats('dns');
@@ -50,14 +47,16 @@ export function drawBook(parent: SVGGElement, c: Vec3, top: Vec3, s: Lookup, k: 
   const g = el('g', { class: 'book', opacity: Math.min(clamp01(k / 0.04), 1 - easeIn(clamp01((k - 0.9) / 0.1))).toFixed(3) }, parent);
   const z = c.z + 0.5 * easeOut(clamp01(k / 0.1));
   const y0 = c.y - PAGE_D / 2;
-  const y1 = c.y + PAGE_D / 2;
   const rowY = (i: number): number => y0 + ((i + 0.8) / (ROWS + 0.6)) * PAGE_D;
 
-  box(g, { x: c.x - PAGE_W - 0.12, y: y0 - 0.12, z: z - 0.16, w: (PAGE_W + 0.12) * 2, d: PAGE_D + 0.24, h: 0.14, color: '#b0824f' });
-  tile(g, c.x, y0, PAGE_W, PAGE_D, z, { class: 'book-page', fill: '#fffaf0' });
+  // Closed it is the right half alone, with the front cover lying on it; only flat open does it take up both sides.
   const leftAngle = Math.PI * (opening - closing);
-  const flat = leftAngle > Math.PI * 0.92;
-  if (flat) tile(g, c.x - PAGE_W, y0, PAGE_W, PAGE_D, z, { class: 'book-page', fill: '#fbf4e6' });
+  const flat = leftAngle > Math.PI * 0.98;
+  const coverW = PAGE_W + COVER_OVER;
+  const coverD = PAGE_D + COVER_OVER * 2;
+  slab(g, { x: flat ? c.x - coverW : c.x, y: y0 - COVER_OVER, z: z - 0.24, w: flat ? coverW * 2 : coverW, d: coverD, h: 0.1, r: 0.14, color: BOOK });
+  if (flat) slab(g, { x: c.x - PAGE_W, y: y0, z: z - 0.14, w: PAGE_W, d: PAGE_D, h: 0.14, r: 0.04, color: PAPER });
+  slab(g, { x: c.x, y: y0, z: z - 0.14, w: PAGE_W, d: PAGE_D, h: 0.14, r: 0.04, color: PAPER });
 
   const lastFlip = b.search[b.search.length - 1]! + 0.1;
   const lit = clamp01((k - b.found) / 0.06);
@@ -74,10 +73,10 @@ export function drawBook(parent: SVGGElement, c: Vec3, top: Vec3, s: Lookup, k: 
     flatText(g, v3(c.x - PAGE_W + 0.3, rowY(FOUND_ROW), z), s.ask, 'book-name');
     if (k < b.lift) flatText(g, v3(c.x + 0.14, rowY(FOUND_ROW), z), s.found, 'book-name');
   }
-  if (!flat) page(g, c.x, y0, y1, z, leftAngle, '#b0824f');
+  if (!flat) leaf(g, { x: c.x, y: y0 - COVER_OVER, z, w: coverW, d: coverD, t: 0.1, r: 0.14, angle: leftAngle, up: BOOK, under: PAPER });
   for (const f of b.search) {
     const q = clamp01((k - f) / 0.1);
-    if (q > 0 && q < 1) page(g, c.x, y0, y1, z + 0.02, Math.PI * easeInOut(q), '#fffdf6');
+    if (q > 0 && q < 1) leaf(g, { x: c.x, y: y0, z: z + 0.02, w: PAGE_W, d: PAGE_D, t: 0, r: 0.04, angle: Math.PI * easeInOut(q), up: PAPER, under: PAPER });
   }
 
   // The question runs down the names.
