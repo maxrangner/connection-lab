@@ -1041,6 +1041,12 @@ body {
   cursor: pointer;
 }
 
+.spy-top button svg,
+.hex-top button svg {
+  display: block;
+  margin: auto;
+}
+
 .spy-top button:disabled {
   opacity: 0.35;
   cursor: default;

@@ -1,4 +1,4 @@
-import { drawSpyglass } from './icons';
+import { buttonMark, drawChevron, drawCross, drawSpyglass } from './icons';
 import type { Seen } from './story';
 import { el, setText } from './svg';
 
@@ -34,15 +34,15 @@ export class SpyCard {
     const icon = el('svg', { viewBox: '-24 -24 60 60', width: 24, height: 24, 'aria-hidden': 'true' });
     drawSpyglass(el('g', {}, icon));
     top.appendChild(icon);
-    const button = (b: HTMLButtonElement, text: string, label: string, onClick: () => void): void => {
-      b.textContent = text;
+    const button = (b: HTMLButtonElement, draw: (g: SVGGElement) => void, label: string, onClick: () => void): void => {
+      b.appendChild(buttonMark(draw));
       b.setAttribute('aria-label', label);
       b.addEventListener('click', onClick);
     };
-    button(this.older, '‹', 'Older read', () => this.step(-1));
-    button(this.newer, '›', 'Newer read', () => this.step(1));
+    button(this.older, drawChevron(-1), 'Older read', () => this.step(-1));
+    button(this.newer, drawChevron(1), 'Newer read', () => this.step(1));
     const close = document.createElement('button');
-    button(close, '×', 'Put the spyglass away', onClose);
+    button(close, drawCross, 'Put the spyglass away', onClose);
     close.className = 'spy-close';
     this.count.className = 'spy-count';
     top.append(this.older, this.count, this.newer, close);

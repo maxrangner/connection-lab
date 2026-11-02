@@ -41,6 +41,21 @@ export function drawBoardScissors(g: SVGGElement, angle: number): void {
   for (const { x, y } of grips) ring(g, { x, y, z: 0.02, h: 0.09, r: 0.34, hole: 0.17, color: TOOL_BLUE });
 }
 
+/** A small mark for a round button. Drawn, as a character like × sits differently in its box in every font and never quite in the middle. */
+export function buttonMark(draw: (g: SVGGElement) => void): SVGSVGElement {
+  const mark = el('svg', { viewBox: '-9 -9 18 18', width: 18, height: 18, 'aria-hidden': 'true' });
+  draw(el('g', { fill: 'none', stroke: 'currentColor', 'stroke-width': 2.2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }, mark));
+  return mark;
+}
+
+/** An arrow head, pointing left or right. */
+export const drawChevron = (way: -1 | 1) => (g: SVGGElement): void => void el('path', { d: `M${-way * 2.5} -5.5 L${way * 2.5} 0 L${-way * 2.5} 5.5` }, g);
+
+/** A cross, to close. */
+export function drawCross(g: SVGGElement): void {
+  el('path', { d: 'M-5 -5 L5 5 M5 -5 L-5 5' }, g);
+}
+
 /** Two bars, to pause. */
 export function drawPause(g: SVGGElement): void {
   for (const x of [-6.5, 2]) el('rect', { x, y: -8, width: 4.5, height: 16, rx: 1, fill: 'currentColor' }, g);

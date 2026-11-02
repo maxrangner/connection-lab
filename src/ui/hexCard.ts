@@ -1,5 +1,6 @@
 import type { Field, LayerPdu, PduSnapshot } from '../sim';
 import type { PartKey } from './story';
+import { buttonMark, drawCross } from './icons';
 import { COLOR } from './NetworkScene';
 
 /**
@@ -75,7 +76,7 @@ export class HexCard {
     top.className = 'hex-top';
     this.title.className = 'hex-title';
     const close = document.createElement('button');
-    close.textContent = '×';
+    close.appendChild(buttonMark(drawCross));
     close.setAttribute('aria-label', 'Close the bytes');
     close.addEventListener('click', onClose);
     top.append(this.title, close);
