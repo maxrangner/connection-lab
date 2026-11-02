@@ -101,7 +101,7 @@ let qos: 0 | 1 | 2 = savedSmart.qos === 1 || savedSmart.qos === 2 ? savedSmart.q
 /** The card picked up last. */
 let carried: Job = 'page';
 const pageSite = (): 'info.cern.ch' | 'example.com' => (features.big ? 'info.cern.ch' : 'example.com');
-const siteName = (): 'info.cern.ch' | 'example.com' | 'httpbin.org' => (carried === 'photo' ? 'httpbin.org' : pageSite());
+const siteName = (): 'info.cern.ch' | 'example.com' | 'connection-lab.rangner.com' => (carried === 'photo' ? 'connection-lab.rangner.com' : pageSite());
 /** The name the device will look up: a site, the friend to call, or the server a ping or trace goes to. */
 const wantedName = (): string => (carried === 'call' ? 'sam.example' : isProbe(carried) ? 'example.com' : siteName());
 const memoryKey = (device: string, site: string): string => `${device} ${site}`;

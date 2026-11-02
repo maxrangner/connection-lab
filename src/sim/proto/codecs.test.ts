@@ -273,13 +273,13 @@ describe('the captured walk root → TLD → authoritative (real referral bytes)
     expect(dnsAddresses(r)).toEqual(['188.184.67.127']);
   });
 
-  it('httpbin.org: four servers named but glue for only one, which is the one asked', () => {
-    const [, org, auth] = hops('httpbin.org');
-    const ref = dnsReferral(org!.r)!;
-    expect(ref.servers).toHaveLength(4);
-    expect(ref.servers.filter((s) => s.ip)).toEqual([{ name: 'ns-1053.awsdns-03.org', ip: '205.251.196.29' }]);
-    expect(auth!.server.ip).toBe('205.251.196.29');
-    expect(dnsAddresses(auth!.r)).toHaveLength(3);
+  it('a name under a domain: .com refers to the domain\'s servers, and the first of them answers for the name', () => {
+    const [, com, auth] = hops('connection-lab.rangner.com');
+    const ref = dnsReferral(com!.r)!;
+    expect(ref.zone).toBe('rangner.com');
+    expect(ref.servers).toEqual([{ name: 'ns01.one.com', ip: '195.206.121.10' }, { name: 'ns02.one.com', ip: '185.10.11.10' }]);
+    expect(auth!.server.ip).toBe('195.206.121.10');
+    expect(dnsAddresses(auth!.r)).toEqual(['46.30.215.38']);
   });
 
   it('describes every record of every section with an explanation, and sums a referral up as who to ask', () => {

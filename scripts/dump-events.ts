@@ -5,7 +5,7 @@ const mss = Number(process.argv[2] ?? 1460);
 const dhcp = process.argv.includes('dhcp');
 const call = process.argv.includes('call');
 const thin = process.argv.includes('thin');
-const site = process.argv.includes('photo') ? ('httpbin.org' as const) : undefined;
+const site = process.argv.includes('photo') ? ('connection-lab.rangner.com' as const) : undefined;
 const probe = process.argv.includes('ping') ? ('ping' as const) : process.argv.includes('traceroute') ? ('traceroute' as const) : undefined;
 const from = process.argv.includes('phone') ? ('phone' as const) : undefined;
 const noise = process.argv.slice(2).filter((a) => a.startsWith('noise:')).map((a) => Number(a.slice(6)))[0];

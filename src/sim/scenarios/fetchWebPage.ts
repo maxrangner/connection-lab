@@ -12,7 +12,7 @@ import {
 } from './exampleComCapture';
 import * as tlsExample from './tlsCapture_example_com';
 import * as tlsCern from './tlsCapture_info_cern_ch';
-import * as tlsPhoto from './tlsCapture_httpbin_org';
+import * as tlsPhoto from './tlsCapture_connection_lab_rangner_com';
 import { CERN_A_RECORDS, CERN_DNS_TTL, CERN_HOST, CERN_HTTP_REQUEST, CERN_HTTP_RESPONSE_BASE64, CERN_IP, CERN_PATH } from './infoCernCapture';
 import { PHOTO_A_RECORDS, PHOTO_DNS_TTL, PHOTO_HOST, PHOTO_HTTP_REQUEST, PHOTO_HTTP_RESPONSE_BASE64, PHOTO_IP, PHOTO_PATH } from './photoCapture';
 import type { MqttQos } from '../proto/mqtt';
@@ -69,9 +69,9 @@ export interface FetchWebPageOptions {
   /**
    * Which real page to fetch: example.com (932 bytes, one packet) or the first website ever,
    * info.cern.ch/hypertext/WWW/TheProject.html (2450 bytes, so the reply needs more than one packet), or a real
-   * JPEG from httpbin.org (35 588 bytes, so it needs about 25 packets and TCP's window really matters).
+   * JPEG from this page's own site (34 174 bytes, so it needs 24 packets and TCP's window really matters).
    */
-  site?: 'example.com' | 'info.cern.ch' | 'httpbin.org';
+  site?: 'example.com' | 'info.cern.ch' | 'connection-lab.rangner.com';
   /**
    * A second visit soon after the first: the laptop still has the address in its DNS cache (within the record's
    * TTL), and the laptop and home router still know each other's MAC addresses, so neither looks anything up.
@@ -305,7 +305,7 @@ const LOCAL_BROKER: HomeDevice = {
 const SITES = {
   'example.com': { url: 'http://example.com/', ip: CAPTURED_FROM_IP, request: HTTP_REQUEST, response: HTTP_RESPONSE_BASE64, tls: tlsExample },
   'info.cern.ch': { url: `http://${CERN_HOST}${CERN_PATH}`, ip: CERN_IP, request: CERN_HTTP_REQUEST, response: CERN_HTTP_RESPONSE_BASE64, tls: tlsCern },
-  'httpbin.org': { url: `http://${PHOTO_HOST}${PHOTO_PATH}`, ip: PHOTO_IP, request: PHOTO_HTTP_REQUEST, response: PHOTO_HTTP_RESPONSE_BASE64, tls: tlsPhoto },
+  'connection-lab.rangner.com': { url: `http://${PHOTO_HOST}${PHOTO_PATH}`, ip: PHOTO_IP, request: PHOTO_HTTP_REQUEST, response: PHOTO_HTTP_RESPONSE_BASE64, tls: tlsPhoto },
 } as const;
 
 /**
@@ -437,7 +437,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
   const resolver = ADDR.resolver.ip;
   const jobs: Record<Job, () => AppSpec> = {
     page: () => ({ kind: 'browser', url: SITES['example.com'].url, resolver, request: ascii(HTTP_REQUEST) }),
-    photo: () => ({ kind: 'browser', url: SITES['httpbin.org'].url, resolver, request: ascii(PHOTO_HTTP_REQUEST) }),
+    photo: () => ({ kind: 'browser', url: SITES['connection-lab.rangner.com'].url, resolver, request: ascii(PHOTO_HTTP_REQUEST) }),
     call: () => ({ kind: 'voice-call', to: ADDR.friend.name, resolver, clip: fromBase64(VOICE_CLIP_CALLER_BASE64) }),
     ping: () => ({ kind: 'ping', to: 'example.com', resolver, count: 4 }),
     trace: () => ({ kind: 'traceroute', to: 'example.com', resolver, maxHops: 8 }),
@@ -542,7 +542,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
           { network: ADDR.friend.ip, prefixLen: 32, iface: 'isp.p4' },
           ...outsiders.map((o) => o.route),
           ...SERVER_BLOCKS.map((b) => ({ ...b, iface: 'isp.p2' })),
-          // Whatever else the server answers to: the cloud addresses httpbin.org answered from, the address a walk ended at.
+          // Whatever else the server answers to: a site's other addresses, the address a walk ended at.
           ...[server.ip, ...aliases].filter((ip) => !SERVER_BLOCKS.some((b) => inSubnet(ip, b.network, b.prefixLen))).map((ip) => ({ network: ip, prefixLen: 32, iface: 'isp.p2' })),
         ],
         arp: {

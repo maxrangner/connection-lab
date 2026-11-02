@@ -7,7 +7,7 @@ import { easeInOut } from './project';
 
 const CLEAN: FaultPlan = { randomLoss: 0, manual: [] };
 const photo = (opts: FetchWebPageOptions = {}, faults: FaultPlan = CLEAN) =>
-  buildStory(runScenario(fetchWebPage({ site: 'httpbin.org', ...opts }), { seed: 1, faults, maxTime: 1000 }));
+  buildStory(runScenario(fetchWebPage({ site: 'connection-lab.rangner.com', ...opts }), { seed: 1, faults, maxTime: 1000 }));
 const packets = (s: Story): Trip[] => s.trips.flatMap((t) => t.steps.flatMap((x) => (x.kind === 'flow' && x.packets.length > 1 ? x.packets : [])));
 /** The stream, not one of the small ACKs on their own. */
 const stream = (tl: Timeline): Seg => tl.segs.find((s) => (s.flow?.length ?? 0) > 1)!;
@@ -29,8 +29,8 @@ describe('a photo: many packets at once', () => {
   it('every band of the picture gets its packet, with ACKs coming back', () => {
     const data = packets(s).filter((t) => t.part);
     expect(data.length).toBe(data[0]!.part!.of);
-    expect(data[0]!.part!.of).toBe(25);
-    expect(parts(s)).toEqual(Array.from({ length: 25 }, (_, i) => i + 1));
+    expect(data[0]!.part!.of).toBe(24);
+    expect(parts(s)).toEqual(Array.from({ length: 24 }, (_, i) => i + 1));
     expect(packets(s).filter((t) => t.l4Label === 'ACK').length).toBeGreaterThan(10);
   });
 
@@ -46,7 +46,7 @@ describe('a photo: many packets at once', () => {
 
   it('shows the real JPEG', () => {
     expect(s.image?.startsWith('data:image/jpeg;base64,/9j/')).toBe(true);
-    expect(atob(s.image!.split(',')[1]!).length).toBe(35588);
+    expect(atob(s.image!.split(',')[1]!).length).toBe(34174);
     expect(s.pageTitle).toBe('photo');
   });
 
@@ -185,7 +185,7 @@ describe('a photo whose cable is cut', () => {
     if (at.kind !== 'travel') throw new Error('no travel');
     const s = photo({}, { randomLoss: 0, manual: [], cuts: [{ link: 'bb2', from: at.at + 1e-6 }] });
     const data = packets(s).filter((t) => t.part);
-    expect(data[0]!.part!.of).toBe(25);
+    expect(data[0]!.part!.of).toBe(24);
     expect(s.pageTitle).toBeNull();
     expect(faces(buildTimeline(s))).not.toContain('love');
   });
@@ -360,7 +360,7 @@ describe('the tools see into a stream', () => {
 describe('the end of a stream', () => {
   it('leaves out the ACK of the teardown', () => {
     for (const opts of [{}, { https: true }]) {
-      const r = runScenario(fetchWebPage({ site: 'httpbin.org', ...opts }), { seed: 1, faults: CLEAN, maxTime: 1000 });
+      const r = runScenario(fetchWebPage({ site: 'connection-lab.rangner.com', ...opts }), { seed: 1, faults: CLEAN, maxTime: 1000 });
       const flow = packets(buildStory(r));
       const reach = Math.max(...flow.filter((t) => t.part).map((t) => (r.packets.get(t.packetId)?.tcp?.relSeq ?? 0) + t.dataBytes));
       const acks = flow.filter((t) => !t.part).map((t) => r.packets.get(t.packetId)?.tcp?.relAck ?? 0);

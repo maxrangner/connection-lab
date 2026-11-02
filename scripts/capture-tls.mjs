@@ -116,7 +116,11 @@ for (const dir of ['client', 'server']) {
           p += 4 + plain.readUIntBE(p + 1, 3);
           if (t === 20) keys = app;
         }
-      } else if (ct === 23) inner = [`HTTP ${plain.toString('latin1').split('\r\n')[0]}`];
+      } else if (ct === 23) {
+        // Only the first record of a message starts with its line: the rest of a big reply is just body.
+        const line = plain.toString('latin1').split('\r\n')[0];
+        inner = [/^(HTTP\/|[A-Z]+ \S+ HTTP\/)/.test(line) ? `HTTP ${line}` : 'HTTP body'];
+      }
       else if (ct === 21) inner = ['Alert close_notify'];
       else inner = [`content ${ct}`];
     }

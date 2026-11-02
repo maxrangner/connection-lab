@@ -2,15 +2,17 @@
 // UDP question (type A, RD=0, no EDNS) to a root server, then to the TLD server it refers us to, then to the site's
 // own name server, until one of them answers. Every query and response is saved byte for byte, with the round-trip
 // time of each hop, so the sim's cold resolver can replay the real walk root → TLD → authoritative.
-// Usage: node scripts/capture-dns-trace.mjs
-// Writes src/sim/scenarios/dnsTraceCapture.ts and tests/fixtures/dns-trace-<host>.json.
+// Usage: node scripts/capture-dns-trace.mjs [host ...]
+// Writes src/sim/scenarios/dnsTraceCapture.ts and tests/fixtures/dns-trace-<host>.json. Name hosts to capture only
+// those: the others keep the walks already in their fixtures.
 import dgram from 'node:dgram';
 import dns from 'node:dns/promises';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 
-const HOSTS = ['example.com', 'info.cern.ch', 'httpbin.org'];
+const HOSTS = ['example.com', 'info.cern.ch', 'connection-lab.rangner.com'];
+const NAMED = process.argv.slice(2);
 const ROOT = { name: 'a.root-servers.net', ip: '198.41.0.4' };
 const MAX_HOPS = 5;
 const TIMEOUT_MS = 3000;
@@ -149,8 +151,14 @@ async function trace(host) {
 }
 
 const traces = {};
-const allNotes = [];
+const OUT = 'src/sim/scenarios/dnsTraceCapture.ts';
+const kept = NAMED.length ? fs.readFileSync(OUT, 'utf8').match(/^\/\/ Note: .*$/gm) ?? [] : [];
+const allNotes = kept.map((n) => n.slice('// Note: '.length)).filter((n) => HOSTS.some((h) => n.startsWith(`${h}:`)) && !NAMED.some((h) => n.startsWith(`${h}:`)));
 for (const host of HOSTS) {
+  if (NAMED.length && !NAMED.includes(host)) {
+    traces[host] = { hops: JSON.parse(fs.readFileSync(`tests/fixtures/dns-trace-${host}.json`, 'utf8')).hops };
+    continue;
+  }
   console.log(host);
   try {
     const { hops, notes } = await trace(host);
@@ -183,5 +191,5 @@ export interface DnsTraceHop {
 
 export const DNS_TRACES: Record<string, { hops: DnsTraceHop[] }> = ${JSON.stringify(traces, null, 2)};
 `;
-fs.writeFileSync('src/sim/scenarios/dnsTraceCapture.ts', ts);
+fs.writeFileSync(OUT, ts);
 console.log(`captured ${Object.keys(traces).length} of ${HOSTS.length} traces`);
