@@ -25,14 +25,15 @@ const OPEN = 0.36;
 
 /** The scissors on the table, open and lying flat, built as the devices are. `angle` is the way their tips point. */
 export function drawBoardScissors(g: SVGGElement, angle: number): void {
-  for (const s of [-1, 1]) {
+  const halves = [-1, 1].map((s) => {
     const [cos, sin] = [Math.cos(angle + s * OPEN), Math.sin(angle + s * OPEN)];
-    const on = (a: number, b: number): { x: number; y: number } => ({ x: a * cos - b * sin, y: a * sin + b * cos });
-    const grip = on(-1, 0);
-    ring(g, { x: grip.x, y: grip.y, z: 0.02, h: 0.09, r: 0.34, hole: 0.17, color: TOOL_BLUE });
-    plate(g, [on(1.2, 0), on(0.12, 0.17), on(-0.72, 0.1), on(-0.72, -0.1), on(0.12, -0.17)], 0.02, 0.08, TOOL_STEEL);
-  }
+    return (a: number, b: number): { x: number; y: number } => ({ x: a * cos - b * sin, y: a * sin + b * cos });
+  });
+  for (const on of halves) plate(g, [on(1.2, 0), on(0.12, 0.17), on(-0.72, 0.1), on(-0.72, -0.1), on(0.12, -0.17)], 0.02, 0.08, TOOL_STEEL);
   slab(g, { x: -0.07, y: -0.07, z: 0.1, w: 0.14, d: 0.14, h: 0.02, r: 0.07, color: '#3b4049' });
+  // On top of the blades, the one further from the viewer first.
+  const grips = halves.map((on) => on(-1, 0)).sort((a, b) => a.x + a.y - (b.x + b.y));
+  for (const { x, y } of grips) ring(g, { x, y, z: 0.02, h: 0.09, r: 0.34, hole: 0.17, color: TOOL_BLUE });
 }
 
 /** Two bars, to pause. */
