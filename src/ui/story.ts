@@ -282,18 +282,15 @@ export function arpCardLabel(summary: string): string {
 
 /**
  * "DNS query 0x85bb: example.com A?" → "example.com?", a response → its first address, a referral → who to ask next:
- * "ask .com" for a top-level zone, else the first server named, shortened to its first label and ending ("ask hera…com").
+ * "ask .com" for a top-level zone, else "ask name server", which is what its map label says, not one of its long real names.
  */
 export function dnsCardLabel(summary: string): string {
   const q = /^DNS query \S+: (\S+)/.exec(summary);
   if (q) return `${q[1]}?`;
-  const ref = /^DNS referral \S+: \S+ → (\S+) NS ([^,\s]+)/.exec(summary);
+  const ref = /^DNS referral \S+: \S+ → (\S+) NS /.exec(summary);
   if (ref) {
     const zone = ref[1]!;
-    const server = ref[2]!;
-    if (!zone.includes('.')) return `ask .${zone}`;
-    const labels = server.split('.');
-    return `ask ${server.length > 16 ? `${labels[0]}…${labels[labels.length - 1]}` : server}`;
+    return zone.includes('.') ? 'ask name server' : `ask .${zone}`;
   }
   return /\d+\.\d+\.\d+\.\d+/.exec(summary)?.[0] ?? 'DNS';
 }

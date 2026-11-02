@@ -5,7 +5,8 @@ import { clamp01, easeInOut, easeOutBack, iso, ISO_X, ISO_Y, lerp, U } from './p
 import { HexCard } from './hexCard';
 import logoDark from './logo/logo-dark.png';
 import logoLight from './logo/logo-light.png';
-import { drawDoor, drawEar, drawHandset, drawHush, drawMoon, drawPadlock, drawPage, drawPause, drawPing, drawPlay, drawPipe, drawQuestion, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawSun, drawSwarm, drawTag, drawThermometer, drawTrace } from './icons';
+import { drawDoor, drawEar, drawHandset, drawMoon, drawPadlock, drawPage, drawPause, drawPing, drawPlay, drawPipe, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawSun, drawSwarm, drawTag, drawTalk, drawThermometer, drawTrace } from './icons';
+import { KeepAwake } from './awake';
 import { Menu } from './menus';
 import { NetworkScene, type Camera } from './NetworkScene';
 import { Sound } from './sound';
@@ -26,10 +27,10 @@ const LINGER = 1.4;
 const BACK_GRACE = 1;
 
 /** What the next run is like, set from the Setup menu between runs: changing it mid-run would rewrite what happened. */
-type Setting = 'https' | 'big' | 'slow' | 'vpn' | 'arp' | 'dhcp' | 'cold' | 'thin' | 'smart' | 'quiet';
+type Setting = 'https' | 'big' | 'slow' | 'vpn' | 'dhcp' | 'cold' | 'thin' | 'smart';
 type Features = Record<Setting, boolean>;
-const SETTINGS: Setting[] = ['https', 'big', 'slow', 'vpn', 'arp', 'dhcp', 'cold', 'thin', 'smart', 'quiet'];
-const features: Features = { https: false, big: false, slow: false, vpn: false, arp: false, dhcp: false, cold: false, thin: false, smart: false, quiet: false };
+const SETTINGS: Setting[] = ['https', 'big', 'slow', 'vpn', 'dhcp', 'cold', 'thin', 'smart'];
+const features: Features = { https: false, big: false, slow: false, vpn: false, dhcp: false, cold: false, thin: false, smart: false };
 /** The line the spyglass is on, if any. */
 let spyLine: string | null = null;
 /** The visual time it was put there: it can only read what passes from then on. */
@@ -136,7 +137,8 @@ function simulate(): void {
   });
   const plan = { randomLoss: 0, decided, cuts, manual: faults };
   // Long enough for TCP to give up on a dead line (15 resends, backing off to a minute apart).
-  story = buildStory(runScenario(scenario, { seed: runSeed, faults: plan, maxTime: 1000 }), { arp: features.arp });
+  // A device new on the network knows nobody yet, so it finds the router as well as getting an address.
+  story = buildStory(runScenario(scenario, { seed: runSeed, faults: plan, maxTime: 1000 }), { arp: features.dhcp && !reading });
   tl = buildTimeline(story, knocks, stretch, drops());
 }
 simulate();
@@ -147,8 +149,12 @@ const scene = new NetworkScene(root, story!, tl!);
 scene.setRemembered(known);
 const svg = scene.svg;
 const sound = new Sound();
+const awake = new KeepAwake();
+/** No speech bubbles. It changes nothing about a run, so unlike the Setup it can change during one. */
+let quiet = false;
 try {
   sound.muted = localStorage.getItem('net.muted') === '1';
+  quiet = localStorage.getItem('net.quiet') === '1';
 } catch {
   // Storage can be blocked; sound simply starts on.
 }
@@ -235,8 +241,8 @@ function showFeatures(): void {
   }
   for (const [badges, skip] of [[cardBadges, null], [photoBadges, 'big'], [callBadges, 'big']] as const) {
     badges.replaceChildren();
-    // Quiet devices and a smart home change nothing about the card's run, so it has nothing to say about them.
-    SETUP.filter((s) => features[s.id] && s.id !== skip && s.id !== 'quiet' && s.id !== 'smart').forEach((s, i) => {
+    // A smart home changes nothing about the card's run, so it has nothing to say about it.
+    SETUP.filter((s) => features[s.id] && s.id !== skip && s.id !== 'smart').forEach((s, i) => {
       const g = el('g', { transform: `translate(${72 - i * 30} -24)` }, badges);
       el('circle', { r: 13, class: 'card-badge' }, g);
       s.draw(el('g', { transform: `scale(${(14 / s.span).toFixed(3)})` }, g));
@@ -339,12 +345,10 @@ const SETUP: { id: Setting; label: string; hint: string; draw: (g: SVGGElement) 
   { id: 'big', label: 'Bigger page', hint: 'Too big for one packet', draw: drawPage, span: 34 },
   { id: 'slow', label: 'Satellite internet', hint: 'To space and back: long waits', draw: drawSatellite, span: 64 },
   { id: 'vpn', label: 'VPN', hint: 'Sealed tunnel past your ISP', draw: drawShield, span: 34 },
-  { id: 'arp', label: 'Find the router first', hint: 'Shouts for its hardware address', draw: drawQuestion, span: 34 },
-  { id: 'dhcp', label: 'New on the network', hint: 'Asks for an address first', draw: drawTag, span: 34 },
-  { id: 'cold', label: "DNS doesn't know it yet", hint: 'Must ask around for the name', draw: drawSnowflake, span: 34 },
+  { id: 'dhcp', label: 'New on the network', hint: 'Gets an address, then finds the router', draw: drawTag, span: 34 },
+  { id: 'cold', label: 'DNS has to ask around', hint: "The site's address isn't saved yet", draw: drawSnowflake, span: 34 },
   { id: 'thin', label: 'Slow home line', hint: 'Big downloads lose packets', draw: drawPipe, span: 34 },
   { id: 'smart', label: 'Smart home', hint: 'A sensor that reports to apps', draw: drawThermometer, span: 34 },
-  { id: 'quiet', label: 'Quiet devices', hint: 'No speech bubbles', draw: drawHush, span: 34 },
 ];
 /** The lines that go when the smart home changes. */
 const SMART_LINKS = ['wlan2', 'lan2', 'broker-link'];
@@ -369,7 +373,6 @@ function setSetting(id: Setting, on: boolean): void {
 function showSetup(): void {
   for (const k of SETTINGS) setupMenu.setOn(k, features[k]);
   setupMenu.button.classList.toggle('on', SETTINGS.some((k) => features[k]));
-  scene.setQuiet(features.quiet);
 }
 
 const CHAPTERS: Record<Chapter, string> = { address: 'Get an address', arp: 'Find the router', dns: 'Find the address', hello: 'Say hello', secret: 'Check and agree', page: 'Get the page', call: 'Make a call', ping: 'Ping the server', trace: 'Trace the path', traffic: 'All at once', attack: 'Attack' };
@@ -667,6 +670,23 @@ const soundBtn = button('♪', 'Mute', () => {
   }
 });
 soundBtn.classList.add('sound-button');
+const quietBtn = button('', 'Quiet devices', () => {
+  quiet = !quiet;
+  scene.setQuiet(quiet);
+  showQuiet();
+  try {
+    localStorage.setItem('net.quiet', quiet ? '1' : '0');
+  } catch {
+    // Not remembered; fine.
+  }
+});
+quietBtn.appendChild(barIcon(drawTalk));
+const showQuiet = (): void => {
+  quietBtn.classList.toggle('off', quiet);
+  quietBtn.setAttribute('aria-pressed', String(quiet));
+};
+scene.setQuiet(quiet);
+showQuiet();
 const logo = document.createElement('img');
 logo.className = 'logo';
 logo.alt = 'Connection Lab';
@@ -1281,6 +1301,7 @@ function frame(now: number): void {
   svg.classList.toggle('between', canSetUp());
   soundBtn.classList.toggle('off', sound.muted);
   soundBtn.setAttribute('aria-pressed', String(sound.muted));
+  awake.set(mode === 'play' && !paused);
   // A tall screen starts close on the laptop, so the rest of the network has to be a press away.
   const closeUp = mode !== 'play' && !showAll && !attacks.size && scene.anythingRevealed && scene.overviewCamera().scale > scene.wholeCamera().scale;
   followBtn.hidden = !camFree && !closeUp;

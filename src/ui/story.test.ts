@@ -85,9 +85,9 @@ describe('network story', () => {
     expect(dnsCardLabel('DNS query 0x85bb: example.com A?')).toBe('example.com?');
     expect(dnsCardLabel('DNS response 0x85bb: example.com A 104.20.23.154, 172.66.147.243')).toBe('104.20.23.154');
     expect(dnsCardLabel('DNS referral 0xb8c1: example.com → com NS l.gtld-servers.net, j.gtld-servers.net, …')).toBe('ask .com');
-    expect(dnsCardLabel('DNS referral 0x80dd: example.com → example.com NS hera.ns.cloudflare.com, elliott.ns.cloudflare.com')).toBe('ask hera…com');
-    expect(dnsCardLabel('DNS referral 0x80dd: info.cern.ch → cern.ch NS scsnms.switch.ch, ext-dns-1.cern.ch, …')).toBe('ask scsnms.switch.ch');
-    expect(dnsCardLabel('DNS referral 0x80dd: httpbin.org → httpbin.org NS ns-173.awsdns-21.com, ns-884.awsdns-46.net, …')).toBe('ask ns-173…com');
+    expect(dnsCardLabel('DNS referral 0x80dd: example.com → example.com NS hera.ns.cloudflare.com, elliott.ns.cloudflare.com')).toBe('ask name server');
+    expect(dnsCardLabel('DNS referral 0x80dd: info.cern.ch → cern.ch NS scsnms.switch.ch, ext-dns-1.cern.ch, …')).toBe('ask name server');
+    expect(dnsCardLabel('DNS referral 0x80dd: httpbin.org → httpbin.org NS ns-173.awsdns-21.com, ns-884.awsdns-46.net, …')).toBe('ask name server');
   });
 });
 
@@ -165,7 +165,7 @@ describe('a cold resolver in the story', () => {
       ['resolver', 'example.com?'],
       ['root', 'ask .com'],
       ['resolver', 'example.com?'],
-      ['tld', 'ask hera…com'],
+      ['tld', 'ask name server'],
       ['resolver', 'example.com?'],
       ['auth', '104.20.23.154'],
       ['resolver', '104.20.23.154'],
@@ -183,7 +183,7 @@ describe('a cold resolver in the story', () => {
     const lookups = s.trips.flatMap((t) => t.steps.flatMap((x) => (x.kind === 'lookup' && x.what === 'dns' ? [[x.device, x.ask, x.found]] : [])));
     expect(lookups).toEqual([
       ['root', 'example.com', 'ask .com'],
-      ['tld', 'example.com', 'ask hera…com'],
+      ['tld', 'example.com', 'ask name server'],
       ['auth', 'example.com', '104.20.23.154'],
       ['resolver', 'example.com', '104.20.23.154'],
     ]);

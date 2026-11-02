@@ -48,8 +48,16 @@ describe('what the devices say', () => {
   });
 
   it('has the resolver sent from server to server', () => {
-    const lines = said(run({ cold: true })).map((x) => x[1]);
-    expect(lines).toEqual(expect.arrayContaining(['Not me. Ask .com']));
+    const talk = said(run({ cold: true })).filter(([device]) => ['resolver', 'root', 'tld', 'auth'].includes(device!));
+    expect(talk).toEqual([
+      ['resolver', "I don't have it saved. I'll ask around."],
+      ['root', 'Not me. Ask the .com server.'],
+      ['resolver', 'Where is example.com?'],
+      ['tld', 'Not me. Ask its name server.'],
+      ['resolver', 'Where is example.com?'],
+      ['auth', "That's mine: 104.20.23.154"],
+      ['resolver', "Found it! It's 104.20.23.154"],
+    ]);
   });
 
   it('asks for an address by name when it has none', () => {

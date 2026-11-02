@@ -1,5 +1,5 @@
 import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, iso, ISO_X, ISO_Y, lerp, v3, type Pt, type Vec3 } from './project';
-import { box, leaf, slab, tile } from './prims';
+import { leaf, line, slab, tile } from './prims';
 import { el } from './svg';
 import type { Step } from './story';
 import { lookupBeats } from './timeline';
@@ -121,7 +121,9 @@ export function drawShelf(parent: SVGGElement, c: Vec3, top: Vec3, s: Lookup, k:
 
   const slide = easeOutBack(clamp01((k - b.found) / 0.1)) * (1 - easeInOut(clamp01((k - 0.88) / 0.12)));
   if (slide > 0.01) {
-    box(parent, { x: c.x - SERVER.slotHalf, y: front, z: slotZ - 0.17, w: SERVER.slotHalf * 2, d: 1.5 * slide, h: 0.34, color: '#c9b79c' });
+    const d = 1.5 * slide;
+    slab(parent, { x: c.x - SERVER.slotHalf, y: front, z: slotZ - 0.17, w: SERVER.slotHalf * 2, d, h: 0.34, r: Math.min(0.08, d / 2), color: PAPER });
+    line(parent, v3(c.x - 0.2, front + d, slotZ), v3(c.x + 0.2, front + d, slotZ), { class: 'dev-port' });
   }
   // The path, on its way down the slots and then on the drawer.
   if (k < b.lift) {
