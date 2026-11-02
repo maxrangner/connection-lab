@@ -656,8 +656,8 @@ function setAttack(id: Attack, on: boolean): void {
   preview();
   sound.play(on ? 'pop' : 'thud');
 }
-/** Where to find me. A link goes here once its address is known; nothing shows a dead one. GitHub is the profile until the repo is out. */
-const LINKS = [{ label: 'GitHub', url: 'https://github.com/maxrangner' }];
+/** Where to find me. A link goes here once its address is known; nothing shows a dead one. */
+const LINKS = [{ label: 'GitHub', url: 'https://github.com/maxrangner/connection-lab' }];
 /** True of the page as it stands. Anything that stores more or sends anything, cookies included, has to change this first. */
 const PRIVACY = "This page sets no cookies and doesn't track you. Your theme, sound, Quiet devices and Setup choices are saved in this browser only and are never sent anywhere. The site hosting the page may have its own rules.";
 const aboutBtn = document.createElement('button');
