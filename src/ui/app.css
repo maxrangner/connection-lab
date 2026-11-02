@@ -1280,27 +1280,40 @@ button.action-menu[hidden] {
 /* An item with more behind it: the arrow beside it opens a popup of its own. */
 .menu-row {
   display: flex;
-  align-items: stretch;
-  gap: 4px;
+  align-items: center;
+  gap: 6px;
 }
 
-.menu-row .menu-item {
+.menu-list .menu-row .menu-item {
   flex: 1;
   min-width: 0;
 }
 
 .menu-row button.smart-menu {
+  position: relative;
   flex: none;
-  width: 44px;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
   min-width: 0;
-  padding: 0;
+  margin-right: 4px;
+  padding: 0 0 3px 1px;
   font: inherit;
-  font-size: 24px;
+  font-size: 22px;
+  line-height: 1;
   color: var(--ink);
   cursor: pointer;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 10px;
+  background: var(--paper-2);
+  border: none;
+  border-radius: 50%;
+}
+
+/* Small to look at, big to hit */
+.menu-row button.smart-menu::before {
+  content: '';
+  position: absolute;
+  inset: -7px -5px;
 }
 
 .menu-row button.smart-menu.on {
@@ -1432,9 +1445,74 @@ button.action-menu[data-points='right']::after {
   flex-direction: column;
   flex-wrap: nowrap;
   gap: 2px;
+  /* Centred, a list too long for the screen would push its top out of reach. */
+  justify-content: flex-start;
   width: 300px;
-  max-height: calc(100dvh - 96px);
   overflow-y: auto;
+}
+
+/* More of the list this way: the end of the view fades out under a small arrow. */
+.menu-more {
+  position: sticky;
+  z-index: 1;
+  flex: none;
+  height: 0;
+  margin: -1px -8px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.menu-more.up {
+  top: -8px;
+}
+
+.menu-more.down {
+  bottom: -8px;
+}
+
+.more-up > .menu-more.up,
+.more-down > .menu-more.down {
+  opacity: 1;
+}
+
+.menu-more::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 40px;
+  background: linear-gradient(to top, var(--surface) 35%, transparent);
+}
+
+.menu-more.up::before {
+  background: linear-gradient(to bottom, var(--surface) 35%, transparent);
+}
+
+.menu-more.down::before {
+  bottom: 0;
+}
+
+.menu-more::after {
+  content: '';
+  position: absolute;
+  left: calc(50% - 7px);
+  width: 14px;
+  height: 14px;
+  box-sizing: border-box;
+  border-right: 3px solid var(--ink);
+  border-bottom: 3px solid var(--ink);
+  border-radius: 2px;
+}
+
+.menu-more.up::after {
+  top: 8px;
+  transform: rotate(-135deg);
+}
+
+.menu-more.down::after {
+  bottom: 10px;
+  transform: rotate(45deg);
 }
 
 .menu-list .menu-item {

@@ -343,7 +343,7 @@ const SETUP: { id: Setting; label: string; hint: string; draw: (g: SVGGElement) 
   { id: 'dhcp', label: 'New on the network', hint: 'Asks for an address first', draw: drawTag, span: 34 },
   { id: 'cold', label: "DNS doesn't know it yet", hint: 'Must ask around for the name', draw: drawSnowflake, span: 34 },
   { id: 'thin', label: 'Slow home line', hint: 'Big downloads lose packets', draw: drawPipe, span: 34 },
-  { id: 'smart', label: 'Smart home', hint: 'A sensor that reports to your apps', draw: drawThermometer, span: 34 },
+  { id: 'smart', label: 'Smart home', hint: 'A sensor that reports to apps', draw: drawThermometer, span: 34 },
   { id: 'quiet', label: 'Quiet devices', hint: 'No speech bubbles', draw: drawHush, span: 34 },
 ];
 /** The lines that go when the smart home changes. */

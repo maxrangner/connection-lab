@@ -60,6 +60,16 @@ export class Menu<T extends string> {
       this.items.set(item.id, b);
       this.panel.appendChild(b);
     }
+    if (this.isList) {
+      for (const end of ['up', 'down']) {
+        const more = document.createElement('div');
+        more.className = `menu-more ${end}`;
+        more.setAttribute('aria-hidden', 'true');
+        if (end === 'up') this.panel.prepend(more);
+        else this.panel.append(more);
+      }
+      this.panel.addEventListener('scroll', () => this.showMore(), { passive: true });
+    }
     root.appendChild(this.panel);
   }
 
@@ -71,6 +81,17 @@ export class Menu<T extends string> {
 
   get isOpen(): boolean {
     return !this.panel.hidden;
+  }
+
+  private get isList(): boolean {
+    return this.panel.classList.contains('menu-list');
+  }
+
+  /** A phone shows no scroll bar, so a list says itself when there is more of it, and which way. */
+  private showMore(): void {
+    const { scrollTop, scrollHeight, clientHeight } = this.panel;
+    this.panel.classList.toggle('more-up', scrollTop > 2);
+    this.panel.classList.toggle('more-down', scrollTop + clientHeight < scrollHeight - 2);
   }
 
   setOpen(open: boolean): void {
@@ -114,9 +135,12 @@ export class Menu<T extends string> {
     const w = this.panel.offsetWidth;
     const left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2));
     this.panel.style.left = `${left.toFixed(0)}px`;
+    // A bar in two rows leaves less room than a full screen: a long list stops at what is really there.
+    if (this.isList) this.panel.style.maxHeight = `${(Math.max(r.top, window.innerHeight - r.bottom) - 18).toFixed(0)}px`;
     const h = this.panel.offsetHeight;
     const above = r.top - h - 18 >= 0 || r.bottom + 10 + h > window.innerHeight;
     this.panel.style.bottom = above ? `${(window.innerHeight - r.top + 10).toFixed(0)}px` : 'auto';
     this.panel.style.top = above ? 'auto' : `${(r.bottom + 10).toFixed(0)}px`;
+    if (this.isList) this.showMore();
   }
 }
