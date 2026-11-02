@@ -1595,7 +1595,9 @@ export class NetworkScene {
     for (const p of flow) {
       if (v < p.t0 || v >= p.t1) continue;
       const data = p.trip.dataBytes > 0;
-      const color = traffic ? this.ownerColor(p.trip.client) : this.story.call ? (p.trip.outward ? VOICE_OF_CALLER : VOICE_OF_FRIEND) : !data ? COLOR.tcp : p.trip.locked ? LOCKED : COLOR.app;
+      // A call has two sides: whoever answers it speaks in the friend's colour, in a crowd as much as alone.
+      const answering = p.trip.chapter === 'call' && !p.trip.outward;
+      const color = answering ? VOICE_OF_FRIEND : traffic ? this.ownerColor(p.trip.client) : this.story.call ? (p.trip.outward ? VOICE_OF_CALLER : VOICE_OF_FRIEND) : !data ? COLOR.tcp : p.trip.locked ? LOCKED : COLOR.app;
       const size = data ? 0.9 : 0.5;
       const end = p.hops[p.hops.length - 1]!;
       const at = this.blockAt(p, v);
