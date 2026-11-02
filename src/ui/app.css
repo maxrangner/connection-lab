@@ -644,6 +644,19 @@ body {
   fill: #ffffff;
 }
 
+.screen-call rect {
+  fill: #2f9e6a;
+}
+
+.screen-call .handset {
+  fill: #fffdf8;
+}
+
+.screen-call-name {
+  font-weight: 700;
+  fill: #fffdf8;
+}
+
 .screen-fail {
   font-size: 20px;
   font-weight: 800;

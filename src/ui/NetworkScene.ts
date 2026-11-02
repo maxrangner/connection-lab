@@ -2,13 +2,13 @@ import type { Action } from '../sim';
 import { el, setAttr, setText } from './svg';
 import { box, groundShadow, line, panel, rbox, slab, tile, tiles } from './prims';
 import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, easeOutBounce, iso, isoV, lerp, lerpV, U, unproject, v3, type Pt, type Vec3 } from './project';
-import { drawSatellite, drawScissors, drawShield, drawSpyglass } from './icons';
+import { drawHandset, drawSatellite, drawScissors, drawShield, drawSpyglass } from './icons';
 import { shade } from './shade';
 import type { Details, PartKey, Row, Story, Trip, Wrap } from './story';
 import { bandPoint, pageContent, Paper, PAPER_H, PAPER_W, photoContent } from './paper';
 import { screenAt, type Readout } from './readout';
 import { BOOK, drawBook, drawShelf, SERVER } from './stations';
-import { addressBefore, ATTACKER_KINDS, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, laneShare, LEVEL, lockPose, NO_LOCK, NOTE_LIFE, namedAcks, packetPos, packetPose, pageParts, segAt, swapLanding, swapMoment, travelPath, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, type FlowHop, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
+import { addressBefore, ATTACKER_KINDS, callSpan, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, laneShare, LEVEL, lockPose, NO_LOCK, NOTE_LIFE, namedAcks, packetPos, packetPose, pageParts, segAt, swapLanding, swapMoment, travelPath, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, type FlowHop, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
 
 /** A cable cut from one moment of a run to another; `to` left out while it stays cut. Cut before a run, it is from -Infinity. */
 export interface CutSpan {
@@ -199,6 +199,8 @@ interface Screen {
   dnsAddr: SVGTextElement;
   fail: SVGTextElement;
   photo: SVGImageElement;
+  call: SVGGElement;
+  callName: SVGTextElement;
 }
 
 export interface Camera {
@@ -1009,8 +1011,14 @@ export class NetworkScene {
     }
     const fail = el('text', { x: w / 2, y: h / 2, dy: '0.35em', class: 'screen-fail', 'text-anchor': 'middle', opacity: 0 }, face);
     fail.textContent = '✗';
+    // On a call: a handset and who is on the line, over whatever else the screen shows.
+    const call = el('g', { class: 'screen-call', opacity: 0 }, face);
+    el('rect', { x: 0, y: 0, width: w, height: h, rx: 3 }, call);
+    const side = Math.min(w, h);
+    drawHandset(el('g', { transform: `translate(${(w / 2).toFixed(2)} ${(h * 0.42).toFixed(2)}) scale(${((side * 0.6) / 64).toFixed(3)}) translate(-7 -6)` }, call));
+    const callName = el('text', { x: w / 2, y: h * 0.84, 'font-size': (side * 0.2).toFixed(2), class: 'screen-call-name', 'text-anchor': 'middle' }, call);
     el('rect', { x: 0, y: 0, width: w, height: h, rx: 3, class: 'dev-line dev-glass-line' }, face);
-    return { face, page, title, dns, dnsName: name, dnsAddr, fail, photo };
+    return { face, page, title, dns, dnsName: name, dnsAddr, fail, photo, call, callName };
   }
 
   /** A rounded plate on a device's face, or a hole in it: `at` is its top corner on the left, seen from in front of that face. */
@@ -1074,11 +1082,11 @@ export class NetworkScene {
         return screen;
       }
       case 'peer': {
-        // The friend's phone, far away: the same phone with nothing on its screen.
+        // The friend's phone, far away: the same phone, with nothing on its screen but a call.
         this.standingPhone(g, x, y, color);
-        this.plate(g, '+y', v3(x - 0.6, y + 0.1, 2.18), 1.2, 2.0, 'dev-glass');
+        const screen = this.buildScreen(g, iso(x - 0.6, y + 0.1, 2.18), 1.2 * U, 2.0 * U);
         this.plate(g, '+y', v3(x - 0.16, y + 0.1, 2.13), 0.32, 0.07, 'dev-notch');
-        return null;
+        return screen;
       }
       case 'sensor': {
         // A little box on the shelf: a lens, a light, and slots for the air it measures.
@@ -1272,6 +1280,11 @@ export class NetworkScene {
       setText(screen.dnsName, known.site);
       setText(screen.dnsAddr, known.ip);
       setAttr(screen.dns, 'opacity', '1');
+    }
+    for (const [id, screen] of this.screens) {
+      const call = callSpan(tl, id);
+      setAttr(screen.call, 'opacity', call && v >= call.from && v <= call.to ? '1' : '0');
+      if (call) setText(screen.callName, call.heardBy === 'friend' ? 'You' : 'Sam');
     }
     if (v < 0) return;
     for (const id of this.story.clients) {

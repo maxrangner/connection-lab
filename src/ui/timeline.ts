@@ -956,6 +956,13 @@ export function trayOpacity(tl: Timeline, device: string, v: number): number {
 }
 
 /** What the current chapter is at v (the last one after the end). */
+/** How long a phone is on a call: from when it first hears the other side until the call is over, for both at once. A phone that hears nothing is on no call. */
+export function callSpan(tl: Timeline, device: string): { from: number; to: number; heardBy: Note['heardBy'] } | null {
+  const heard = tl.notes.filter((n) => n.device === device);
+  if (!heard.length) return null;
+  return { from: Math.min(...heard.map((n) => n.t)), to: Math.max(...tl.notes.map((n) => n.t)), heardBy: heard[0]!.heardBy };
+}
+
 export function chapterAt(tl: Timeline, v: number): Trip['chapter'] | null {
   if (v < 0 || !tl.segs.length) return null;
   return (segAt(tl, v)?.seg ?? tl.segs[tl.segs.length - 1]!).trip.chapter;
