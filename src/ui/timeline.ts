@@ -479,7 +479,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
     ...(story.scan ? [{ device: story.scan.device, readout: scanReadout(story.scan, times, t) }] : []),
   ];
   for (const f of [...readout.flags, ...joinReadouts.flatMap((x) => x.readout.flags)]) cues.push({ t: f.t, sound: 'found' });
-  const speech = [...buildSpeech(story, segs), ...(story.listener ? listenerSpeech(story.listener, story.heard, heardAt) : [])];
+  const speech = [...buildSpeech(story, segs, t), ...(story.listener ? listenerSpeech(story.listener, story.heard, heardAt) : [])];
   return { segs, startsAt: story.startsAt, reactions, notes, readout, joinReadouts, attackReadouts, speech, keys, halves, real: realClock(segs, story), cues, settled: t, total: Math.max(t, ...speech.map((b) => b.t1)), pos, kind, trayZ, isRouter, sky, air, client: story.client, pages, answers, reveals, laid, stretch };
 }
 

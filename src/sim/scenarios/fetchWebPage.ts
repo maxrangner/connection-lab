@@ -593,7 +593,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
       },
       {
         id: 'resolver',
-        label: 'DNS phone book',
+        label: 'DNS resolver',
         sublabel: ADDR.resolver.ip,
         kind: 'dns-resolver',
         layout: { x: 1480, y: 205 },
