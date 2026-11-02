@@ -66,8 +66,10 @@ function pointAlong(path: Vec3[], t: number): { p: Vec3; ux: number; uy: number 
   }
   return { p: path[0] ?? v3(0, 0, 0), ux: 1, uy: 0 };
 }
-/** A music note, as the two halves of its head and its stem with a flag, so it can break down the middle. */
-const NOTE_HEAD_LEFT = 'M0 3 C-3 3 -9 5 -9 9 C-9 12 -4 13 0 12 Z';
+/** A music note: its head and its stem with a flag. The head is one outline, as two halves side by side show a hairline between them. */
+const NOTE_HEAD = 'M0 3 C-3 3 -9 5 -9 9 C-9 12 -4 13 0 12 C3 11 7 8 7 5 C7 3 3 3 0 3 Z';
+/** The same head as two halves, for a note that breaks down the middle. */
+const NOTE_HEAD_LEFT ='M0 3 C-3 3 -9 5 -9 9 C-9 12 -4 13 0 12 Z';
 const NOTE_HEAD_RIGHT = 'M0 3 L0 12 C3 11 7 8 7 5 C7 3 3 3 0 3 Z';
 const NOTE_STEM = 'M7 5 V-16 C8 -10 14 -9 14 -3';
 /** How far to the side of its phone a note drifts, in SVG units. */
@@ -300,6 +302,7 @@ export class NetworkScene {
   private quiet = false;
   /** The bubbles as last drawn, so they are not drawn again every frame. */
   private speechDrawn = '';
+  private speechNodes: { g: SVGGElement; shape: SVGPathElement }[] = [];
   /** The side of its device each button keeps during this run. */
   private actionSides = new Map<string, ActionSide>();
   /** What the stranger has printed, while it has. */
@@ -962,7 +965,8 @@ export class NetworkScene {
     this.viewY = c.cy - h / 2;
     this.viewW = w;
     this.viewScale = c.scale;
-    const box = `${this.viewX.toFixed(1)} ${this.viewY.toFixed(1)} ${w.toFixed(1)} ${h.toFixed(1)}`;
+    // Fine enough for the closest zoom, where a tenth of a unit is most of a pixel and a pan would go in uneven steps.
+    const box = `${this.viewX.toFixed(3)} ${this.viewY.toFixed(3)} ${w.toFixed(3)} ${h.toFixed(3)}`;
     setAttr(this.svg, 'viewBox', box);
     setAttr(this.over, 'viewBox', box);
   }
@@ -1418,21 +1422,30 @@ export class NetworkScene {
       const y = Math.min(s.sy + (flagged ? SPEECH_UNDER_FLAG + (flagged - 1) * FLAG_ROW : SPEECH_UNDER_NAME), lowest);
       return { b, s, w, x, y, size: easeOutBack(clamp01((v - b.t0) / 0.25)), op: clamp01((b.t1 - v) / 0.25) };
     });
-    const drawn = looks.map(({ b, x, y, size, op }) => `${b.device} ${b.text} ${x.toFixed(0)} ${y.toFixed(0)} ${size.toFixed(2)} ${op.toFixed(2)}`).join('|');
-    if (drawn === this.speechDrawn) return;
-    this.speechDrawn = drawn;
-    this.speechLayer.replaceChildren();
-    for (const { b, s, w, x, y, size, op } of looks) {
-      const g = el('g', { class: 'mood', opacity: op.toFixed(3), transform: `translate(${x.toFixed(1)} ${y.toFixed(1)}) scale(${(size * big).toFixed(3)})` }, this.speechLayer);
-      const tip = Math.max(-w / 2 + 28, Math.min(w / 2 - 28, (s.sx - x) / big));
-      el('path', { d: `M${-w / 2 + 16} 8 H${tip - 9} L${tip} -2 L${tip + 9} 8 H${w / 2 - 16} a16 16 0 0 1 0 32 H${-w / 2 + 16} a16 16 0 0 1 0 -32 Z`, class: 'speech-bg' }, g);
-      el('text', { y: 24, 'text-anchor': 'middle', dy: '0.36em', class: 'speech-text' }, g).textContent = b.text;
+    // Made anew only for a new line. A bubble held at the edge of the view moves with the camera, so where it sits is set every frame:
+    // comparing that rounded, to redraw less, left it riding with the table and then jumping back, by whole units, which zoomed in is many pixels.
+    const drawn = looks.map(({ b }) => `${b.device} ${b.text}`).join('|');
+    if (drawn !== this.speechDrawn) {
+      this.speechDrawn = drawn;
+      this.speechLayer.replaceChildren();
+      this.speechNodes = looks.map(({ b }) => {
+        const g = el('g', { class: 'mood' }, this.speechLayer);
+        const shape = el('path', { class: 'speech-bg' }, g);
+        el('text', { y: 24, 'text-anchor': 'middle', dy: '0.36em', class: 'speech-text' }, g).textContent = b.text;
+        return { g, shape };
+      });
     }
+    looks.forEach(({ s, w, x, y, size, op }, i) => {
+      const { g, shape } = this.speechNodes[i]!;
+      setAttr(g, 'opacity', op.toFixed(3));
+      setAttr(g, 'transform', `translate(${x.toFixed(2)} ${y.toFixed(2)}) scale(${(size * big).toFixed(3)})`);
+      const tip = Math.max(-w / 2 + 28, Math.min(w / 2 - 28, (s.sx - x) / big));
+      setAttr(shape, 'd', `M${-w / 2 + 16} 8 H${(tip - 9).toFixed(2)} L${tip.toFixed(2)} -2 L${(tip + 9).toFixed(2)} 8 H${w / 2 - 16} a16 16 0 0 1 0 32 H${-w / 2 + 16} a16 16 0 0 1 0 -32 Z`);
+    });
   }
 
   private wholeNote(g: SVGGElement): void {
-    el('path', { d: NOTE_HEAD_LEFT, class: 'note-solid' }, g);
-    el('path', { d: NOTE_HEAD_RIGHT, class: 'note-solid' }, g);
+    el('path', { d: NOTE_HEAD, class: 'note-solid' }, g);
     el('path', { d: NOTE_STEM, class: 'note-line' }, g);
   }
 
