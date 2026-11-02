@@ -203,6 +203,10 @@ export interface Story {
   joiners: string[];
   /** A sensor's reading, published to whoever listens, rather than one device's job. */
   reading: boolean;
+  /** The QoS it was really published at. */
+  qos: 0 | 1 | 2;
+  /** The apps the broker knew to be gone when a reading came, and whether it kept the reading for them. */
+  away: { device: string; kept: boolean }[];
   /** The sim time the story starts at: what came before is how things stood. */
   startsAt: number;
   /** The attackers sending packets this run. Whatever they send runs alongside the rest from the start. */
@@ -253,6 +257,9 @@ export interface Story {
   /** The same for each ping or trace added on another device. */
   joinProbes: { device: string; probe: Probe }[];
 }
+
+/** A link this slow (one-way seconds) is drawn as a radio hop up to a satellite. */
+export const SLOW_DELAY = 0.1;
 
 const WRAP_OF_LAYER: Record<number, Wrap | undefined> = { 4: 'l4', 3: 'ip', 2: 'eth' };
 
@@ -709,6 +716,12 @@ function pageTitle(r: SimResult, client: string): string | null {
   return /<title>([^<]*)<\/title>/i.exec(text)?.[1]?.trim() || 'example.com';
 }
 
+/** The QoS the sensor put on what it published. */
+function readingQos(r: SimResult): 0 | 1 | 2 {
+  const sent = r.events.find((e) => e.type === 'app' && e.action === 'mqtt-publish');
+  return sent?.type === 'app' ? (Number(sent.info?.qos) as 0 | 1 | 2) : 0;
+}
+
 /**
  * The call's sound: the caller's own clip, and what it heard of the friend's, packet by packet from the real bytes of each
  * 'rtp-received' (the friend's clip is known, so a packet that never came is a null the UI can show as a hole).
@@ -847,6 +860,8 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
     clients,
     joiners,
     reading: r.scenario.quietUntil !== undefined,
+    qos: readingQos(r),
+    away: r.events.flatMap((e) => (e.type === 'app' && (e.action === 'mqtt-held' || e.action === 'mqtt-missed') ? [{ device: String(e.info?.client), kept: e.action === 'mqtt-held' }] : [])),
     startsAt: r.scenario.quietUntil ?? 0,
     attackers,
     ...(listener ? { listener } : {}),

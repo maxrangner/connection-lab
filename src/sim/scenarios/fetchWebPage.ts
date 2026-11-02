@@ -200,6 +200,8 @@ export type { Action, Job };
 
 /** When a reading is taken, in seconds: long after the sensor and the apps are connected, even over a satellite. */
 export const READING_AT = 20;
+/** One-way seconds on the line out of the house, as long as nobody has stretched it. */
+export const WAN_DELAY = 0.002;
 /**
  * A line that is cut as a reading is taken has been out for a while: from here. Long enough before it for keep-alive to find
  * out on both sides, so a device on that line is properly gone by then, and not just late.
@@ -692,8 +694,8 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
       opts.slow
         ? { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: 25e6, delay: 0.28, label: 'Satellite to ISP · 25 Mbit/s · 280 ms', name: 'the satellite link' }
         : opts.thin
-          ? { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: THIN_BPS, delay: opts.wanDelay ?? 0.002, label: `DSL to ISP · 20 Mbit/s · ${Math.round((opts.wanDelay ?? 0.002) * 1000)} ms`, name: 'the DSL line to the ISP', queue: THIN_QUEUE }
-          : { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: 1e9, delay: opts.wanDelay ?? 0.002, label: `Fiber to ISP · 1 Gbit/s · ${Math.round((opts.wanDelay ?? 0.002) * 1000)} ms`, name: 'the fiber line to the ISP' },
+          ? { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: THIN_BPS, delay: opts.wanDelay ?? WAN_DELAY, label: `DSL to ISP · 20 Mbit/s · ${Math.round((opts.wanDelay ?? WAN_DELAY) * 1000)} ms`, name: 'the DSL line to the ISP', queue: THIN_QUEUE }
+          : { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: 1e9, delay: opts.wanDelay ?? WAN_DELAY, label: `Fiber to ISP · 1 Gbit/s · ${Math.round((opts.wanDelay ?? WAN_DELAY) * 1000)} ms`, name: 'the fiber line to the ISP' },
       { id: 'bb1', a: 'isp.p1', b: 'resolver.eth0', bitsPerSecond: 1e10, delay: 0.003, label: 'Backbone · 10 Gbit/s · 3 ms', name: 'a backbone link' },
       { id: 'bb3', a: 'isp.p3', b: 'vpn.eth0', bitsPerSecond: 1e10, delay: 0.005, label: 'Backbone · 10 Gbit/s · 5 ms', name: 'a backbone link' },
       bots.length

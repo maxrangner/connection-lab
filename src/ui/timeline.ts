@@ -4,7 +4,7 @@ import type { Parts } from './paper';
 import { clamp01, easeIn, easeInOut, easeOutBack, easeOutBounce, lerp, lerpV, v3, type Vec3 } from './project';
 import { buildReadout, listenReadout, scanReadout, type Readout } from './readout';
 import { buildSpeech, listenerSpeech, type Bubble } from './speech';
-import type { Details, Frame, Seen, Step, Story, Trip, Wrap } from './story';
+import { SLOW_DELAY, type Details, type Frame, type Seen, type Step, type Story, type Trip, type Wrap } from './story';
 
 /**
  * Story → visual timeline. Every trip's steps get a start and end in visual seconds, one packet at a time.
@@ -215,8 +215,6 @@ const LEVEL_GAP = 1.15;
 const PORT = 2.4;
 /** Seconds of visual time per step, the first time it happens. */
 const DUR: Record<TStep['kind'], number> = { appear: 0.9, lock: 1.5, unlock: 1.3, wrap: 0.85, unwrap: 0.85, nat: 2.6, travel: 1.9, read: 1.2, lookup: 4.2, lost: 0, wait: 2.8, flow: 0 };
-/** A link this slow (one-way seconds) is drawn as a radio hop up to a satellite. */
-export const SLOW_DELAY = 0.1;
 export const SKY_HEIGHT = 9;
 /** Seconds the VPN box takes to close or open, the first time. */
 const VPN_BOX = 2.6;
