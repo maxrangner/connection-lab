@@ -145,7 +145,7 @@ function opening(story: Story, kindOf: Map<string, string>): string | null {
   if (story.reading) return null;
   if (story.probe) return story.probe.kind === 'ping' ? `Is ${story.probe.to} there?` : `What's the way to ${story.probe.to}?`;
   const how = story.vpn ? ' through my VPN' : kindOf.get(story.client) === 'phone' ? ' over Wi-Fi' : '';
-  if (story.call) return `I want to call Sam${how}`;
+  if (story.voice) return `I want to call Sam${how}`;
   return `I want to ${story.photo ? 'get a photo' : `open ${story.site}`}${how}`;
 }
 
@@ -169,12 +169,12 @@ function attackPlans(story: Story, kindOf: Map<string, string>): [string, string
 /** What the client can say of an attack at the end, even if it made no difference. */
 function attackOutcome(story: Story, flooded: boolean, hurt: boolean, jammed: boolean): string | null {
   const done = story.probe?.done;
-  const finished = story.call || story.fetched.includes(story.client) || story.told.length > 0 || (done ? (story.probe!.kind === 'ping' ? done.received === done.sent : done.reached) : false);
+  const finished = !!story.voice || story.fetched.includes(story.client) || story.told.length > 0 || (done ? (story.probe!.kind === 'ping' ? done.received === done.sent : done.reached) : false);
   if (!flooded) return finished && !hurt ? "I didn't notice a thing" : null;
   if (jammed) return story.fetched.includes(story.client) ? 'Got it, now the flood is over' : 'That flood got in my way';
   // What went wrong then was something else, and the client's own last line says so.
   if (hurt || !finished) return null;
-  if (story.call) return NO_FLOOD_ON_CALL;
+  if (story.voice) return NO_FLOOD_ON_CALL;
   return story.vpn && !story.probe ? 'The flood missed me: I went another way' : 'That flood never touched me';
 }
 
@@ -204,8 +204,8 @@ function closing(story: Story, { many, dropped, noisy, soundLost }: Outcome): st
     if (!done.reached) return "I couldn't get all the way there";
     return story.vpn ? 'The tunnel hid the stops in between' : "That's every stop that answered!";
   }
-  if (story.call) {
-    if (!story.voice?.heard.some(Boolean)) return "I couldn't reach Sam";
+  if (story.voice) {
+    if (!story.voice.heard.some(Boolean)) return "I couldn't reach Sam";
     return soundLost || story.voice.heard.includes(null) ? 'Lost sound stays lost. Bye!' : 'Every sound got through. Bye!';
   }
   const thing = story.photo ? 'photo' : 'page';
@@ -309,7 +309,7 @@ export function buildSpeech(story: Story, segs: Seg[], settled = segs[segs.lengt
         if (p.trip.chapter === 'call') callers.add(p.trip.client);
       }
       if (atFlood(p.trip) && once('line full')) say(webServer, p.t1, 'So much junk! My line is full');
-      if (jammed && !story.call && !story.probe && !story.reading && p.trip.retry && p.trip.client === story.client && once('stuck')) say(story.client, p.t0, `Where's my ${story.photo ? 'photo' : 'page'}? It's stuck`);
+      if (jammed && !story.voice && !story.probe && !story.reading && p.trip.retry && p.trip.client === story.client && once('stuck')) say(story.client, p.t0, `Where's my ${story.photo ? 'photo' : 'page'}? It's stuck`);
     }
     if (s.kind === 'read') arrived(seg.trip, seg.t1);
     for (const w of [...(seg.waits ?? []).map((x) => ({ step: x.step, t0: x.t0 })), ...(s.kind === 'wait' ? [{ step: s, t0: seg.t0 }] : [])]) {
@@ -366,7 +366,7 @@ export function buildSpeech(story: Story, segs: Seg[], settled = segs[segs.lengt
   } else if (end !== undefined) {
     const outcome = story.attackers.length ? attackOutcome(story, flooded, hurt.has(story.client), jammed) : null;
     const last = lastAt.get(story.client) ?? end;
-    const at = story.fetched.includes(story.client) ? got || end : story.call || outcome ? last : end;
+    const at = story.fetched.includes(story.client) ? got || end : story.voice || outcome ? last : end;
     // Someone who joined in ends the run if it finished; anyone else gets to the end on the client's word.
     const others = story.joiners.filter((d) => lastAt.has(d) && !hurt.has(d));
     const before = losses.filter((l) => l.at < got);

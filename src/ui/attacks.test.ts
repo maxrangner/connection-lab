@@ -1,12 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { fetchWebPage, runScenario, TCP_RST, type Attack, type Job, type SimResult } from '../sim';
-import { buildStory, type Story, type Trip } from './story';
+import { buildStory, unrolled, type Story } from './story';
 import { buildTimeline, crossings, joinAt, namedAcks, type Timeline } from './timeline';
 
 const CLEAN = { randomLoss: 0, manual: [] };
 const JOBS = { page: {}, photo: { site: 'httpbin.org' }, call: { call: true }, ping: { probe: 'ping' }, trace: { probe: 'traceroute' } } as const;
 const sim = (opts: object): SimResult => runScenario(fetchWebPage(opts), { seed: 1, faults: CLEAN, maxTime: 1000 });
-const everyPacket = (t: Trip): Trip[] => (t.steps.some((s) => s.kind === 'flow') ? t.steps.flatMap((s) => (s.kind === 'flow' ? s.packets.flatMap(everyPacket) : [])) : [t]);
 const run = (opts: object): { s: Story; tl: Timeline } => {
   const s = buildStory(sim(opts));
   return { s, tl: buildTimeline(s) };
@@ -173,7 +172,7 @@ describe('attackers together', () => {
       for (const job of Object.keys(JOBS) as Job[]) {
         for (const setup of [{}, { https: true }, { from: 'phone' }]) {
           const { s, tl } = run({ ...JOBS[job], ...setup, attacks });
-          const onCables = s.trips.flatMap(everyPacket).flatMap((t) => t.steps.flatMap((x) => (x.kind === 'travel' || x.kind === 'lost' ? [`${t.packetId}@${x.link} ${x.at}`] : [])));
+          const onCables = s.trips.flatMap(unrolled).flatMap((t) => t.steps.flatMap((x) => (x.kind === 'travel' || x.kind === 'lost' ? [`${t.packetId}@${x.link} ${x.at}`] : [])));
           expect(crossings(tl).map((c) => `${c.trip.packetId}@${c.link} ${c.at}`).sort()).toEqual(onCables.sort());
           expect(tl.segs.every((x) => x.t1 >= x.t0)).toBe(true);
         }
@@ -199,7 +198,7 @@ describe('attackers together', () => {
     expect(s.joiners).toEqual(['phone']);
     expect(s.clients).toEqual(['laptop', 'scanner', 'phone']);
     expect(s.joinProbes[0]?.probe.kind).toBe('ping');
-    expect(s.trips.flatMap(everyPacket).filter((t) => t.chapter === 'ping').every((t) => t.client === 'phone')).toBe(true);
+    expect(s.trips.flatMap(unrolled).filter((t) => t.chapter === 'ping').every((t) => t.client === 'phone')).toBe(true);
   });
 
   it('a card dropped in during an attack starts then, and what was on screen stays', () => {

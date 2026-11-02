@@ -1,14 +1,14 @@
 import type { Action } from '../sim';
 import { el, setAttr, setText } from './svg';
 import { box, groundShadow, line, panel, rbox, slab, tile, tiles } from './prims';
-import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, easeOutBounce, iso, isoV, lerp, U, unproject, v3, type Pt, type Vec3 } from './project';
+import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, easeOutBounce, iso, isoV, lerp, lerpV, U, unproject, v3, type Pt, type Vec3 } from './project';
 import { drawSatellite, drawScissors, drawShield, drawSpyglass } from './icons';
 import { shade } from './shade';
 import type { Details, PartKey, Row, Story, Trip, Wrap } from './story';
 import { bandPoint, pageContent, Paper, PAPER_H, PAPER_W, photoContent } from './paper';
 import { screenAt, type Readout } from './readout';
 import { BOOK, drawBook, drawShelf, SERVER } from './stations';
-import { addressBefore, ATTACKER_KINDS, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, laneShare, LEVEL, lockPose, NO_LOCK, NOTE_LIFE, namedAcks, packetPos, packetPose, pageParts, segAt, swapLanding, swapMoment, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowHop, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
+import { addressBefore, ATTACKER_KINDS, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, laneShare, LEVEL, lockPose, NO_LOCK, NOTE_LIFE, namedAcks, packetPos, packetPose, pageParts, segAt, swapLanding, swapMoment, travelPath, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, type FlowHop, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
 
 /** A cable cut from one moment of a run to another; `to` left out while it stays cut. Cut before a run, it is from -Infinity. */
 export interface CutSpan {
@@ -60,7 +60,7 @@ function pointAlong(path: Vec3[], t: number): { p: Vec3; ux: number; uy: number 
     if (d <= lens[i]! || i === lens.length - 1) {
       const q = lens[i] ? clamp01(d / lens[i]!) : 0;
       const ground = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-      return { p: v3(lerp(a.x, b.x, q), lerp(a.y, b.y, q), lerp(a.z, b.z, q)), ux: (b.x - a.x) / ground, uy: (b.y - a.y) / ground };
+      return { p: lerpV(a, b, q), ux: (b.x - a.x) / ground, uy: (b.y - a.y) / ground };
     }
     d -= lens[i]!;
   }
@@ -179,7 +179,6 @@ interface Pose {
 
 interface DeviceView {
   id: string;
-  kind: string;
   g: SVGGElement;
   trays: SVGGElement;
   l4Name: SVGTextElement | null;
@@ -289,6 +288,8 @@ export class NetworkScene {
   private spyDrawn = '';
   /** What the packet was last drawn from: held still, it stays as it is. */
   private packetDrawn: { tl: Timeline; moment: string } | null = null;
+  /** The stage's size in pixels, until it changes: asking the browser every frame makes it lay the page out. */
+  private size: { w: number; h: number } | null = null;
   /** Your own devices are the ones you can start something on. */
   private yours = new Set<string>();
   /** The colour of each device's blocks, once several are at it. */
@@ -312,6 +313,11 @@ export class NetworkScene {
     // One picture to a screen reader: its words are labels on things, not text to read out.
     this.svg = el('svg', { class: 'net-stage', preserveAspectRatio: 'xMidYMid meet', role: 'img', 'aria-label': "A laptop and a phone, a home router, an internet provider's router, a DNS resolver and a web server, with the packets travelling between them" });
     host.appendChild(this.svg);
+    const resized = (): void => {
+      this.size = null;
+    };
+    new ResizeObserver(resized).observe(this.svg);
+    window.addEventListener('resize', resized);
     this.photo = el('image', { id: PHOTO_ID, width: PAPER_W, height: PAPER_H, preserveAspectRatio: 'xMidYMid slice' }, el('defs', {}, this.svg));
     const world = el('g', {}, this.svg);
     this.cables = el('g', { class: 'cables' }, world);
@@ -358,7 +364,7 @@ export class NetworkScene {
       const s = NAMED_BELOW.has(d.kind) ? iso(p.x + 0.7, p.y + 0.7, 0) : iso(p.x, p.y + 1.9, 0);
       const name = el('text', { class: 'device-name', 'text-anchor': 'middle', x: s.sx.toFixed(1), y: (s.sy + 26).toFixed(1) }, g);
       name.textContent = d.label;
-      this.devices.push({ id: d.id, kind: d.kind, g, trays, l4Name, l2Tray, l2Name, name });
+      this.devices.push({ id: d.id, g, trays, l4Name, l2Tray, l2Name, name });
     }
   }
 
@@ -430,13 +436,13 @@ export class NetworkScene {
 
   /** A link's path on screen, in SVG units. */
   linkPath(id: string): { sx: number; sy: number }[] {
-    return this.linkWorld(id).map((p) => iso(p.x, p.y, p.z));
+    return this.linkWorld(id).map((p) => isoV(p));
   }
 
   /** A spot a share t along a link, `lift` px above it; a satellite hop keeps to its first beam. */
   linkSpot(id: string, t: number, lift: number): { sx: number; sy: number } {
     const { p } = pointAlong(this.linkWorld(id), this.tl.sky.has(id) ? t * 0.56 : t);
-    const s = iso(p.x, p.y, p.z);
+    const s = isoV(p);
     return { sx: s.sx, sy: s.sy - lift };
   }
 
@@ -481,7 +487,7 @@ export class NetworkScene {
         const noisy = this.story.noise > 0;
         g.classList.toggle('noisy', noisy);
         g.setAttribute('data-air', l.id);
-        const pts = path.map((p) => iso(p.x, p.y, p.z));
+        const pts = path.map((p) => isoV(p));
         const points = pts.map((p) => `${p.sx.toFixed(1)},${p.sy.toFixed(1)}`).join(' ');
         el('polyline', { points, class: 'airwave-hit' }, g);
         el('polyline', { points, class: 'airwave' }, g);
@@ -503,7 +509,7 @@ export class NetworkScene {
           line(g, foot, top, { class: 'beam' });
           slab(g, { x: foot.x - 0.35, y: foot.y - 0.35, z: 0, w: 0.7, d: 0.7, h: 0.3, r: 0.35, color: DEVICE });
         }
-        const sat = iso(top.x, top.y, top.z);
+        const sat = isoV(top);
         drawSatellite(el('g', { transform: `translate(${sat.sx.toFixed(1)} ${sat.sy.toFixed(1)})` }, g));
         el('text', { x: sat.sx, y: sat.sy - 30, 'text-anchor': 'middle', class: 'link-note' }, g).textContent = formatWait(l.delay);
       } else if (this.cut.has(l.id)) {
@@ -567,12 +573,8 @@ export class NetworkScene {
     if (kind === 'vpn-server') return this.story.vpn;
     if (UPSTREAM_KINDS.has(kind)) return this.story.cold;
     // The friend's phone stands there for a call, also one dropped in partway.
-    if (kind === 'peer') return this.story.call || this.used.has(device);
+    if (kind === 'peer') return !!this.story.voice || this.used.has(device);
     return true;
-  }
-
-  private linkShown(device: string): boolean {
-    return this.shown(device);
   }
 
   /** How far a device has come onto the table at visual time v, from 0 to 1. */
@@ -744,7 +746,7 @@ export class NetworkScene {
 
   private fit(): void {
     // Everything a run could bring on: what the follow camera's scale comes from, so it holds still during a run.
-    this.overview = this.frameOf([...this.tl.pos.keys()].filter((id) => this.linkShown(id)), this.terminals());
+    this.overview = this.frameOf([...this.tl.pos.keys()].filter((id) => this.shown(id)), this.terminals());
     this.tableMade = '';
     this.frameTable();
   }
@@ -779,14 +781,19 @@ export class NetworkScene {
     return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
   }
 
+  private get stage(): { w: number; h: number } {
+    this.size ??= { w: this.svg.clientWidth || 1, h: this.svg.clientHeight || 1 };
+    return this.size;
+  }
+
   /** Screen pixels per SVG unit that fit the whole network, or this much of it. */
   private baseScale(o = this.overview): number {
-    return Math.min((this.svg.clientWidth || 1) / o.w, (this.svg.clientHeight || 1) / o.h);
+    return Math.min(this.stage.w / o.w, this.stage.h / o.h);
   }
 
   /** Following shows about 560–1100 units across, so the packet stays big on a phone too. */
   private followScale(): number {
-    const cw = this.svg.clientWidth || 1;
+    const cw = this.stage.w;
     return Math.max(this.baseScale() * 1.15, cw / Math.min(1100, Math.max(560, cw * 0.8)));
   }
 
@@ -819,8 +826,8 @@ export class NetworkScene {
 
   /** Between runs: the whole network, or on a tall phone screen closer on the laptop and the card so they are big enough to drag. */
   overviewCamera(): Camera {
-    const cw = this.svg.clientWidth || 1;
-    const ch = this.svg.clientHeight || 1;
+    const cw = this.stage.w;
+    const ch = this.stage.h;
     const tall = ch > cw * 1.2;
     if (!tall && this.revealed.size) return this.wholeCamera();
     // Only your own things are on the table: no need to leave room for what has not shown up yet.
@@ -888,7 +895,7 @@ export class NetworkScene {
     // Room above the sheet for the chapter name; a call has no sheet, but needs room for the notes above each device.
     // Probes have no sheet either, only what they print.
     const pts = [
-      ...(this.story.call || this.story.probe
+      ...(this.story.voice || this.story.probe
         ? []
         : [
             { sx: paper.sx - 100, sy: paper.sy - 170 },
@@ -918,7 +925,7 @@ export class NetworkScene {
   /** A probe has run: what it printed and the path it found. On a tall phone screen the printout alone is big enough to read. */
   private resultCamera(): Camera {
     const pts = this.terminalCorners();
-    const tall = (this.svg.clientHeight || 1) > (this.svg.clientWidth || 1) * 1.2;
+    const tall = this.stage.h > this.stage.w * 1.2;
     const devices = tall ? [] : this.tl.readout.flags.map((f) => f.device);
     for (const id of [this.tl.client, ...devices]) {
       const d = this.tl.pos.get(id) ?? { x: 0, y: 0 };
@@ -935,7 +942,7 @@ export class NetworkScene {
     const y0 = Math.min(...pts.map((p) => p.sy));
     // Room for the bar over the bottom of the view.
     const y1 = Math.max(...pts.map((p) => p.sy)) + 90;
-    const scale = Math.min((this.svg.clientWidth || 1) / (x1 - x0), (this.svg.clientHeight || 1) / (y1 - y0));
+    const scale = Math.min(this.stage.w / (x1 - x0), this.stage.h / (y1 - y0));
     return { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, scale };
   }
 
@@ -943,14 +950,14 @@ export class NetworkScene {
   /** A camera that cuts off the chips of an opened packet stands further back, with the whole row in the middle. */
   fitChips(c: Camera): Camera {
     const row = this.chipRow;
-    const width = this.svg.clientWidth || 1;
+    const width = this.stage.w;
     if (!row || (row.left >= c.cx - (width / 2 - CHIP_MARGIN) / c.scale && row.right <= c.cx + (width / 2 - CHIP_MARGIN) / c.scale)) return c;
     return { cx: (row.left + row.right) / 2, cy: c.cy, scale: Math.min(c.scale, (width - CHIP_MARGIN * 2) / (row.right - row.left)) };
   }
 
   applyCamera(c: Camera): void {
-    const w = (this.svg.clientWidth || 1) / c.scale;
-    const h = (this.svg.clientHeight || 1) / c.scale;
+    const w = this.stage.w / c.scale;
+    const h = this.stage.h / c.scale;
     this.viewX = c.cx - w / 2;
     this.viewY = c.cy - h / 2;
     this.viewW = w;
@@ -1239,7 +1246,7 @@ export class NetworkScene {
     this.renderNotes(v);
     this.renderReadout(v);
     // The camera goes on without the stranger: what it heard shows whole, or waits, and does not stick out from behind the bar.
-    this.heard?.g.classList.toggle('absent', this.onScreen({ sx: 0, sy: this.heard.bottom }).y > (this.svg.clientHeight || 1) - this.bar);
+    this.heard?.g.classList.toggle('absent', this.onScreen({ sx: 0, sy: this.heard.bottom }).y > this.stage.h - this.bar);
     this.renderSpeech(v);
     this.renderSpy();
     for (const [id, screen] of this.screens) {
@@ -1248,9 +1255,9 @@ export class NetworkScene {
       const known = this.remembered.get(id);
       screen.face.classList.toggle('remembers', !!known);
       if (!known) continue;
-      screen.dnsName.textContent = known.site;
-      screen.dnsAddr.textContent = known.ip;
-      screen.dns.setAttribute('opacity', '1');
+      setText(screen.dnsName, known.site);
+      setText(screen.dnsAddr, known.ip);
+      setAttr(screen.dns, 'opacity', '1');
     }
     if (v < 0) return;
     for (const id of this.story.clients) {
@@ -1262,14 +1269,14 @@ export class NetworkScene {
       // A page in several parts shows once the finished sheet has slid into the screen. A device dropped in has no sheet.
       const pageAt = own && parts ? clamp01((v - parts.complete - 0.7) / 0.25) : this.screenAfterRead(v, 'page', id);
       const page = shows?.pageTitle ? pageAt : 0;
-      screen.page.setAttribute('opacity', page.toFixed(3));
+      setAttr(screen.page, 'opacity', page.toFixed(3));
       // On a second visit the laptop already knows the address from the start.
       const known = own && this.story.remembered ? 1 : this.screenAfterRead(v, 'dns', id);
-      screen.dns.setAttribute('opacity', (known * (1 - page)).toFixed(3));
+      setAttr(screen.dns, 'opacity', (known * (1 - page)).toFixed(3));
       const last = tl.segs[tl.segs.length - 1];
       // A call has no page to show: it is not a failure when none comes.
       const failed = !!shows?.browsing && !shows.pageTitle && !!last && v >= last.t1;
-      screen.fail.setAttribute('opacity', failed ? '1' : '0');
+      setAttr(screen.fail, 'opacity', failed ? '1' : '0');
     }
   }
 
@@ -1284,7 +1291,7 @@ export class NetworkScene {
   }
 
   private blank(screen: Screen): void {
-    for (const e of [screen.page, screen.dns, screen.fail]) e.setAttribute('opacity', '0');
+    for (const e of [screen.page, screen.dns, screen.fail]) setAttr(e, 'opacity', '0');
   }
 
   /** Emoji statuses: each pops up over its device, floats up a little and fades. */
@@ -1396,9 +1403,9 @@ export class NetworkScene {
   private renderSpeech(v: number): void {
     const live = this.quiet ? [] : this.tl.speech.filter((b) => v >= b.t0 && v < b.t1);
     // The camera sits further back on a phone.
-    const big = (this.svg.clientWidth || 1) < 520 ? 1.3 : 1;
+    const big = this.stage.w < 520 ? 1.3 : 1;
     const flags = [...this.tl.readout.flags, ...this.tl.joinReadouts.flatMap((x) => x.readout.flags)];
-    const lowest = this.viewY + ((this.svg.clientHeight || 1) - this.bar - SPEECH_OVER_BAR) / this.viewScale - SPEECH_H * big;
+    const lowest = this.viewY + (this.stage.h - this.bar - SPEECH_OVER_BAR) / this.viewScale - SPEECH_H * big;
     const looks = live.map((b) => {
       const d = this.tl.pos.get(b.device) ?? { x: 0, y: 0 };
       const s = iso(d.x, d.y + 1.9, 0);
@@ -1564,7 +1571,7 @@ export class NetworkScene {
       const part = seg.trip.part;
       // A part of a bigger page goes onto its band of the sheet; anything else into the screen or the device.
       const target = !this.story.clients.includes(step.device) ? v3(d.x, d.y, this.deviceTop(step.device)) : part ? this.paperSlot(part.n, part.of) : this.screenPoint(step.device);
-      pose.pos = v3(lerp(pose.pos.x, target.x, sink), lerp(pose.pos.y, target.y, sink), lerp(pose.pos.z, target.z, sink));
+      pose.pos = lerpV(pose.pos, target, sink);
       for (const p of parts) {
         if (p.key !== 'card') continue;
         p.scale *= 1 - 0.7 * sink;
@@ -1616,7 +1623,7 @@ export class NetworkScene {
 
   /** A block a share k along a hop, on its own side of the cable: each way keeps right, like traffic on a road. */
   private onLane(hop: FlowHop, k: number): Vec3 {
-    const at = travelPose(this.tl.pos, this.tl.trayZ, hop.from, hop.to, k, 0, this.tl.sky.get(hop.link) ?? 0, this.tl.air.has(hop.link)).pos;
+    const at = travelPath(this.tl.pos, this.tl.trayZ, hop.from, hop.to, k, this.tl.sky.get(hop.link) ?? 0, this.tl.air.has(hop.link));
     const a = this.tl.pos.get(hop.from) ?? { x: 0, y: 0 };
     const b = this.tl.pos.get(hop.to) ?? { x: 0, y: 0 };
     const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
@@ -1641,7 +1648,7 @@ export class NetworkScene {
       const data = p.trip.dataBytes > 0;
       // A call has two sides: whoever answers it speaks in the friend's colour, in a crowd as much as alone.
       const answering = p.trip.chapter === 'call' && !p.trip.outward;
-      const color = answering ? VOICE_OF_FRIEND : traffic ? this.ownerColor(p.trip.client) : this.story.call ? (p.trip.outward ? VOICE_OF_CALLER : VOICE_OF_FRIEND) : !data ? COLOR.tcp : p.trip.locked ? LOCKED : COLOR.app;
+      const color = answering ? VOICE_OF_FRIEND : traffic ? this.ownerColor(p.trip.client) : this.story.voice ? (p.trip.outward ? VOICE_OF_CALLER : VOICE_OF_FRIEND) : !data ? COLOR.tcp : p.trip.locked ? LOCKED : COLOR.app;
       const size = data ? 0.9 : 0.5;
       const end = p.hops[p.hops.length - 1]!;
       const at = this.blockAt(p, v);
@@ -1653,9 +1660,9 @@ export class NetworkScene {
         blocks.push({ at: v3(at.x, at.y, at.z - 5 * tau * tau), size, color, op: 1 - clamp01(tau / FLOW_FALL) });
       } else if (p.landed !== null && p.trip.part) {
         const q = easeInOut(clamp01((v - end.t1) / FLOW_FLY));
-        const from = travelPose(this.tl.pos, this.tl.trayZ, end.from, end.to, 1, 0, 0, false).pos;
+        const from = travelPath(this.tl.pos, this.tl.trayZ, end.from, end.to, 1);
         const to = this.paperSlot(p.trip.part.n, p.trip.part.of);
-        blocks.push({ at: v3(lerp(from.x, to.x, q), lerp(from.y, to.y, q), lerp(from.z, to.z, q)), size: size * (1 - 0.5 * q), color, op: 1 });
+        blocks.push({ at: lerpV(from, to, q), size: size * (1 - 0.5 * q), color, op: 1 });
       }
     }
     blocks.sort((a, b) => a.at.x + a.at.y - b.at.x - b.at.y);
@@ -1674,7 +1681,7 @@ export class NetworkScene {
     const T = 0.5;
     if (tau > T) return;
     const q = tau / T;
-    const c = iso(at.x, at.y, at.z);
+    const c = isoV(at);
     const g = el('g', { class: 'burst', opacity: (1 - easeIn(q)).toFixed(3), transform: `translate(${c.sx.toFixed(1)} ${c.sy.toFixed(1)})` }, this.fx);
     const r = 22 + 34 * easeOut(q);
     const pts: string[] = [];
@@ -1753,7 +1760,7 @@ export class NetworkScene {
       const m = at((a.u0 + a.u1) / 2);
       return m.x + m.y;
     };
-    const c = iso(pos.x, pos.y, pos.z);
+    const c = isoV(pos);
     const sx = 1 + 0.25 * pose.squash;
     const sy = 1 - 0.25 * pose.squash;
     const g0 = el('g', {
@@ -1985,7 +1992,7 @@ export class NetworkScene {
         // The trailer has no room for its size on a phone: opening it says what it holds.
         const text = `${p.key === 'ethT' ? name : `${name} · ${p.bytes} B`}${rows.length ? ' ▴' : ''}`;
         const c = p.key === 'card' && this.lock > 0.5 ? LOCKED : colorOf(p.layer, trip, this.l2);
-        return { p, a: iso(top.x, top.y, top.z), text, rows, c, w: text.length * 6.6 + 14, x: 0 };
+        return { p, a: isoV(top), text, rows, c, w: text.length * 6.6 + 14, x: 0 };
       })
       .sort((m, n) => m.a.sx - n.a.sx);
     if (!chips.length) return;
@@ -2047,7 +2054,7 @@ export class NetworkScene {
       changed = 'both';
       if (m.flip >= 0.5) Object.assign(a, step.addr);
     }
-    const s = iso(p.x, p.y, p.z);
+    const s = isoV(p);
     const pop = changed ? 1 + 0.75 * m.grow : 1;
     // The arrow says which way we're going: out from the asker, or back to it.
     const back = !seg.trip.outward;

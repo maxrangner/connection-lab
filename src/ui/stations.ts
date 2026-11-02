@@ -1,4 +1,4 @@
-import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, iso, ISO_X, ISO_Y, lerp, v3, type Pt, type Vec3 } from './project';
+import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, iso, isoV, ISO_X, ISO_Y, lerp, v3, type Pt, type Vec3 } from './project';
 import { leaf, line, slab, tile } from './prims';
 import { el } from './svg';
 import type { Step } from './story';
@@ -34,7 +34,7 @@ function pill(parent: SVGGElement, c: Pt, text: string, scale: number, op: numbe
 
 /** Text lying flat on a page, reading along +x. */
 function flatText(parent: SVGGElement, p: Vec3, text: string, cls: string): void {
-  const s = iso(p.x, p.y, p.z);
+  const s = isoV(p);
   const t = el('text', { class: cls, dy: '0.35em', transform: `matrix(${ISO_X.toFixed(3)} ${ISO_Y.toFixed(3)} ${(-ISO_X).toFixed(3)} ${ISO_Y.toFixed(3)} ${s.sx.toFixed(1)} ${s.sy.toFixed(1)})` }, parent);
   t.textContent = text;
 }
@@ -90,7 +90,7 @@ export function drawBook(parent: SVGGElement, c: Vec3, top: Vec3, s: Lookup, k: 
   if (k >= b.lift - 0.02) {
     const q = clamp01((k - b.lift + 0.02) / (1 - b.lift + 0.02));
     const from = iso(c.x + PAGE_W / 2, rowY(FOUND_ROW), z + 0.3);
-    const to = iso(top.x, top.y, top.z);
+    const to = isoV(top);
     pill(parent, { sx: lerp(from.sx, to.sx, easeInOut(q)), sy: lerp(from.sy, to.sy, easeInOut(q)) }, s.found, 1 + 0.12 * Math.sin(q * Math.PI), 1 - easeIn(clamp01((q - 0.82) / 0.18)));
   }
 }
@@ -137,7 +137,7 @@ export function drawShelf(parent: SVGGElement, c: Vec3, top: Vec3, s: Lookup, k:
     const drawer = inFront(slotZ + 0.4, 0.8);
     const shelf = { sx: drawer.sx, sy: drawer.sy - 62 * easeOut(rise) };
     const q = clamp01((k - b.lift) / (1 - b.lift));
-    const to = iso(top.x, top.y, top.z);
+    const to = isoV(top);
     const pos = { sx: lerp(shelf.sx, to.sx, easeInOut(q)), sy: lerp(shelf.sy, to.sy, easeInOut(q)) };
     sheet(parent, pos, s.found, lerp(0.35 + 0.65 * easeOut(rise), 0.5, q), 1 - easeIn(clamp01((q - 0.8) / 0.2)));
   }
