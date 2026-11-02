@@ -48,5 +48,7 @@ ${js.replace(/<\/script/gi, '<\\/script')}
 </body>`);
 fs.mkdirSync(path.dirname(outFile), { recursive: true });
 fs.writeFileSync(outFile, process.argv.includes('--whole') ? whole : page);
+// The real site also serves the photo the photo card fetches, so that it can be captured from there.
+if (process.argv.includes('--whole')) fs.copyFileSync('site/cat.jpg', path.join(path.dirname(outFile), 'cat.jpg'));
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`${outFile}: ${(page.length / 1024).toFixed(0)} KB`);

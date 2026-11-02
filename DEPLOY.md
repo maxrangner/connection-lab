@@ -24,9 +24,12 @@ Do this after GitHub and the other links are in the code.
 
 4. Wait for a line ending in `KB`.
 
-Your file is now here:
+Your two files are now here:
 
-`D:\dev\interactive-educator\dist-bundle\site\index.html`
+`D:\dev\interactive-educator\dist-bundle\site\`
+
+- `index.html`
+- `cat.jpg`
 
 ---
 
@@ -48,7 +51,7 @@ Your file is now here:
 
 ---
 
-## Part 3: Upload the file
+## Part 3: Upload the files
 
 1. Open **filemanager.one.com**.
    Or in one.com: **Hosting settings → File Manager**.
@@ -56,8 +59,8 @@ Your file is now here:
 3. **Check:** the folder must be empty.
    See your portfolio's files? **Stop.** You are in the wrong folder.
 4. Click **Upload**.
-5. Choose `index.html` from Part 1.
-6. Wait until it finishes.
+5. Choose **both** `index.html` and `cat.jpg` from Part 1.
+6. Wait until both finish.
 
 ---
 
@@ -67,11 +70,24 @@ Your file is now here:
 2. Connection Lab should appear.
 3. Open `https://rangner.com`
 4. Your portfolio should appear, the same as before.
+5. Open `https://connection-lab.rangner.com/cat.jpg`
+6. A yawning cat should appear.
 
 **Connection Lab doesn't appear, or you get a security warning?**
 Wait. It can take up to 24 hours. If it still fails after that, use **Plan B**.
 
-**You're done.**
+---
+
+## Part 5: One last step
+
+Do this once, the first time.
+
+1. **Don't share the link yet.**
+2. Tell Claude the site is up.
+3. Claude records the cat from your site and makes a new `index.html`.
+4. Follow **Updating the site later** below.
+
+**Now you're done.** You can share the link.
 
 ---
 
@@ -83,9 +99,11 @@ Your address will be `https://rangner.com/connection-lab/`
 2. Open `httpd.www`.
 3. Create a new folder called `connection-lab`.
 4. **Open that new folder.** Check that its name shows at the top.
-5. Upload `index.html` into it.
+5. Upload `index.html` and `cat.jpg` into it.
 6. Open `https://rangner.com/connection-lab/`
 7. Open `https://rangner.com` and check that your portfolio is still there.
+8. Open `https://rangner.com/connection-lab/cat.jpg` and check that a yawning cat appears.
+9. Do **Part 5**.
 
 ---
 
@@ -93,7 +111,7 @@ Your address will be `https://rangner.com/connection-lab/`
 
 1. Do Part 1 again.
 2. Open the same folder as before.
-3. Upload the new `index.html`.
+3. Upload the new `index.html`. You don't need to upload `cat.jpg` again.
 4. Choose to replace the old one.
 
 Still seeing the old version? Wait a few minutes and reload.

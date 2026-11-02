@@ -23,3 +23,7 @@ npm run build     # static site in dist/
 ```
 
 See [AGENTS.md](AGENTS.md) for architecture and conventions.
+
+## Credits
+
+Cat photo: [Calico cat yawning](https://commons.wikimedia.org/wiki/File:Calico_cat_yawning.jpg) by 0959kedi, CC0 1.0. Cropped and scaled.
