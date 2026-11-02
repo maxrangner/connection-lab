@@ -87,6 +87,57 @@ describe('what the devices say', () => {
     expect(lines.join()).not.toContain('Now I can show');
   });
 
+  describe('an attack', () => {
+    const lines = (opts: Parameters<typeof fetchWebPage>[0]): string[] => said(run(opts)).map((x) => x.join(': '));
+
+    it('opens on what each attacker sets out to do, and holds until that can be read', () => {
+      const tl = run({ attacks: ['flood', 'scan', 'listen'] });
+      expect(tl.segs[0]!.t0).toBeGreaterThan(2);
+      expect(tl.speech.filter((b) => b.t0 === 0).map((b) => [b.device, b.text])).toEqual([
+        ['laptop', 'I want to open example.com'],
+        ['bot1', "Let's flood the web server!"],
+        ['scanner', "Let's try all the server's doors"],
+        ['stranger', "Let's listen to the Wi-Fi"],
+      ]);
+    });
+
+    it('says what a flood did to a page that needed that line', () => {
+      const flood = lines({ attacks: ['flood'] });
+      expect(flood).toEqual(expect.arrayContaining(['server: So much junk! My line is full', "laptop: Where's my page? It's stuck"]));
+      expect(flood.at(-1)).toBe('laptop: Got it, now the flood is over');
+      const tl = run({ attacks: ['flood'] });
+      const junk = tl.segs.flatMap((s) => s.flow ?? []).filter((p) => p.trip.chapter === 'attack');
+      expect(tl.speech.at(-1)!.t0).toBeGreaterThan(Math.max(...junk.map((p) => p.t1)));
+    });
+
+    it('says so when a flood made no difference', () => {
+      expect(lines({ attacks: ['flood'], call: true }).at(-1)).toBe('laptop: That flood never touched my call');
+      expect(lines({ attacks: ['flood'], vpn: true }).at(-1)).toBe('laptop: The flood missed me: I went another way');
+      expect(lines({ attacks: ['flood'], call: true, joins: [{ job: 'call', at: 0.001 }] }).join()).toContain('never touched my call');
+    });
+
+    it('says when a flood stood in the way of a ping', () => {
+      expect(lines({ attacks: ['flood'], probe: 'ping' }).at(-1)).toBe('laptop: That flood got in my way');
+    });
+
+    it('lets the server say it was tried, and the client that it noticed nothing', () => {
+      const scan = lines({ attacks: ['scan'] });
+      expect(scan).toEqual(expect.arrayContaining(['server: Someone tried all my doors', "laptop: I didn't notice a thing"]));
+      expect(scan.join()).not.toContain('Now I can show');
+    });
+
+    it('does not claim a run that was stopped went unnoticed', () => {
+      expect(lines({ attacks: ['scan'] }).join()).toContain('notice');
+      const cut = said(run({ attacks: ['scan'] }, [{ link: 'wan', from: 0 }])).map((x) => x[1]);
+      expect(cut.join()).not.toContain('notice');
+    });
+
+    it('lets the stranger say it heard nothing, only if it did', () => {
+      expect(lines({ attacks: ['listen'] }).at(-1)).toBe("stranger: I can't hear a thing: that's a cable");
+      expect(lines({ attacks: ['listen'], from: 'phone' }).join()).not.toContain("can't hear");
+    });
+  });
+
   it('does not stop on a line that is still being said', () => {
     for (const tl of [run(), run({ probe: 'ping' }), run({ call: true })]) {
       expect(tl.total).toBeGreaterThanOrEqual(tl.settled);

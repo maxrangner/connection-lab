@@ -333,8 +333,8 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
 
   const byId = new Map(story.trips.map((x) => [x.packetId, x]));
   const resent = new Set(story.trips.map((x) => x.retransmitOf));
-  // A run opens on what the device sets out to do, and nothing moves until that can be read. A reading and an attack are already at it.
-  let t = story.reading || story.attackers.length ? 0 : OPENING;
+  // A run opens on what the device sets out to do, and nothing moves until that can be read. A reading is already at it.
+  let t = story.reading ? 0 : OPENING;
   story.trips.forEach((trip, ti) => {
     if (left.length || t >= alone || trip.client !== story.client) {
       left.push(trip);

@@ -1746,7 +1746,7 @@ export class NetworkScene {
     const boxDepth = boxFront && boxBack ? mid({ u0: boxBack.u0, u1: boxFront.u1 }) : 0;
     const depth = (x: { p: Part; u0: number; u1: number }): number =>
       x.p.key === 'vpn' && boxBack ? boxDepth : boxFront && sealedInside(x.p.key) ? boxDepth - 0.01 : mid(x);
-    for (const { p, u0: start, u1 } of [...placed].sort((m, n) => depth(m) - depth(n))) {
+    for (const { p, u0: start, u1 } of [...placed].sort((m, n) => depth(m) - depth(n) || mid(m) - mid(n))) {
       if (boxShut && sealedInside(p.key)) continue;
       const isBox = p.key === 'vpn' && !!boxBack;
       const u0 = isBox ? boxBack.u0 : start;
