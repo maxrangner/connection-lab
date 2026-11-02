@@ -17,6 +17,7 @@ const SAY = 3.5;
 const SAY_CHAR = 0.1;
 /** A line cut shorter than this by the same device's next one is not worth showing. */
 const SHORTEST = 0.6;
+const NO_FLOOD_ON_CALL = 'That flood never touched my call';
 
 const DHCP: Record<string, (rest: string) => string> = {
   DISCOVER: () => 'Can anyone give me an address?',
@@ -128,10 +129,33 @@ export function listenerSpeech(device: string, heard: Heard[], heardAt: Readonly
 
 /** What the device starting the run sets out to do. */
 function opening(story: Story): string | null {
-  if (story.reading || story.attackers.length) return null;
+  if (story.reading) return null;
   if (story.probe) return story.probe.kind === 'ping' ? `Is ${story.probe.to} there?` : `What's the way to ${story.probe.to}?`;
   if (story.call) return 'I want to call Sam';
   return story.image ? 'I want to get a photo' : `I want to open ${story.site}`;
+}
+
+/** What the attackers set out to do. Three bots are one plan: the first says it. */
+function attackPlans(story: Story, kindOf: Map<string, string>): [string, string][] {
+  const first = (kind: string): string | undefined => story.attackers.find((d) => kindOf.get(d) === kind);
+  const bot = first('bot');
+  const scanner = first('scanner');
+  return [
+    ...(bot ? ([[bot, "Let's flood the web server!"]] as [string, string][]) : []),
+    ...(scanner ? ([[scanner, "Let's try all the server's doors"]] as [string, string][]) : []),
+    ...(story.listener ? ([[story.listener, "Let's listen to the Wi-Fi"]] as [string, string][]) : []),
+  ];
+}
+
+/** What the client can say of an attack at the end, even if it made no difference. */
+function attackOutcome(story: Story, flooded: boolean, hurt: boolean): string | null {
+  const done = story.probe?.done;
+  const finished = story.call || story.fetched.includes(story.client) || (done ? (story.probe!.kind === 'ping' ? done.received === done.sent : done.reached) : false);
+  if (!flooded) return finished && !hurt ? "I didn't notice a thing" : null;
+  if (hurt) return story.fetched.includes(story.client) ? 'Got it, now the flood is over' : 'That flood got in my way';
+  if (!finished) return null;
+  if (story.call) return NO_FLOOD_ON_CALL;
+  return story.vpn && !story.probe ? 'The flood missed me: I went another way' : 'That flood never touched me';
 }
 
 /** What it says at the end, if it got what it set out to get. */
@@ -158,6 +182,14 @@ export function buildSpeech(story: Story, segs: Seg[]): Bubble[] {
   const first = segs[0];
   const opens = opening(story);
   if (opens && first) say(story.client, 0, opens, first.t0);
+  if (first) for (const [device, plan] of attackPlans(story, kindOf)) say(device, 0, plan, first.t0);
+  const flooded = story.attackers.some((d) => kindOf.get(d) === 'bot');
+  const webServer = story.devices.find((d) => d.kind === 'web-server')?.id ?? 'server';
+  /** The devices that lost a packet of theirs, when each of them was last at it, and those that made a call. */
+  const hurt = new Set<string>();
+  const lastAt = new Map<string, number>();
+  const callers = new Set<string>();
+  let scanDone = 0;
   /** When what the run set out to get has reached the device that wanted it. */
   let got = 0;
 
@@ -169,6 +201,14 @@ export function buildSpeech(story: Story, segs: Seg[]): Bubble[] {
       // An attack goes too fast to read line by line: each says what it is once.
       if (line && (p.trip.chapter !== 'attack' || once(`${p.trip.origin}|${line}`))) say(p.trip.origin, p.t0, line);
       if (p.trip.chapter === 'page' && !p.trip.outward && p.trip.client === story.client) got = Math.max(got, p.t1);
+      if (p.trip.chapter === 'attack' && kindOf.get(p.trip.client) === 'scanner') scanDone = Math.max(scanDone, p.t1);
+      if (p.trip.chapter !== 'attack') {
+        lastAt.set(p.trip.client, Math.max(lastAt.get(p.trip.client) ?? 0, p.t1));
+        if (p.trip.steps.some((x) => x.kind === 'lost')) hurt.add(p.trip.client);
+        if (p.trip.chapter === 'call') callers.add(p.trip.client);
+      }
+      if (flooded && p.trip.droppedAtQueue && once('line full')) say(webServer, p.t1, 'So much junk! My line is full');
+      if (flooded && p.trip.retry && p.trip.client === story.client && once('stuck')) say(story.client, p.t0, `Where's my ${story.image ? 'photo' : 'page'}? It's stuck`);
     }
     if (s.kind === 'read' && seg.trip.chapter === 'page' && !seg.trip.outward && seg.trip.client === story.client) got = seg.t1;
     for (const w of [...(seg.waits ?? []).map((x) => ({ step: x.step, t0: x.t0 })), ...(s.kind === 'wait' ? [{ step: s, t0: seg.t0 }] : [])]) {
@@ -189,9 +229,17 @@ export function buildSpeech(story: Story, segs: Seg[]): Bubble[] {
     if (s.kind === 'unwrap' && s.layer === 'vpn' && kindOf.get(s.device) === 'vpn-server' && once('vpn')) say(s.device, seg.t0, 'Opening this, sending it on');
   }
 
-  const closes = closing(story);
   const end = segs[segs.length - 1]?.t1;
-  if (closes && end !== undefined) say(story.client, story.probe ? end : got || end, closes);
+  if (story.attackers.length && !story.reading && end !== undefined) {
+    const outcome = attackOutcome(story, flooded, hurt.has(story.client));
+    if (outcome) say(story.client, got || (lastAt.get(story.client) ?? end), outcome);
+    for (const d of story.joiners) if (flooded && callers.has(d) && !hurt.has(d)) say(d, lastAt.get(d) ?? end, NO_FLOOD_ON_CALL);
+  } else {
+    const closes = closing(story);
+    if (closes && end !== undefined) say(story.client, story.probe ? end : got || end, closes);
+  }
+  if (scanDone) say(webServer, scanDone, 'Someone tried all my doors');
+  if (story.listener && end !== undefined && !story.heard.some((h) => h.seen.kind !== 'empty')) say(story.listener, end, "I can't hear a thing: that's a cable");
 
   // One device says one thing at a time: the next line takes over.
   const sorted = bubbles.sort((a, b) => a.t0 - b.t0);
