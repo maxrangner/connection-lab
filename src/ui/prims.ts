@@ -122,21 +122,43 @@ function outline(parent: Element, pts: Pt[]): void {
   el('path', { d, class: 'dev-line' }, parent);
 }
 
-/** Lying flat: a slab with rounded corners, sides shaded by how they face, and a bold outline. */
-export function slab(parent: Element, s: { x: number; y: number; z: number; w: number; d: number; h: number; r: number; color: string }): void {
-  const foot = roundedRect(s.w, s.d, s.r).map(([a, b]) => ({ x: s.x + a, y: s.y + b }));
-  const [mx, my] = [s.x + s.w / 2, s.y + s.d / 2];
+/** The sides of a shape with this convex footprint that face the viewer, shaded by how they face. */
+function walls(parent: Element, foot: { x: number; y: number }[], z: number, h: number, base: string): void {
+  const mx = foot.reduce((sum, p) => sum + p.x, 0) / foot.length;
+  const my = foot.reduce((sum, p) => sum + p.y, 0) / foot.length;
   foot.forEach((a, i) => {
     const b = foot[(i + 1) % foot.length]!;
     const flip = (b.y - a.y) * ((a.x + b.x) / 2 - mx) - (b.x - a.x) * ((a.y + b.y) / 2 - my) < 0 ? -1 : 1;
     const n = { x: (flip * (b.y - a.y)) / Math.hypot(b.x - a.x, b.y - a.y), y: (flip * (a.x - b.x)) / Math.hypot(b.x - a.x, b.y - a.y) };
     if (n.x + n.y <= 0) return;
-    const color = shade(s.color, ROUNDED.left * Math.max(0, n.y) ** 2 + ROUNDED.right * Math.max(0, n.x) ** 2);
-    el('path', { d: pathOf([iso(a.x, a.y, s.z + s.h), iso(b.x, b.y, s.z + s.h), iso(b.x, b.y, s.z), iso(a.x, a.y, s.z)]), fill: color, stroke: color, 'stroke-width': 0.7 }, parent);
+    const color = shade(base, ROUNDED.left * Math.max(0, n.y) ** 2 + ROUNDED.right * Math.max(0, n.x) ** 2);
+    el('path', { d: pathOf([iso(a.x, a.y, z + h), iso(b.x, b.y, z + h), iso(b.x, b.y, z), iso(a.x, a.y, z)]), fill: color, stroke: color, 'stroke-width': 0.7 }, parent);
   });
-  const top = foot.map((p) => iso(p.x, p.y, s.z + s.h));
-  el('path', { d: pathOf(top), fill: shade(s.color, FACE.top) }, parent);
-  outline(parent, [...top, ...foot.map((p) => iso(p.x, p.y, s.z))]);
+}
+
+/** Lying flat: a shape with this convex footprint, sides shaded by how they face, and a bold outline. */
+export function plate(parent: Element, foot: { x: number; y: number }[], z: number, h: number, color: string): void {
+  walls(parent, foot, z, h, color);
+  const top = foot.map((p) => iso(p.x, p.y, z + h));
+  el('path', { d: pathOf(top), fill: shade(color, FACE.top) }, parent);
+  outline(parent, [...top, ...foot.map((p) => iso(p.x, p.y, z))]);
+}
+
+/** Lying flat: a slab with rounded corners. */
+export function slab(parent: Element, s: { x: number; y: number; z: number; w: number; d: number; h: number; r: number; color: string }): void {
+  plate(parent, roundedRect(s.w, s.d, s.r).map(([a, b]) => ({ x: s.x + a, y: s.y + b })), s.z, s.h, s.color);
+}
+
+/** Lying flat: a ring you can see through, with a pane of glass in it if `glass` names the class to draw one with. */
+export function ring(parent: Element, s: { x: number; y: number; z: number; h: number; r: number; hole: number; color: string; glass?: string }): void {
+  const circle = (r: number): { x: number; y: number }[] => Array.from({ length: 48 }, (_, i) => ({ x: s.x + r * Math.cos((i * Math.PI) / 24), y: s.y + r * Math.sin((i * Math.PI) / 24) }));
+  const [outer, hole] = [circle(s.r), circle(s.hole)] as [{ x: number; y: number }[], { x: number; y: number }[]];
+  const top = (points: { x: number; y: number }[]): Pt[] => points.map((p) => iso(p.x, p.y, s.z + s.h));
+  if (s.glass) el('path', { d: pathOf(top(hole)), class: s.glass }, parent);
+  walls(parent, outer, s.z, s.h, s.color);
+  el('path', { d: `${pathOf(top(outer))}${pathOf(top(hole))}`, 'fill-rule': 'evenodd', fill: shade(s.color, FACE.top) }, parent);
+  outline(parent, [...top(outer), ...outer.map((p) => iso(p.x, p.y, s.z))]);
+  el('path', { d: pathOf(top(hole)), class: 'dev-line dev-glass-line' }, parent);
 }
 
 /**

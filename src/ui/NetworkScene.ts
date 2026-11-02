@@ -2,7 +2,7 @@ import type { Action } from '../sim';
 import { el, setAttr, setText } from './svg';
 import { box, groundShadow, line, panel, rbox, slab, tile, tiles } from './prims';
 import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, easeOutBounce, iso, isoV, lerp, lerpV, U, unproject, v3, type Pt, type Vec3 } from './project';
-import { drawHandset, drawSatellite, drawScissors, drawShield, drawSpyglass } from './icons';
+import { drawBoardScissors, drawBoardSpyglass, drawHandset, drawSatellite, drawShield } from './icons';
 import { shade } from './shade';
 import type { Details, PartKey, Row, Story, Trip, Wrap } from './story';
 import { bandPoint, pageContent, Paper, PAPER_H, PAPER_W, photoContent } from './paper';
@@ -473,7 +473,7 @@ export class NetworkScene {
     this.spyGlass.replaceChildren();
     if (!this.spy) return;
     const glass = this.linkSpot(this.spy, 0.5, 0);
-    drawSpyglass(el('g', { transform: `translate(${glass.sx.toFixed(1)} ${glass.sy.toFixed(1)})` }, this.spyGlass));
+    drawBoardSpyglass(el('g', { transform: `translate(${glass.sx.toFixed(1)} ${glass.sy.toFixed(1)})` }, this.spyGlass));
   }
 
   /** Cables between devices; a slow link is a radio hop up to a satellite instead. */
@@ -531,7 +531,10 @@ export class NetworkScene {
           }
         }
         const c = iso(mid(0).x, mid(0).y, 0);
-        drawScissors(el('g', { transform: `translate(${c.sx.toFixed(1)} ${(c.sy - 8).toFixed(1)}) scale(0.5)` }, g));
+        // Across the cable, with their tips away from the viewer.
+        const across = { x: a.y - b.y, y: b.x - a.x };
+        const away = across.x + across.y > 0 ? -1 : 1;
+        drawBoardScissors(el('g', { class: 'board-cut', transform: `translate(${c.sx.toFixed(1)} ${c.sy.toFixed(1)})` }, g), Math.atan2(away * across.y, away * across.x));
       } else {
         line(g, path[0]!, path[1]!, { class: 'cable' });
         // The fibre to the ISP says how long it is: light takes its time, and the router can be dragged further away.
