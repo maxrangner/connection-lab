@@ -13,7 +13,7 @@ const everyPacket = (t: Trip): Trip[] => (t.steps.some((s) => s.kind === 'flow')
 /** A run with a card dropped in at this share of the way through. */
 function dropped(a: Job, b: Job, share: number, setup: object = {}): { before: Timeline; after: Timeline; s: Story; v: number; join: { job: Job; at: number } } {
   const before = buildTimeline(story(a, setup));
-  const v = before.total * share;
+  const v = before.settled * share;
   const join = { job: b, at: joinAt(before, v) };
   const s = story(a, { ...setup, joins: [join] });
   return { before, after: buildTimeline(s, new Map(), 0, new Map([[s.joiners[0]!, v]])), s, v, join };
@@ -149,7 +149,7 @@ describe('a card dropped in during a run', () => {
     const big = { site: 'info.cern.ch' };
     const whole = buildTimeline(story('page', big));
     const firstPart = whole.segs.find((x) => x.step.kind === 'read' && x.trip.part?.n === 1)!;
-    const { after } = dropped('page', 'ping', (firstPart.t1 + 0.1) / whole.total, big);
+    const { after } = dropped('page', 'ping', (firstPart.t1 + 0.1) / whole.settled, big);
     expect(after.reactions.filter((r) => r.device === 'laptop' && r.t > firstPart.t1).map((r) => r.face)).toEqual(['love']);
     expect(pageParts(after)!.complete).toBeLessThan(Infinity);
   });
@@ -179,7 +179,7 @@ describe('a card dropped in during a run', () => {
         for (const line of ['wan', 'bb2', 'bb6', 'lan', 'wlan']) {
           for (const share of [0.15, 0.4, 0.65, 0.9]) {
             const { after, join, v: dropV } = dropped(a, b, 0.1);
-            const v = dropV + (after.total - dropV) * share;
+            const v = dropV + (after.settled - dropV) * share;
             const seen = seenSoFar(after, v, line);
             const faults: { decided: Record<string, boolean>; cuts: Cut[]; manual: ManualFault[] } = { decided: seen.decided, cuts: [{ link: line, from: seen.now }], manual: [] };
             const cut = buildTimeline(story(a, { joins: [join] }, faults), new Map(), 0, new Map([['phone', dropV]]));

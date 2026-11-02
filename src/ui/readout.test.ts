@@ -82,7 +82,7 @@ describe('what ping prints', () => {
 
   it('is quick: the lookup and the repeats run as small blocks, and every packet is still there', () => {
     const tl = run('ping');
-    expect(tl.total).toBeLessThan(30);
+    expect(tl.settled).toBeLessThan(30);
     expect(tl.segs.flatMap((s) => s.flow ?? []).filter((p) => p.trip.chapter === 'ping')).toHaveLength(6);
   });
 

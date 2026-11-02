@@ -134,6 +134,9 @@ export interface Timeline {
   /** What the real clock says at points of the visual time: real seconds run nothing like the animation's. */
   real: { v: number; sim: number }[];
   cues: Cue[];
+  /** When the last packet is done. */
+  settled: number;
+  /** When the last device has finished speaking too: a run does not stop on a line nobody can finish reading. */
   total: number;
   pos: Map<string, { x: number; y: number }>;
   kind: Map<string, string>;
@@ -477,7 +480,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
   ];
   for (const f of [...readout.flags, ...joinReadouts.flatMap((x) => x.readout.flags)]) cues.push({ t: f.t, sound: 'found' });
   const speech = [...buildSpeech(story, segs), ...(story.listener ? listenerSpeech(story.listener, story.heard, heardAt) : [])];
-  return { segs, startsAt: story.startsAt, reactions, notes, readout, joinReadouts, attackReadouts, speech, keys, halves, real: realClock(segs, story), cues, total: t, pos, kind, trayZ, isRouter, sky, air, client: story.client, pages, answers, reveals, laid, stretch };
+  return { segs, startsAt: story.startsAt, reactions, notes, readout, joinReadouts, attackReadouts, speech, keys, halves, real: realClock(segs, story), cues, settled: t, total: Math.max(t, ...speech.map((b) => b.t1)), pos, kind, trayZ, isRouter, sky, air, client: story.client, pages, answers, reveals, laid, stretch };
 }
 
 /**
