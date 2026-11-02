@@ -59,6 +59,17 @@ describe('the captured HTTPS session really decrypts', () => {
     expect(page.startsWith('HTTP/1.1 200 OK')).toBe(true);
     expect(page).toContain('<title>Example Domain</title>');
   });
+
+  it('opens what it is given and no more, whatever has been opened before', () => {
+    const all = sessionStream(session, 'server');
+    const whole = openRecords(session, 'server', all);
+    const first = whole[1]!.offset;
+    const part = openRecords(session, 'server', all.subarray(0, first));
+    expect(part).toHaveLength(1);
+    expect(part.map((r) => r.offset)).toEqual([0]);
+    expect(openRecords(session, 'server', all.slice())).toBe(whole);
+    expect(openRecords(session, 'server', new Uint8Array(0))).toEqual([]);
+  });
 });
 
 describe('ChaCha20-Poly1305 (RFC 8439 section 2.8.2)', () => {

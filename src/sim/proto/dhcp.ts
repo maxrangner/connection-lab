@@ -135,7 +135,7 @@ export function buildDhcp(m: DhcpMessage): Uint8Array {
   if (o.clientId) opt(OPT_CLIENT_ID, [1, ...macToBytes(o.clientId)]);
   if (o.requestedIp) opt(OPT_REQUESTED_IP, ipToBytes(o.requestedIp));
   if (o.serverId) opt(OPT_SERVER_ID, ipToBytes(o.serverId));
-  if (o.leaseTime !== undefined) opt(OPT_LEASE_TIME, [(o.leaseTime >>> 24) & 0xff, (o.leaseTime >>> 16) & 0xff, (o.leaseTime >>> 8) & 0xff, o.leaseTime & 0xff]);
+  if (o.leaseTime !== undefined) opt(OPT_LEASE_TIME, new ByteWriter().u32(o.leaseTime).toBytes());
   if (o.subnetMask) opt(OPT_SUBNET_MASK, ipToBytes(o.subnetMask));
   if (o.routers?.length) opt(OPT_ROUTER, o.routers.flatMap(ipToBytes));
   if (o.dns?.length) opt(OPT_DNS, o.dns.flatMap(ipToBytes));

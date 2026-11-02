@@ -1,7 +1,7 @@
 import { rngFor, type Rng } from '../core/Rng';
 import { Simulator } from '../core/Simulator';
 import { isCut, lostToNoise, shouldDrop, type FaultPlan } from '../faults';
-import type { LinkSpec, Scenario } from '../model';
+import type { LinkSpec } from '../model';
 import { WIFI_DIFS } from '../proto/wifi';
 import type { Device } from './Device';
 
@@ -13,12 +13,10 @@ export const INTERFRAME_GAP_BYTES = 12;
 export class World {
   readonly sim = new Simulator();
   readonly devices = new Map<string, Device>();
-  readonly links = new Map<string, Link>();
   readonly ifaceOwner = new Map<string, Device>();
   readonly ifaceLink = new Map<string, Link>();
 
   constructor(
-    readonly scenario: Scenario,
     readonly seed: number,
     readonly faults: FaultPlan,
   ) {}

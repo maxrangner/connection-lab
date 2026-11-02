@@ -1,5 +1,5 @@
 import { bytesToIp, bytesToIp6, ipToBytes, type Ip4 } from '../bytes/addr';
-import { ByteWriter, hex, hexBytes, u16, u32, u8 } from '../bytes/bytes';
+import { ByteWriter, hex, hexBytes, toAscii, u16, u32, u8 } from '../bytes/bytes';
 import { bitField, FieldList, type Field, type LayerPdu } from './types';
 
 export const DNS_TYPE_A = 1;
@@ -75,9 +75,7 @@ function readName(b: Uint8Array, msgStart: number, off: number): NameRead {
       i = msgStart + ptr;
       continue;
     }
-    let s = '';
-    for (let k = 1; k <= len; k++) s += String.fromCharCode(u8(b, i + k));
-    labels.push(s);
+    labels.push(toAscii(b, i + 1, i + 1 + len));
     i += len + 1;
   }
   return { name: labels.join('.'), length, pointer };

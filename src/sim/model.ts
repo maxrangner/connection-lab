@@ -14,7 +14,6 @@ export interface IfaceSpec {
   name: string;
   mac: Mac;
   ip: Ip4;
-  prefixLen: number;
   /** A Wi-Fi radio instead of an Ethernet port: the access point side or a station (phone) side. */
   wifi?: 'ap' | 'station';
   /** More addresses this interface answers to (`ip addr add`): one server, several sites. */
@@ -36,10 +35,6 @@ export interface LinkSpec {
   bitsPerSecond: number;
   /** One-way propagation delay in seconds. */
   delay: number;
-  /** Map label, e.g. "Ethernet cable · 1 Gbit/s". */
-  label: string;
-  /** How narration refers to the link, e.g. "the Ethernet cable". */
-  name: string;
   /**
    * The transmit buffer of each of the link's two ports, in frames: a frame that finds the port busy waits here, and one
    * that finds the buffer full is dropped at once (tail drop). Omitted, the buffer is unbounded and nothing is ever queued
@@ -158,7 +153,6 @@ export interface DhcpServerSpec {
 export interface DeviceSpec {
   id: string;
   label: string;
-  sublabel?: string;
   kind: DeviceKind;
   ifaces: IfaceSpec[];
   routes: RouteSpec[];
@@ -178,12 +172,8 @@ export interface DeviceSpec {
    * touching IP. Left out it only routes. A real switch learns the table from the frames it sees; this one knows it.
    */
   bridge?: Record<Mac, string>;
-  /** Map position for the UI, in scene units. */
-  layout: { x: number; y: number };
   /** Send everything through a WireGuard tunnel to this server, using this inner address. */
   tunnel?: { ip: Ip4; server: Ip4 };
-  /** Linux defaults to 64. */
-  initialTtl?: number;
   /** Sends one ICMP error a second to any one address, as Linux does (`icmp_ratelimit`), so a flood gets almost no answers. */
   icmpLimit?: boolean;
 }
@@ -197,8 +187,6 @@ export interface TcpSettings {
 }
 
 export interface Scenario {
-  id: string;
-  title: string;
   devices: DeviceSpec[];
   links: LinkSpec[];
   tcp: TcpSettings;

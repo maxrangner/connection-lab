@@ -1,4 +1,4 @@
-import { fromBase64, hex, u16 } from '../bytes/bytes';
+import { concat, fromBase64, fromHex, hex, toAscii, u16 } from '../bytes/bytes';
 import { aes128GcmDecrypt, hkdfExpandLabel } from '../crypto/crypto';
 import { FieldList, type LayerPdu } from './types';
 
@@ -9,7 +9,6 @@ import { FieldList, type LayerPdu } from './types';
  */
 
 export const TLS_HANDSHAKE = 22;
-export const TLS_CHANGE_CIPHER_SPEC = 20;
 export const TLS_ALERT = 21;
 export const TLS_APPLICATION_DATA = 23;
 export const TLS_RECORD_HEADER = 5;
@@ -43,8 +42,6 @@ export function splitRecords(stream: Uint8Array): TlsRecord[] {
   return out;
 }
 
-const hexToBytes = (h: string): Uint8Array => new Uint8Array(h.match(/../g)!.map((x) => parseInt(x, 16)));
-
 interface Keys {
   key: Uint8Array;
   iv: Uint8Array;
@@ -52,7 +49,7 @@ interface Keys {
 }
 
 function keysFrom(secretHex: string): Keys {
-  const secret = hexToBytes(secretHex);
+  const secret = fromHex(secretHex);
   return { key: hkdfExpandLabel(secret, 'key', 16), iv: hkdfExpandLabel(secret, 'iv', 12), seq: 0 };
 }
 
@@ -66,14 +63,34 @@ export interface OpenedRecord {
 }
 
 /**
+ * Streams already opened, by their secrets and every one of their bytes, so a cut or a join does not pay for the same
+ * decryption again. Never by session and side alone: a receiver must open what has reached it and no more. The same
+ * secrets and bytes always open the same way, so a stream kept changes nothing.
+ */
+const opened = new Map<string, OpenedRecord[]>();
+const OPENED_KEPT = 64;
+
+/**
  * Opens every record one side sent, as the other side would: handshake keys until the sender's Finished, then
- * application keys. Throws if a record does not authenticate (it would mean the bytes or keys are wrong).
+ * application keys. Throws if a record does not authenticate (it would mean the bytes or keys are wrong). What comes
+ * back may be shared with other callers: read it, do not change it.
  */
 export function openRecords(session: TlsSession, from: 'client' | 'server', stream: Uint8Array): OpenedRecord[] {
   const s = session.secrets;
-  const hs = keysFrom(from === 'client' ? s.clientHandshake : s.serverHandshake);
-  const app = keysFrom(from === 'client' ? s.clientApp : s.serverApp);
-  let keys = hs;
+  const handshake = from === 'client' ? s.clientHandshake : s.serverHandshake;
+  const application = from === 'client' ? s.clientApp : s.serverApp;
+  const key = `${handshake}|${application}|${toAscii(stream)}`;
+  const known = opened.get(key);
+  if (known) return known;
+  const records = openStream(handshake, application, from, stream.slice());
+  if (opened.size >= OPENED_KEPT) opened.delete(opened.keys().next().value!);
+  opened.set(key, records);
+  return records;
+}
+
+function openStream(handshake: string, application: string, from: 'client' | 'server', stream: Uint8Array): OpenedRecord[] {
+  const app = keysFrom(application);
+  let keys = keysFrom(handshake);
   const out: OpenedRecord[] = [];
   for (const r of splitRecords(stream)) {
     const body = stream.subarray(r.offset + TLS_RECORD_HEADER, r.offset + r.length);
@@ -139,26 +156,12 @@ export function clientHelloSni(b: Uint8Array, o = 0): string | null {
 
 /** All bytes one side sends in a session, in order. */
 export function sessionStream(session: TlsSession, from: 'client' | 'server'): Uint8Array {
-  const parts = session.flights.filter((f) => f.from === from).map((f) => fromBase64(f.base64));
-  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
-  let o = 0;
-  for (const p of parts) {
-    out.set(p, o);
-    o += p.length;
-  }
-  return out;
+  return concat(...session.flights.filter((f) => f.from === from).map((f) => fromBase64(f.base64)));
 }
 
 /** The HTTP message one side sent, decrypted: all application data records joined. */
 export function decryptHttp(session: TlsSession, from: 'client' | 'server', stream: Uint8Array): Uint8Array {
-  const parts = openRecords(session, from, stream).filter((r) => r.inner === TLS_APPLICATION_DATA).map((r) => r.plaintext);
-  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
-  let o = 0;
-  for (const p of parts) {
-    out.set(p, o);
-    o += p.length;
-  }
-  return out;
+  return concat(...openRecords(session, from, stream).filter((r) => r.inner === TLS_APPLICATION_DATA).map((r) => r.plaintext));
 }
 
 /**

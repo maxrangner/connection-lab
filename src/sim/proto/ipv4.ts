@@ -72,15 +72,10 @@ export function parseIpv4(b: Uint8Array, o: number): ParsedIpv4 {
   };
 }
 
-/** In-place edit of an IPv4 header field set, followed by a fresh header checksum. Returns a copy. */
-export function rewriteIpv4(
-  packet: Uint8Array,
-  edit: { ttl?: number; src?: Ip4; dst?: Ip4 },
-): Uint8Array {
+/** A copy of an IPv4 packet with a new TTL and a fresh header checksum. */
+export function rewriteIpv4(packet: Uint8Array, edit: { ttl: number }): Uint8Array {
   const out = packet.slice();
-  if (edit.ttl !== undefined) out[8] = edit.ttl;
-  if (edit.src) out.set(ipToBytes(edit.src), 12);
-  if (edit.dst) out.set(ipToBytes(edit.dst), 16);
+  out[8] = edit.ttl;
   setU16(out, 10, 0);
   setU16(out, 10, internetChecksum(out, 0, (u8(out, 0) & 0x0f) * 4));
   return out;

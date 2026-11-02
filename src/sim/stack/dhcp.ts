@@ -9,7 +9,6 @@ import {
   DHCP_ACK,
   DHCP_CLIENT_PORT,
   DHCP_DISCOVER,
-  DHCP_NAK,
   DHCP_OFFER,
   DHCP_REQUEST,
   DHCP_SERVER_PORT,
@@ -57,7 +56,7 @@ function sendDhcp(dev: Device, iface: IfaceSpec, dstMac: Mac, src: Ip4, dst: Ip4
 /**
  * The DHCP server in a home router: fixed leases keyed by MAC. It answers an OFFER to a DISCOVER and an ACK to a
  * REQUEST for the right address, each unicast to the client's MAC with the offered address as IP destination (what
- * ISC dhcpd and dnsmasq do when the client did not set the broadcast flag). A wrong request gets a NAK, broadcast.
+ * ISC dhcpd and dnsmasq do when the client did not set the broadcast flag, as no client here does).
  */
 export class DhcpServer {
   private ipId?: number;
@@ -79,30 +78,27 @@ export class DhcpServer {
     else if (type === DHCP_REQUEST) {
       // The client may have taken another server's offer; then this one has nothing to say.
       if (m.options.serverId && m.options.serverId !== iface.ip) return;
-      this.reply(iface, m, m.options.requestedIp === lease ? DHCP_ACK : DHCP_NAK, lease);
+      if (m.options.requestedIp === lease) this.reply(iface, m, DHCP_ACK, lease);
     }
   }
 
   private reply(iface: IfaceSpec, req: ReturnType<typeof parseDhcp>, type: number, lease: Ip4): void {
     const sim = this.router.sim;
     sim.after(this.spec.processing, () => {
-      const nak = type === DHCP_NAK;
       const msg: DhcpMessage = {
         op: BOOTREPLY,
         xid: req.xid,
         secs: 0,
-        broadcast: req.broadcast,
+        broadcast: false,
         ciaddr: req.ciaddr,
-        yiaddr: nak ? UNSPECIFIED_IP : lease,
+        yiaddr: lease,
         siaddr: iface.ip,
         giaddr: req.giaddr,
         chaddr: req.chaddr,
-        options: nak
-          ? { type, serverId: iface.ip }
-          : { type, serverId: iface.ip, leaseTime: this.spec.lease, subnetMask: this.spec.mask, routers: [this.spec.router], dns: this.spec.dns },
+        options: { type, serverId: iface.ip, leaseTime: this.spec.lease, subnetMask: this.spec.mask, routers: [this.spec.router], dns: this.spec.dns },
       };
       const bytes = buildDhcp(msg);
-      const pk = sim.newPacket(this.router.id, 'dhcp', `DHCP ${dhcpTypeName(type)}${nak ? '' : ` ${lease}`}`);
+      const pk = sim.newPacket(this.router.id, 'dhcp', `DHCP ${dhcpTypeName(type)} ${lease}`);
       const pduId = sim.pdu(pk.id, bytes, 'dhcp');
       sim.emit({
         type: 'app',
@@ -113,10 +109,8 @@ export class DhcpServer {
         info: { type: dhcpTypeName(type), mac: req.chaddr, address: msg.yiaddr, mask: this.spec.mask, router: this.spec.router, dns: this.spec.dns, lease: this.spec.lease, xid: hex(req.xid, 8) },
       });
       sim.emit({ type: 'encapsulate', deviceId: this.router.id, packetId: pk.id, layer: 5, protocol: 'dhcp', pduId });
-      // A NAK is always broadcast (RFC 2131 §4.1): the client may not have the address the request was about.
-      const broadcast = nak || req.broadcast;
       this.ipId = ((this.ipId ?? this.rng.int(0, 0xffff)) + 1) & 0xffff;
-      sendDhcp(this.router, iface, broadcast ? BROADCAST_MAC : req.chaddr, iface.ip, broadcast ? BROADCAST_IP : lease, DHCP_SERVER_PORT, DHCP_CLIENT_PORT, bytes, pk.id, this.ipId);
+      sendDhcp(this.router, iface, req.chaddr, iface.ip, lease, DHCP_SERVER_PORT, DHCP_CLIENT_PORT, bytes, pk.id, this.ipId);
     });
   }
 }
@@ -135,8 +129,7 @@ export function startDhcpClient(host: Host, spec: DhcpClientSpec, onConfigured: 
   let offer: { ip: Ip4; server: Ip4 } | undefined;
   let attempt = 0;
   let timeout = DHCP_TIMEOUT;
-  let timer: number | undefined;
-  let timerId = '';
+  const timer = host.timer('dhcp', 'dhcp-retry');
 
   const send = (retry: boolean): void => {
     attempt++;
@@ -173,10 +166,7 @@ export function startDhcpClient(host: Host, spec: DhcpClientSpec, onConfigured: 
     });
     sim.emit({ type: 'encapsulate', deviceId: host.id, packetId: pk.id, layer: 5, protocol: 'dhcp', pduId });
     sendDhcp(host, iface, BROADCAST_MAC, UNSPECIFIED_IP, BROADCAST_IP, DHCP_CLIENT_PORT, DHCP_SERVER_PORT, bytes, pk.id, host.nextIpId());
-    timerId = host.newTimerId('dhcp');
-    sim.emit({ type: 'timer:set', deviceId: host.id, timerId, kind: 'dhcp-retry', fireAt: sim.now + timeout });
-    timer = sim.after(timeout, () => {
-      sim.emit({ type: 'timer:fire', deviceId: host.id, timerId, kind: 'dhcp-retry' });
+    timer.set(timeout, () => {
       if (attempt < DHCP_ATTEMPTS) {
         timeout *= 2;
         send(true);
@@ -187,35 +177,22 @@ export function startDhcpClient(host: Host, spec: DhcpClientSpec, onConfigured: 
     });
   };
 
-  const cancelTimer = (): void => {
-    sim.cancel(timer);
-    sim.emit({ type: 'timer:cancel', deviceId: host.id, timerId, kind: 'dhcp-retry' });
-  };
-
   host.udpBind(DHCP_CLIENT_PORT, 'dhcp', (from, data) => {
     const m = parseDhcp(data, 0);
     if (m.op !== BOOTREPLY || m.xid !== xid) return;
     const type = m.options.type;
     if (state === 'selecting' && type === DHCP_OFFER) {
-      cancelTimer();
+      timer.cancel();
       offer = { ip: m.yiaddr, server: m.options.serverId ?? from.ip };
       state = 'requesting';
       attempt = 0;
       timeout = DHCP_TIMEOUT;
       send(false);
     } else if (state === 'requesting' && type === DHCP_ACK && offer && m.yiaddr === offer.ip) {
-      cancelTimer();
+      timer.cancel();
       host.udpUnbind(DHCP_CLIENT_PORT);
       const lease: Lease = { ip: m.yiaddr, mask: m.options.subnetMask ?? '255.255.255.0', router: m.options.routers?.[0], dns: m.options.dns ?? [], leaseTime: m.options.leaseTime ?? 0, server: offer.server };
       configure(lease);
-    } else if (state === 'requesting' && type === DHCP_NAK) {
-      // Refused: start over.
-      cancelTimer();
-      offer = undefined;
-      state = 'selecting';
-      attempt = 0;
-      timeout = DHCP_TIMEOUT;
-      send(false);
     }
   });
 
@@ -223,7 +200,6 @@ export function startDhcpClient(host: Host, spec: DhcpClientSpec, onConfigured: 
   const configure = (lease: Lease): void => {
     const prefixLen = maskToPrefixLen(lease.mask);
     iface.ip = lease.ip;
-    iface.prefixLen = prefixLen;
     host.routes.push({ network: networkOf(lease.ip, prefixLen), prefixLen, iface: iface.id });
     if (lease.router) host.routes.push({ network: '0.0.0.0', prefixLen: 0, via: lease.router, iface: iface.id });
     sim.emit({

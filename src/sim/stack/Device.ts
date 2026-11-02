@@ -1,8 +1,9 @@
 import { BROADCAST_IP, BROADCAST_MAC, inSubnet, ZERO_MAC, type Ip4, type Mac } from '../bytes/addr';
 import { hash32, type Rng } from '../core/Rng';
 import type { Simulator } from '../core/Simulator';
+import type { TimerKind } from '../events/SimEvent';
 import type { DeviceSpec, IfaceSpec, RouteSpec } from '../model';
-import { ARP_REPLY, ARP_REQUEST, buildArp, parseArp } from '../proto/arp';
+import { ARP_LEN, ARP_REPLY, ARP_REQUEST, buildArp, parseArp } from '../proto/arp';
 import { buildEthernet, ETHERTYPE_ARP, ETHERTYPE_IPV4, parseEthernet } from '../proto/ethernet';
 import { buildIcmp, ICMP_ECHO_REPLY, icmpTypeName, isIcmpError, parseIcmp, type ICMP_DEST_UNREACHABLE, type ICMP_TIME_EXCEEDED, type ParsedIcmp } from '../proto/icmp';
 import { buildIpv4, IPPROTO_ICMP, parseIpv4, type ParsedIpv4 } from '../proto/ipv4';
@@ -101,7 +102,7 @@ export abstract class Device {
     const pk = sim.newPacket(this.id, 'icmp', label);
     sim.emit({ type: 'encapsulate', deviceId: this.id, packetId: pk.id, layer: 3, protocol: 'icmp', pduId: sim.pdu(pk.id, msg, 'icmp') });
     // Linux sends its ICMP replies and errors without Don't Fragment, with the default TTL.
-    const ip = buildIpv4({ id: this.nextIpId(), df: false, ttl: this.spec.initialTtl ?? 64, protocol: IPPROTO_ICMP, src, dst }, msg);
+    const ip = buildIpv4({ id: this.nextIpId(), df: false, ttl: 64, protocol: IPPROTO_ICMP, src, dst }, msg);
     sim.emit({ type: 'encapsulate', deviceId: this.id, packetId: pk.id, layer: 3, protocol: 'ipv4', pduId: sim.pdu(pk.id, ip, 'ipv4') });
     this.transmitIp(ip, pk.id);
   }
@@ -136,6 +137,27 @@ export abstract class Device {
 
   newTimerId(kind: string): string {
     return `${this.id}:${kind}:${this.timerCounter++}`;
+  }
+
+  /** A program's retry or wait timer, in the event log. `set` starts a new one; `cancel` calls off the latest and logs it, whether it still runs or not. */
+  timer(name: string, kind: TimerKind): { set(delay: number, fired: () => void): void; cancel(): void } {
+    const sim = this.sim;
+    let handle: number | undefined;
+    let timerId = '';
+    return {
+      set: (delay, fired) => {
+        timerId = this.newTimerId(name);
+        sim.emit({ type: 'timer:set', deviceId: this.id, timerId, kind, fireAt: sim.now + delay });
+        handle = sim.after(delay, () => {
+          sim.emit({ type: 'timer:fire', deviceId: this.id, timerId, kind });
+          fired();
+        });
+      },
+      cancel: () => {
+        sim.cancel(handle);
+        sim.emit({ type: 'timer:cancel', deviceId: this.id, timerId, kind });
+      },
+    };
   }
 
   /** Longest-prefix match over the routing table. */
@@ -183,7 +205,7 @@ export abstract class Device {
       }
     }
     if (eth.type === ETHERTYPE_ARP) {
-      const arpBytes = frame.slice(eth.payloadStart, eth.payloadStart + 28);
+      const arpBytes = frame.slice(eth.payloadStart, eth.payloadStart + ARP_LEN);
       const pduId = sim.pdu(packetId, arpBytes, 'arp');
       sim.emit({ type: 'decapsulate', deviceId: this.id, packetId, layer: 2, protocol: l2, pduId });
       if (port) {
@@ -246,16 +268,15 @@ export abstract class Device {
   }
 
   /** Routes an IPv4 packet and hands it to the link layer (resolving the next hop's MAC first if needed). */
-  protected sendIp(ipBytes: Uint8Array, packetId: string, emitRoute = true): boolean {
+  protected sendIp(ipBytes: Uint8Array, packetId: string, emitRoute = true): void {
     const ip = parseIpv4(ipBytes, 0);
     const route = this.lookupRoute(ip.dst);
     if (!route) {
       this.sim.emit({ type: 'drop', packetId, reason: 'no-route', deviceId: this.id });
-      return false;
+      return;
     }
     if (emitRoute) this.emitRoute(ip.dst, route, packetId);
     this.resolveAndSend(this.iface(route.iface), route.via ?? ip.dst, ipBytes, packetId);
-    return true;
   }
 
   /**
@@ -339,7 +360,7 @@ export abstract class Device {
   /** The access point a station's Wi-Fi interface is connected to: the interface at the other end of its link. */
   private bssid(iface: IfaceSpec): Mac {
     const link = this.world.ifaceLink.get(iface.id);
-    const other = link && (link.spec.a === iface.id ? link.spec.b : link.spec.a);
+    const other = link?.peerOf(iface.id);
     const owner = other ? this.world.ifaceOwner.get(other) : undefined;
     return owner && other ? owner.iface(other).mac : BROADCAST_MAC;
   }

@@ -57,8 +57,7 @@ function resolve(host: Host, name: string, resolver: string, done: (ips: string[
   const port = host.ephemeralPort();
   const id = host.random32() & 0xffff;
   let attempt = 0;
-  let timer: number | undefined;
-  let timerId = '';
+  const timer = host.timer('dns', 'dns-retry');
   const query = buildDnsQuery(id, name);
   const send = (): void => {
     attempt++;
@@ -67,10 +66,7 @@ function resolve(host: Host, name: string, resolver: string, done: (ips: string[
     sim.emit({ type: 'app', deviceId: host.id, app: 'dns-client', action: 'dns-lookup', pduId, info: { name, resolver, attempt } });
     sim.emit({ type: 'encapsulate', deviceId: host.id, packetId: pk.id, layer: 5, protocol: 'dns', pduId });
     host.udpSend(port, resolver, 53, query, pk.id);
-    timerId = host.newTimerId('dns');
-    sim.emit({ type: 'timer:set', deviceId: host.id, timerId, kind: 'dns-retry', fireAt: sim.now + DNS_TIMEOUT });
-    timer = sim.after(DNS_TIMEOUT, () => {
-      sim.emit({ type: 'timer:fire', deviceId: host.id, timerId, kind: 'dns-retry' });
+    timer.set(DNS_TIMEOUT, () => {
       if (attempt < DNS_ATTEMPTS) send();
       else {
         host.udpUnbind(port);
@@ -81,8 +77,7 @@ function resolve(host: Host, name: string, resolver: string, done: (ips: string[
   host.udpBind(port, 'dns', (from, data, _packetId, pduId) => {
     const msg = parseDns(data, 0);
     if (from.ip !== resolver || from.port !== 53 || msg.id !== id || !msg.isResponse) return;
-    sim.cancel(timer);
-    sim.emit({ type: 'timer:cancel', deviceId: host.id, timerId, kind: 'dns-retry' });
+    timer.cancel();
     host.udpUnbind(port);
     const ips = dnsAddresses(msg);
     sim.emit({
@@ -100,12 +95,18 @@ function resolve(host: Host, name: string, resolver: string, done: (ips: string[
   send();
 }
 
-/** The addresses for a name: the one still cached from last time, or else what the stub resolver finds out. */
-function findAddress(host: Host, name: string, resolver: string | undefined, known: Ip4 | undefined, done: (ips: string[]) => void, fail: (reason: string) => void): void {
-  if (!known && !resolver) return fail('no DNS resolver configured');
-  if (!known) return resolve(host, name, resolver!, done, fail);
-  host.sim.emit({ type: 'app', deviceId: host.id, app: 'dns-client', action: 'dns-cache-hit', info: { name, addresses: [known] } });
-  done([known]);
+/**
+ * The addresses for a name: the one still cached from last time, or else what the stub resolver finds out. An address is
+ * used as it is, like ping and traceroute do.
+ */
+function lookup(host: Host, name: string, resolver: string | undefined, done: (ips: string[]) => void, fail: (reason: string) => void, known?: Ip4): void {
+  if (known) {
+    host.sim.emit({ type: 'app', deviceId: host.id, app: 'dns-client', action: 'dns-cache-hit', info: { name, addresses: [known] } });
+    return done([known]);
+  }
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(name)) return done([name]);
+  if (!resolver) return fail('no DNS resolver configured');
+  resolve(host, name, resolver, done, fail);
 }
 
 /** `leased` is the resolver DHCP handed out, used when the spec names none. */
@@ -113,8 +114,10 @@ export function startBrowser(host: Host, spec: BrowserSpec, mss: number, leased?
   const sim = host.sim;
   const url = new URL(spec.url);
   sim.emit({ type: 'app', deviceId: host.id, app: 'browser', action: 'start', info: { url: spec.url } });
-  const lookup = (done: (ips: string[]) => void, fail: (reason: string) => void): void => findAddress(host, url.hostname, spec.resolver ?? leased, spec.knownAddress, done, fail);
   lookup(
+    host,
+    url.hostname,
+    spec.resolver ?? leased,
     (ips) => {
       const target = ips[0]!;
       if (spec.tls) {
@@ -175,6 +178,7 @@ export function startBrowser(host: Host, spec: BrowserSpec, mss: number, leased?
       });
     },
     (reason) => sim.emit({ type: 'app', deviceId: host.id, app: 'browser', action: 'error', info: { reason } }),
+    spec.knownAddress,
   );
 }
 
@@ -409,13 +413,6 @@ export function startMqttBroker(host: Host, spec: MqttBrokerSpec, mss: number): 
 
 const round = (ms: number): number => Math.round(ms * 1000) / 1000;
 
-/** An address is used as it is, like ping and traceroute do; a name is looked up first. */
-function lookup(host: Host, name: string, resolver: string | undefined, done: (ips: string[]) => void, fail: (reason: string) => void): void {
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(name)) return done([name]);
-  if (!resolver) return fail('no DNS resolver configured');
-  resolve(host, name, resolver, done, fail);
-}
-
 /**
  * `ping -c count`, like Linux: an echo request a second, each with 56 data bytes (the time of sending, then a pattern),
  * the identifier a process id and the sequence number counting from 1. A reply's round trip is the clock on arrival less
@@ -433,8 +430,7 @@ export function startPing(host: Host, spec: PingSpec, leased?: string): void {
       const id = host.random32() & 0xffff;
       const rtts: number[] = [];
       let sent = 0;
-      let timer: number | undefined;
-      let timerId = '';
+      const timer = host.timer('ping', 'ping-wait');
       const finish = (): void => {
         host.icmpUnlisten(listener);
         const received = rtts.length;
@@ -454,8 +450,7 @@ export function startPing(host: Host, spec: PingSpec, leased?: string): void {
         rtts.push(rttMs);
         sim.emit({ type: 'app', deviceId: host.id, app: 'ping', action: 'ping-reply', pduId, info: { seq: m.seq ?? 0, from: ip.src, ttl: ip.ttl, bytes: m.end - m.dataStart + ICMP_HEADER_LEN, rttMs } });
         if (m.seq === spec.count) {
-          sim.cancel(timer);
-          sim.emit({ type: 'timer:cancel', deviceId: host.id, timerId, kind: 'ping-wait' });
+          timer.cancel();
           finish();
         }
         return true;
@@ -468,10 +463,7 @@ export function startPing(host: Host, spec: PingSpec, leased?: string): void {
         const pduId = sim.pdu(pk.id, msg, 'icmp');
         sim.emit({ type: 'app', deviceId: host.id, app: 'ping', action: 'ping-request', pduId, info: { seq, to: target, id } });
         host.icmpSend(target, msg, pk.id);
-        timerId = host.newTimerId('ping');
-        sim.emit({ type: 'timer:set', deviceId: host.id, timerId, kind: 'ping-wait', fireAt: sim.now + PING_INTERVAL });
-        timer = sim.after(PING_INTERVAL, () => {
-          sim.emit({ type: 'timer:fire', deviceId: host.id, timerId, kind: 'ping-wait' });
+        timer.set(PING_INTERVAL, () => {
           if (sent < spec.count) send();
           else finish();
         });
@@ -508,8 +500,7 @@ export function startTraceroute(host: Host, spec: TracerouteSpec, leased?: strin
       let probe = 0;
       let n = 0;
       let reached = false;
-      let timer: number | undefined;
-      let timerId = '';
+      const timer = host.timer('trace', 'trace-wait');
       const finish = (): void => {
         host.icmpUnlisten(listener);
         host.udpUnbind(port);
@@ -521,12 +512,7 @@ export function startTraceroute(host: Host, spec: TracerouteSpec, leased?: strin
         sentAt.set(dport, sim.now);
         sim.emit({ type: 'app', deviceId: host.id, app: 'traceroute', action: 'trace-probe', info: { ttl, probe: probe + 1, port: dport, to: target } });
         host.udpSend(port, target, dport, data, pk.id, ttl);
-        timerId = host.newTimerId('trace');
-        sim.emit({ type: 'timer:set', deviceId: host.id, timerId, kind: 'trace-wait', fireAt: sim.now + TRACE_WAIT });
-        timer = sim.after(TRACE_WAIT, () => {
-          sim.emit({ type: 'timer:fire', deviceId: host.id, timerId, kind: 'trace-wait' });
-          advance();
-        });
+        timer.set(TRACE_WAIT, advance);
       };
       const advance = (): void => {
         if (++probe === TRACE_PROBES) {
@@ -547,8 +533,7 @@ export function startTraceroute(host: Host, spec: TracerouteSpec, leased?: strin
         if (m.type === ICMP_DEST_UNREACHABLE) reached = true;
         if (path[path.length - 1] !== ip.src) path.push(ip.src);
         sim.emit({ type: 'app', deviceId: host.id, app: 'traceroute', action: 'trace-hop', pduId, info: { ttl, probe: probe + 1, from: ip.src, rttMs: round((sim.now - at) * 1000), reached: reached ? 1 : 0 } });
-        sim.cancel(timer);
-        sim.emit({ type: 'timer:cancel', deviceId: host.id, timerId, kind: 'trace-wait' });
+        timer.cancel();
         advance();
         return true;
       };
@@ -575,16 +560,17 @@ interface VoiceLeg {
  * One end of voice calls on one UDP port: it streams its clip to whoever it is told to, a packet every 20 ms, and plays what
  * comes in by sequence number. A skipped number is a gap: the packet is lost, nothing asks for it again, the call goes on. A
  * call hangs up once both clips are through: its own sent, and the other's length heard from when its first packet came (the
- * clips are the same length). With `answers` it talks back to each new source that calls, each a call of its own, and the
+ * clips are the same length). The friend's phone talks back to each new source that calls, each a call of its own, and the
  * port stays open for the next. No RTCP, no SIP and no jitter buffer: packets are played as they come.
  */
-function voiceEndpoint(host: Host, app: 'voice-call' | 'voice-peer', port: number, clip: Uint8Array, answers = false): { send(to: { ip: Ip4; port: number }): void } {
+function voiceEndpoint(host: Host, app: 'voice-call' | 'voice-peer', port: number, clip: Uint8Array): { send(to: { ip: Ip4; port: number }): void } {
   const sim = host.sim;
+  const answers = app === 'voice-peer';
   const packets = Math.ceil(clip.length / RTP_SAMPLES_PER_PACKET);
   const newLeg = (): VoiceLeg => ({ ssrc: -1, expected: -1, received: 0, gaps: 0, firstAt: -1, sentAll: -1, hangTimer: undefined, done: false });
   /** Each call by the source heard on it. */
   const callers = new Map<number, VoiceLeg>();
-  let own = newLeg();
+  const own = newLeg();
   const finish = (leg: VoiceLeg, ok: boolean): void => {
     leg.done = true;
     if (!answers) host.udpUnbind(port);
@@ -651,10 +637,7 @@ function voiceEndpoint(host: Host, app: 'voice-call' | 'voice-peer', port: numbe
     }
   });
   return {
-    send(to) {
-      own = newLeg();
-      speak(own, to);
-    },
+    send: (to) => speak(own, to),
   };
 }
 
@@ -662,19 +645,19 @@ function voiceEndpoint(host: Host, app: 'voice-call' | 'voice-peer', port: numbe
 export function startVoiceCall(host: Host, spec: VoiceCallSpec, leased?: string): void {
   const sim = host.sim;
   sim.emit({ type: 'app', deviceId: host.id, app: 'voice-call', action: 'start', info: { to: spec.to } });
-  findAddress(
+  lookup(
     host,
     spec.to,
     spec.resolver ?? leased,
-    spec.knownAddress,
     (ips) => voiceEndpoint(host, 'voice-call', host.ephemeralPort(), spec.clip).send({ ip: ips[0]!, port: RTP_PORT }),
     (reason) => sim.emit({ type: 'app', deviceId: host.id, app: 'voice-call', action: 'error', info: { reason } }),
+    spec.knownAddress,
   );
 }
 
 /** The friend's phone: listens on its RTP port and, when the first packet of a call comes, talks back to where it came from, to each caller in turn. */
 export function startVoicePeer(host: Host, spec: VoicePeerSpec): void {
-  voiceEndpoint(host, 'voice-peer', spec.port, spec.clip, true);
+  voiceEndpoint(host, 'voice-peer', spec.port, spec.clip);
 }
 
 /**
@@ -689,8 +672,7 @@ function iterate(host: Host, name: string, upstream: NonNullable<DnsServerSpec['
   let server = upstream.hops[0]!.server;
   let id = 0;
   let attempt = 0;
-  let timer: number | undefined;
-  let timerId = '';
+  const timer = host.timer('dns', 'dns-retry');
   const ask = (): void => {
     attempt++;
     if (attempt === 1) id = host.random32() & 0xffff;
@@ -700,10 +682,7 @@ function iterate(host: Host, name: string, upstream: NonNullable<DnsServerSpec['
     sim.emit({ type: 'app', deviceId: host.id, app: 'dns-server', action: 'dns-iterate', pduId, info: { name, server: server.name, ip: server.ip, hop, attempt } });
     sim.emit({ type: 'encapsulate', deviceId: host.id, packetId: pk.id, layer: 5, protocol: 'dns', pduId });
     host.udpSend(port, server.ip, 53, query, pk.id);
-    timerId = host.newTimerId('dns');
-    sim.emit({ type: 'timer:set', deviceId: host.id, timerId, kind: 'dns-retry', fireAt: sim.now + UPSTREAM_TIMEOUT });
-    timer = sim.after(UPSTREAM_TIMEOUT, () => {
-      sim.emit({ type: 'timer:fire', deviceId: host.id, timerId, kind: 'dns-retry' });
+    timer.set(UPSTREAM_TIMEOUT, () => {
       if (attempt < UPSTREAM_ATTEMPTS) ask();
       else {
         host.udpUnbind(port);
@@ -714,8 +693,7 @@ function iterate(host: Host, name: string, upstream: NonNullable<DnsServerSpec['
   host.udpBind(port, 'dns', (from, data, _packetId, pduId) => {
     const msg = parseDns(data, 0);
     if (from.ip !== server.ip || from.port !== 53 || msg.id !== id || !msg.isResponse) return;
-    sim.cancel(timer);
-    sim.emit({ type: 'timer:cancel', deviceId: host.id, timerId, kind: 'dns-retry' });
+    timer.cancel();
     const ips = dnsAddresses(msg);
     const referral = dnsReferral(msg);
     if (ips.length) {
@@ -886,7 +864,7 @@ export function startPortScan(host: Host, spec: Extract<AppSpec, { kind: 'port-s
     sim.after(i * spec.gap, () => {
       const seg = buildTcp({ srcPort: port, dstPort: dst, seq: host.random32(), ack: 0, flags: TCP_SYN, window: 1024, options: [{ kind: 'mss', mss: 1460 }] }, new Uint8Array(0), host.ip, spec.to);
       const pk = sim.newPacket(host.id, 'tcp', `SYN to port ${dst}`, { tcp: { connId: `${host.id}:${port}-${spec.to}:${dst}`, relSeq: 0, relAck: 0, len: 0, flags: TCP_SYN } });
-      host.ipOutput(IPPROTO_TCP, spec.to, seg, pk.id, true);
+      host.ipOutput(IPPROTO_TCP, spec.to, seg, pk.id);
     });
   });
 }

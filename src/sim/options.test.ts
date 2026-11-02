@@ -347,8 +347,8 @@ describe('a thin pipe: DSL to the ISP, with a small buffer on its port', () => {
   const queued = of(r, 'queue').filter((e) => e.linkId === 'wan' && e.iface === 'isp.cust' && e.deviceId === 'isp');
 
   it('is a 20 Mbit/s line with the same delay and a finite buffer; stretched it keeps both; the satellite wins over it', () => {
-    expect(wanOf({ thin: true })).toMatchObject({ bitsPerSecond: THIN_BPS, delay: 0.002, queue: THIN_QUEUE, label: 'DSL to ISP · 20 Mbit/s · 2 ms' });
-    expect(wanOf({ thin: true, wanDelay: 0.01 })).toMatchObject({ bitsPerSecond: THIN_BPS, delay: 0.01, queue: THIN_QUEUE, label: 'DSL to ISP · 20 Mbit/s · 10 ms' });
+    expect(wanOf({ thin: true })).toMatchObject({ bitsPerSecond: THIN_BPS, delay: 0.002, queue: THIN_QUEUE });
+    expect(wanOf({ thin: true, wanDelay: 0.01 })).toMatchObject({ bitsPerSecond: THIN_BPS, delay: 0.01, queue: THIN_QUEUE });
     expect(wanOf({ thin: true, slow: true })).toMatchObject({ bitsPerSecond: 25e6, delay: 0.28 });
     expect(wanOf({ thin: true, slow: true }).queue).toBeUndefined();
     expect(wanOf({}).queue).toBeUndefined();
@@ -769,8 +769,8 @@ describe('a cold resolver (the real walk root → .com → authoritative)', () =
       expect(onUp(run(o))).toHaveLength(0);
     }
     expect(warm.scenario.devices.map((d) => d.kind)).toEqual(expect.arrayContaining(['root-server', 'tld-server', 'auth-server']));
-    expect(warm.scenario.devices.find((d) => d.id === 'tld')).toMatchObject({ label: '.com server', sublabel: 'l.gtld-servers.net' });
-    expect(run({ site: 'info.cern.ch' }).scenario.devices.find((d) => d.id === 'tld')).toMatchObject({ label: '.ch server', sublabel: 'b.nic.ch' });
+    expect(warm.scenario.devices.find((d) => d.id === 'tld')).toMatchObject({ label: '.com server' });
+    expect(run({ site: 'info.cern.ch' }).scenario.devices.find((d) => d.id === 'tld')).toMatchObject({ label: '.ch server' });
   });
 
   it('every field of every frame on the upstream cables is explained and checks out', () => {

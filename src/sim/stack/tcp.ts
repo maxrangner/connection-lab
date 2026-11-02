@@ -1,6 +1,7 @@
 import type { Ip4 } from '../bytes/addr';
 import { concat } from '../bytes/bytes';
 import type { TcpState } from '../events/SimEvent';
+import { IPPROTO_TCP } from '../proto/ipv4';
 import type { Protocol } from '../proto/types';
 import {
   buildTcp,
@@ -32,6 +33,12 @@ export const seqDiff = (a: number, b: number): number => (a - b) | 0; // signed 
 export const seqLt = (a: number, b: number): boolean => seqDiff(a, b) < 0;
 export const seqLe = (a: number, b: number): boolean => seqDiff(a, b) <= 0;
 
+/** How much of the sequence space a segment takes: its data, and one each for a SYN and a FIN. */
+const seqLen = (s: { data: Uint8Array; syn: boolean; fin: boolean }): number => s.data.length + (s.syn ? 1 : 0) + (s.fin ? 1 : 0);
+
+/** How a host finds the connection a segment belongs to. */
+export const tcpKey = (localPort: number, remoteIp: Ip4, remotePort: number): string => `${localPort}|${remoteIp}|${remotePort}`;
+
 interface OutSegment {
   seq: number;
   data: Uint8Array;
@@ -57,7 +64,6 @@ export interface TcpHandlers {
   onConnected?(conn: TcpConnection): void;
   onData?(conn: TcpConnection, data: Uint8Array, packetId: string): void;
   onPeerClose?(conn: TcpConnection): void;
-  onClosed?(conn: TcpConnection): void;
   onError?(conn: TcpConnection, reason: string): void;
 }
 
@@ -112,7 +118,6 @@ export class TcpConnection {
   private tsOk = false;
   private tsOffset = 0;
   private tsRecent = 0;
-  private peerSackPerm = false;
 
   // timers (RFC 6298)
   private rto = INITIAL_RTO;
@@ -135,7 +140,7 @@ export class TcpConnection {
   }
 
   get key(): string {
-    return `${this.localPort}|${this.remoteIp}|${this.remotePort}`;
+    return tcpKey(this.localPort, this.remoteIp, this.remotePort);
   }
 
   // ───────────────────────────── public API ─────────────────────────────
@@ -209,7 +214,7 @@ export class TcpConnection {
       if (this.state === 'SYN_RCVD' && seg.seq === this.irs) {
         this.host.sim.emit({ type: 'tcp:duplicate', deviceId: this.host.id, connId: this.id, packetId });
         const synAck = this.outstanding.find((s) => s.syn);
-        if (synAck) this.retransmit(synAck, 'dup-syn', false);
+        if (synAck) this.retransmit(synAck, 'dup-syn');
       } else {
         this.host.sim.emit({ type: 'tcp:duplicate', deviceId: this.host.id, connId: this.id, packetId });
         this.sendAck('ACK');
@@ -234,7 +239,7 @@ export class TcpConnection {
         payload.length === 0 &&
         !fin &&
         this.outstanding.length > 0 &&
-        (this.wsOk ? seg.window << this.peerWscale : seg.window) === this.sndWnd
+        this.scaledWindow(seg) === this.sndWnd
       ) {
         this.dupAcks++;
         this.host.sim.emit({ type: 'tcp:dup-ack', deviceId: this.host.id, connId: this.id, count: this.dupAcks, packetId });
@@ -243,11 +248,11 @@ export class TcpConnection {
           const first = this.outstanding[0];
           if (first) {
             this.recover = this.sndNxt;
-            this.retransmit(first, 'fast', false);
+            this.retransmit(first, 'fast');
           }
         }
       }
-      this.sndWnd = this.wsOk ? seg.window << this.peerWscale : seg.window;
+      this.sndWnd = this.scaledWindow(seg);
     }
 
     if (payload.length > 0 || fin) this.receiveData(seg.seq, payload, fin, packetId);
@@ -344,8 +349,7 @@ export class TcpConnection {
     this.growCwnd(seqDiff(ack, this.sndUna));
     while (this.outstanding.length) {
       const s = this.outstanding[0]!;
-      const end = seqAdd(s.seq, s.data.length + (s.syn ? 1 : 0) + (s.fin ? 1 : 0));
-      if (!seqLe(end, ack)) break;
+      if (!seqLe(seqAdd(s.seq, seqLen(s)), ack)) break;
       this.outstanding.shift();
       if (s.retransmits === 0) fresh = sim.now - s.sentAt; // Karn's algorithm: only a segment sent once is measured
       else resent = true;
@@ -360,15 +364,12 @@ export class TcpConnection {
     // A partial ACK: the next hole is lost too, and no more duplicate ACKs will say so (RFC 6582).
     const next = this.recover !== undefined && seqLt(ack, this.recover) ? this.outstanding[0] : undefined;
     if (!next) this.recover = undefined;
-    if (next) this.retransmit(next, 'recovery', false); // restarts the timer itself
+    if (next) this.retransmit(next, 'recovery'); // restarts the timer itself
     else this.restartRtoTimer();
     if (finAcked) {
       if (this.state === 'FIN_WAIT_1') this.setState('FIN_WAIT_2');
       else if (this.state === 'CLOSING') this.enterTimeWait();
-      else if (this.state === 'LAST_ACK') {
-        this.closeNow();
-        this.handlers.onClosed?.(this);
-      }
+      else if (this.state === 'LAST_ACK') this.closeNow();
     }
   }
 
@@ -413,7 +414,12 @@ export class TcpConnection {
 
   /** What is really on its way: everything outstanding but what a timeout wrote off and what the peer says it has (RFC 6675). */
   private pipe(): number {
-    return this.outstanding.reduce((n, s) => n + (s.lost || this.isSacked(s) ? 0 : s.data.length + (s.syn ? 1 : 0) + (s.fin ? 1 : 0)), 0);
+    return this.outstanding.reduce((n, s) => n + (s.lost || this.isSacked(s) ? 0 : seqLen(s)), 0);
+  }
+
+  /** The window a segment gives, once the shift agreed at the start is applied. */
+  private scaledWindow(seg: ParsedTcp): number {
+    return this.wsOk ? seg.window << this.peerWscale : seg.window;
   }
 
   /** Did the peer's SACK blocks say it has this whole segment? (They describe data only, so never a FIN.) */
@@ -429,7 +435,7 @@ export class TcpConnection {
       if (!s.lost) continue;
       if (this.pipe() + s.data.length > window) break;
       s.lost = false;
-      this.retransmit(s, 'recovery', false);
+      this.retransmit(s, 'recovery');
     }
   }
 
@@ -474,13 +480,13 @@ export class TcpConnection {
       packetId: '',
       label: p.label,
     };
-    this.sndNxt = seqAdd(this.sndNxt, p.data.length + (p.syn ? 1 : 0) + (p.fin ? 1 : 0));
+    this.sndNxt = seqAdd(this.sndNxt, seqLen(p));
     this.outstanding.push(seg);
     seg.packetId = this.transmit(seg, p.label);
     if (this.rtoTimer === undefined) this.restartRtoTimer();
   }
 
-  private retransmit(seg: OutSegment, cause: 'rto' | 'fast' | 'recovery' | 'dup-syn', backoff: boolean): void {
+  private retransmit(seg: OutSegment, cause: 'rto' | 'fast' | 'recovery' | 'dup-syn'): void {
     const original = seg.packetId;
     if (cause === 'rto' || cause === 'fast') this.shrinkCwnd(seg, cause);
     seg.retransmits++;
@@ -495,7 +501,7 @@ export class TcpConnection {
       cause,
       rto: this.rto,
     });
-    if (backoff) this.rto = Math.min(MAX_RTO, this.rto * 2); // RFC 6298 §5.5
+    if (cause === 'rto') this.rto = Math.min(MAX_RTO, this.rto * 2); // RFC 6298 §5.5
     this.restartRtoTimer();
   }
 
@@ -558,7 +564,7 @@ export class TcpConnection {
         flags,
       },
     });
-    this.host.ipOutput(6, this.remoteIp, tcpBytes, pk.id, true, this.opts.app, this.localIp);
+    this.host.ipOutput(IPPROTO_TCP, this.remoteIp, tcpBytes, pk.id, this.opts.app, this.localIp);
     return pk.id;
   }
 
@@ -583,13 +589,12 @@ export class TcpConnection {
     for (const o of seg.options) {
       if (o.kind === 'mss') this.peerMss = o.mss;
       else if (o.kind === 'ws') ws = o.shift;
-      else if (o.kind === 'sackPerm') this.peerSackPerm = true;
+      else if (o.kind === 'sackPerm') this.sackOk = true;
       else if (o.kind === 'ts') this.tsOk = true;
     }
     // Window scaling and SACK only apply if both sides offered them; we always offer them.
     this.wsOk = ws !== undefined;
     this.peerWscale = ws ?? 0;
-    this.sackOk = this.peerSackPerm;
   }
 
   /** Remember the peer's clock to echo it; it only moves forward (RFC 7323 §4.3), except when the SYN sets it. */
@@ -625,7 +630,7 @@ export class TcpConnection {
       this.recover = undefined;
       // Everything still out is written off, except what the peer's SACK blocks say has arrived.
       for (const s of this.outstanding) s.lost = s !== first && !this.isSacked(s);
-      this.retransmit(first, 'rto', true);
+      this.retransmit(first, 'rto');
     });
   }
 
@@ -650,7 +655,6 @@ export class TcpConnection {
     this.twTimer = sim.after(TIME_WAIT, () => {
       sim.emit({ type: 'timer:fire', deviceId: this.host.id, timerId, kind: 'tcp-timewait' });
       this.closeNow();
-      this.handlers.onClosed?.(this);
     });
   }
 
@@ -665,7 +669,6 @@ export class TcpConnection {
     const inUse = calling || this.state === 'SYN_RCVD' || this.state === 'ESTABLISHED' || this.state === 'CLOSE_WAIT';
     this.closeNow();
     if (inUse) this.handlers.onError?.(this, calling ? 'connection refused' : 'connection reset');
-    this.handlers.onClosed?.(this);
   }
 
   private setState(to: TcpState): void {

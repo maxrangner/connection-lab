@@ -4,7 +4,7 @@ import type { NatEntry } from '../events/SimEvent';
 import type { IfaceSpec } from '../model';
 import { ICMP_TIME_EXCEEDED, ICMP_TTL_EXCEEDED } from '../proto/icmp';
 import { buildIpv4, IPPROTO_UDP, parseIpv4, rewriteIpv4 } from '../proto/ipv4';
-import { buildUdp, parseUdp, UDP_HEADER_LEN } from '../proto/udp';
+import { buildUdp, parseUdp } from '../proto/udp';
 import { buildWgData, openWgData, WG_PORT } from '../proto/wireguard';
 import { u16 } from '../bytes/bytes';
 import { Host } from './Host';
@@ -84,7 +84,7 @@ export class VpnServer extends Host {
     const ip = parseIpv4(bytes, 0);
     if (ip.dst === this.ip && ip.protocol === IPPROTO_UDP && parseUdp(bytes, ip.headerLen).dstPort === WG_PORT) {
       const udp = parseUdp(bytes, ip.headerLen);
-      const opened = openWgData(this.keys.up, bytes.slice(ip.headerLen + UDP_HEADER_LEN, ip.headerLen + udp.length));
+      const opened = openWgData(this.keys.up, bytes.slice(udp.payloadStart, udp.payloadEnd));
       if (!opened) {
         sim.emit({ type: 'drop', packetId, reason: 'bad-checksum', deviceId: this.id });
         return;
