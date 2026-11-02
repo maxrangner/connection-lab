@@ -3,6 +3,7 @@ import { ByteWriter, hex, setU16, u16 } from '../bytes/bytes';
 import { transportChecksum } from '../bytes/checksum';
 import { IPPROTO_UDP } from './ipv4';
 import { FieldList, type LayerPdu } from './types';
+import { WG_PORT } from './wireguard';
 
 export const UDP_HEADER_LEN = 8;
 
@@ -41,13 +42,16 @@ export function parseUdp(b: Uint8Array, o: number): ParsedUdp {
   };
 }
 
-export function portName(p: number): string {
+export function portName(p: number, dst = false): string {
   if (p === 53) return ' (DNS)';
   if (p === 67) return ' (DHCP server)';
   if (p === 68) return ' (DHCP client)';
   if (p === 80) return ' (HTTP)';
   if (p === 443) return ' (HTTPS)';
   if (p === 5004) return ' (RTP)';
+  if (p === WG_PORT) return ' (WireGuard)';
+  // Where traceroute aims: ports nobody is expected to listen on.
+  if (dst && p >= 33434 && p <= 33534) return ' (traceroute)';
   if (p >= 32768) return ' (ephemeral)';
   return '';
 }
@@ -58,7 +62,7 @@ export function describeUdp(b: Uint8Array, o: number, srcIp?: Ip4, dstIp?: Ip4):
     srcIp && dstIp ? transportChecksum(srcIp, dstIp, IPPROTO_UDP, b.subarray(o, o + p.length)) === 0 : undefined;
   const f = new FieldList();
   f.add('udp.srcport', 'Source port', o, 2, `${p.srcPort}${portName(p.srcPort)}`, 'key', 'Port of the sending program. Clients pick a random high "ephemeral" port so replies find their way back to the right socket.');
-  f.add('udp.dstport', 'Destination port', o + 2, 2, `${p.dstPort}${portName(p.dstPort)}`, 'key', 'Port of the receiving program. Well-known services listen on fixed ports, for example DNS on 53.');
+  f.add('udp.dstport', 'Destination port', o + 2, 2, `${p.dstPort}${portName(p.dstPort, true)}`, 'key', 'Port of the receiving program. Well-known services listen on fixed ports, for example DNS on 53.');
   f.add('udp.len', 'Length', o + 4, 2, `${p.length} bytes`, 'detail', 'Length of the UDP header (8 bytes) plus its payload.');
   f.add('udp.checksum', 'Checksum', o + 6, 2, `${hex(p.checksum, 4)}${valid === undefined ? '' : valid ? ' ✓' : ' ✗'}`, 'detail', "Covers the UDP header, the data and a pseudo-header of source IP, destination IP, protocol and length. NAT must recompute it after changing addresses or ports.");
   return {

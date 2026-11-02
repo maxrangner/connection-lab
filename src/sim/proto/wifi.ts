@@ -163,16 +163,16 @@ export function describeWifi(frame: Uint8Array, innerEnd?: number): LayerPdu {
       : 'Clear: this is the first time this frame goes out. It is set on a copy sent again because no acknowledgement came.',
     { bits: { start: 12, count: 1 } });
   f.add('wifi.duration', 'Duration', 2, 2, `${WIFI_DURATION_US} µs`, 'detail',
-    'How long the air stays reserved after this frame, for the short acknowledgement the receiver sends back. Other devices that hear it wait that long before talking.');
+    'How long the air stays reserved after this frame, for the short acknowledgement a receiver sends back. A broadcast gets none. Other devices that hear it wait that long before talking.');
   const bcast = (m: Mac): string => (m === BROADCAST_MAC ? ' (broadcast)' : '');
   f.add('wifi.addr1', p.toAp ? 'Receiver (access point)' : 'Receiver (station)', 4, 6, p.addr1 + bcast(p.addr1), 'key',
-    p.toAp ? 'The access point this phone is connected to (its BSSID). Only it acts on the frame.' : 'The phone this frame is for.');
+    p.toAp ? 'The access point this device is connected to (its BSSID). Only it acts on the frame.' : 'The device this frame is for, or everyone in range if it is a broadcast.');
   f.add('wifi.addr2', p.toAp ? 'Transmitter (station)' : 'Transmitter (access point)', 10, 6, p.addr2, 'key',
-    p.toAp ? 'The phone that sent the frame through the air.' : 'The access point that sent the frame through the air (its BSSID).');
+    p.toAp ? 'The device that sent the frame through the air.' : 'The access point that sent the frame through the air (its BSSID).');
   f.add('wifi.addr3', p.toAp ? 'Destination' : 'Source', 16, 6, p.addr3 + bcast(p.addr3), 'key',
     p.toAp
-      ? 'Who the frame is really for beyond the access point. Wi-Fi needs this third address because the radio receiver and the final destination can differ; here the access point is built into the router, so they are the same box.'
-      : 'Who originally sent the frame; here the router, which is also the access point.');
+      ? 'Who the frame is really for beyond the access point. Wi-Fi needs this third address because the radio receiver and the final destination can differ: it may be the router the access point is built into, or another device on the network.'
+      : 'Who originally sent the frame: the router the access point is built into, or another device on the network.');
   f.add('wifi.seq', 'Sequence number', 22, 2, String(p.seq), 'detail',
     'Counts frames from this sender so a receiver can spot a duplicate when a frame is sent again after its acknowledgement was lost.');
   f.add('wifi.llc', 'LLC/SNAP', WIFI_HEADER_LEN, LLC_SNAP_LEN, `aa aa 03 00 00 00 · ${hex(p.type, 4)} (${etherTypeName(p.type)})`, 'detail',

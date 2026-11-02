@@ -174,9 +174,17 @@ export function takeMqtt(b: Uint8Array): { messages: MqttMessage[]; rest: Uint8A
   }
 }
 
+/** Bytes that start partway through a message, or a message that goes on in the next segment: only the stream can tell. */
+function partOfMessage(o: number, end: number): LayerPdu {
+  const f = new FieldList();
+  f.add('mqtt.continued', 'Part of a message', o, end - o, `${end - o} bytes`, 'detail', 'A piece of an MQTT message that TCP carried across more than one segment. TCP puts the pieces back in order.');
+  return { protocol: 'mqtt', layer: PROTOCOL_LAYER.mqtt, start: o, headerEnd: end, payloadEnd: end, end, summary: 'MQTT, part of a message', fields: f.list };
+}
+
 export function describeMqtt(b: Uint8Array, o: number, end: number): LayerPdu {
-  const h = fixedHeader(b, o, end)!;
-  const msgEnd = Math.min(end, h.body + h.length);
+  const h = fixedHeader(b, o, end);
+  if (!h || !TYPE_NAMES[h.type] || h.body + h.length > end) return partOfMessage(o, end);
+  const msgEnd = h.body + h.length;
   const name = TYPE_NAMES[h.type] ?? `type ${h.type}`;
   const m = parse(b, h, msgEnd);
   const f = new FieldList();

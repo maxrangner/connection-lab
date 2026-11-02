@@ -26,7 +26,9 @@ function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
 const cache = new Map<string, string>();
 
 /** Returns the color with its lightness multiplied by `k` (clamped), as an hsl() string. */
-export function shade(hex: string, k: number): string {
+export function shade(hex: string, shadeBy: number): string {
+  // A turning packet has a new k every frame: rounded, so this stays a small cache.
+  const k = Math.round(shadeBy * 500) / 500;
   const key = `${hex}|${k}`;
   let out = cache.get(key);
   if (!out) {

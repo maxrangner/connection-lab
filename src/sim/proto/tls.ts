@@ -3,7 +3,7 @@ import { aes128GcmDecrypt, hkdfExpandLabel } from '../crypto/crypto';
 import { FieldList, type LayerPdu } from './types';
 
 /**
- * TLS 1.3 records (RFC 8446 §5): type (1) · legacy version 0x0303 (2) · length (2) · body. After the hellos every
+ * TLS 1.3 records (RFC 8446 §5): type (1) · legacy version (2) · length (2) · body. After the hellos every
  * record looks like "application data" (type 23) from the outside; only the two ends, holding the session's keys,
  * can open one and see what it really carries (handshake messages, the HTTP request or response, an alert).
  */
@@ -175,7 +175,7 @@ export function describeTls(b: Uint8Array, o: number, end: number): LayerPdu {
   const looksLikeHeader = (x: number): boolean => (b[x] === 20 || b[x] === 21 || b[x] === 22 || b[x] === 23) && b[x + 1] === 3 && x + 5 <= end;
   if (first !== undefined && !looksLikeHeader(p)) {
     f.add('tls.continued', 'Rest of a record', p, end - p, `${end - p} bytes`, 'detail',
-      'These bytes continue a TLS record that started in an earlier TCP segment. TLS records can be bigger than one packet; TCP puts the pieces back in order.');
+      'These bytes continue a TLS record that started in an earlier TCP segment, and a new record may begin among them: only the stream can tell. TLS records can be bigger than one packet; TCP puts the pieces back in order.');
     p = end;
   }
   while (p + 5 <= end && looksLikeHeader(p)) {
@@ -190,7 +190,7 @@ export function describeTls(b: Uint8Array, o: number, end: number): LayerPdu {
           ? 'A handshake message sent in the clear: the hellos, where the two sides agree on keys. Everything after them is encrypted.'
           : 'A one-byte "change cipher spec" kept only so old middleboxes that expect TLS 1.2 do not get confused. TLS 1.3 ignores it.');
     f.add(`tls.${records}.version`, 'Legacy version', p + 1, 2, hex(u16(b, p + 1), 4), 'detail',
-      'Always 0x0303 (TLS 1.2) for compatibility with old equipment; the real version, 1.3, is agreed inside the hellos.');
+      'Not the real version: 0x0303 (TLS 1.2), or 0x0301 on a first ClientHello, for compatibility with old equipment. The real one, 1.3, is agreed inside the hellos.');
     f.add(`tls.${records}.length`, 'Length', p + 3, 2, `${len} bytes`, 'detail', 'How many bytes of this record follow the header (including the 16-byte authentication tag when encrypted).');
     p += 5 + len;
   }

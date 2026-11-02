@@ -84,7 +84,7 @@ export function describeEthernet(frame: Uint8Array, innerEnd?: number): LayerPdu
     'key',
     dstBroadcast
       ? 'All ones means broadcast: every device on this local network segment receives and reads the frame.'
-      : 'Hardware address of the next device on this link, not the final destination. It is rewritten at every hop.',
+      : 'Hardware address of the next device on this link, not the final destination. Every router rewrites it; a switch passes it on as it is.',
   );
   f.add(
     'eth.src',
@@ -93,7 +93,7 @@ export function describeEthernet(frame: Uint8Array, innerEnd?: number): LayerPdu
     6,
     p.src,
     'key',
-    "Hardware address of the network card that put this frame on the wire. Also rewritten by each router.",
+    "Hardware address of the network card that sent this frame. Every router rewrites it too; a switch leaves it.",
   );
   f.add(
     'eth.type',
