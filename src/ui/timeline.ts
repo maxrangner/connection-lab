@@ -226,6 +226,8 @@ export const TUMBLE = 1.8;
 /** A stream's packets: seconds between two from one sender, per cable, flying onto the sheet, and falling off a cable. */
 const FLOW_GAP = 0.26;
 const FLOW_HOP = 1;
+/** Seconds a run holds still at its start, for the opening line. */
+const OPENING = 2.6;
 export const FLOW_FLY = 0.5;
 /** The share of a hop's way, at each end, a small block takes to move between the middle of the cable and its lane. */
 const LANE_IN = 0.2;
@@ -328,7 +330,8 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
 
   const byId = new Map(story.trips.map((x) => [x.packetId, x]));
   const resent = new Set(story.trips.map((x) => x.retransmitOf));
-  let t = 0;
+  // A run opens on what the device sets out to do, and nothing moves until that can be read. A reading and an attack are already at it.
+  let t = story.reading || story.attackers.length ? 0 : OPENING;
   story.trips.forEach((trip, ti) => {
     if (left.length || t >= alone || trip.client !== story.client) {
       left.push(trip);

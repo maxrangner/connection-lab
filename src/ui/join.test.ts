@@ -211,7 +211,7 @@ describe('a card dropped in during a run', () => {
     const { after, s } = dropped('page', 'photo', 0.1);
     const said = buildSpeech(s, after.segs).filter((b) => b.device === 'phone').map((b) => b.text);
     expect(said).toContain('Please send the photo');
-    expect(said).toContain('Hi, can we talk?');
+    expect(said).toContain('Got the address! Hi, can we talk?');
   });
 
   it('a ping or trace dropped in prints its own results, on its own terminal', () => {

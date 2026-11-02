@@ -216,6 +216,22 @@ const toolCard = (text: string, draw: (g: SVGGElement) => void): SVGGElement => 
 };
 const CARDS: Record<Job, SVGGElement> = { page: card, photo: photoCard, call: callCard, ping: toolCard('ping', drawPing), trace: toolCard('trace route', drawTrace) };
 
+/** What each card does, in a beginner's words: it hangs under the card for as long as the card is held. */
+const CARD_HELP: Record<Job, [string, string]> = {
+  page: ['Open a website', 'and see every step it takes'],
+  photo: ['Fetch a photo:', 'too big for one packet'],
+  call: ['Make a voice call', 'over the internet'],
+  ping: ['Ask a server if it is there', 'and how fast it answers'],
+  trace: ['See every stop', 'on the way to a server'],
+};
+const CARD_HELP_W = 224;
+const CARD_HELP_H = 50;
+/** The camera scale below which the help grows, to stay as readable as it is at this one. */
+const HELP_FLOOR = 0.85;
+const cardHelp = el('g', { class: 'card-help' }, svg);
+el('rect', { x: -CARD_HELP_W / 2, y: 0, width: CARD_HELP_W, height: CARD_HELP_H, rx: 12 }, cardHelp);
+const cardHelpLines = [17, 36].map((y) => el('text', { y, 'text-anchor': 'middle' }, cardHelp));
+
 scene.setOnTable([{ sx: home.sx - 110, sy: home.sy + STACK_TOP }, { sx: home.sx + 110, sy: home.sy + STACK_BOTTOM }]);
 
 /** A setting changed before a run: show the network it will use, with a clean screen. */
@@ -815,6 +831,7 @@ for (const wanted of EVERY_JOB) {
     const p = toSvg(e);
     grab = { dx: cardPos.sx - p.sx, dy: cardPos.sy - p.sy };
     mode = 'drag';
+    CARD_HELP[wanted].forEach((line, i) => (cardHelpLines[i]!.textContent = line));
     g.setPointerCapture(e.pointerId);
     g.classList.add('held');
   });
@@ -1229,6 +1246,14 @@ function frame(now: number): void {
   moving.style.display = mode === 'play' ? 'none' : '';
   moving.setAttribute('transform', `translate(${cardPos.sx.toFixed(1)} ${(cardPos.sy + bob).toFixed(1)}) scale(${scale.toFixed(3)})`);
   moving.setAttribute('opacity', cardOp.toFixed(3));
+  cardHelp.style.display = mode === 'drag' ? '' : 'none';
+  if (mode === 'drag') {
+    // Readable however far back the camera is, and kept on the screen as the card nears its edge.
+    const size = Math.max(1, HELP_FLOOR / cam.scale);
+    const edge = (svg.clientWidth || 1) / 2 / cam.scale - (CARD_HELP_W / 2) * size - 6 / cam.scale;
+    const x = edge > 0 ? Math.max(cam.cx - edge, Math.min(cam.cx + edge, cardPos.sx)) : cardPos.sx;
+    cardHelp.setAttribute('transform', `translate(${x.toFixed(1)} ${(cardPos.sy + 32).toFixed(1)}) scale(${size.toFixed(3)})`);
+  }
   for (const w of EVERY_JOB) {
     if (w === carried) continue;
     const resting = CARDS[w];

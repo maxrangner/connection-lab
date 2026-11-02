@@ -58,7 +58,8 @@ describe('the small pure helpers of the timeline', () => {
   it('tells what is on a line to catch: not what is still dropping in, not what is nearly across', () => {
     const seg = travelOn(tl, 'wan');
     const mid = ridingOn(tl, (seg.t0 + seg.t1) / 2, 'wan');
-    expect(mid).toEqual([{ packetId: seg.trip.packetId, k: 0.5 }]);
+    expect(mid.map((r) => r.packetId)).toEqual([seg.trip.packetId]);
+    expect(mid[0]!.k).toBeCloseTo(0.5);
     expect(ridingOn(tl, seg.t0 + (seg.t1 - seg.t0) * 0.02, 'wan')[0]?.k).toBe(0.12);
     expect(ridingOn(tl, seg.t0 + (seg.t1 - seg.t0) * 0.95, 'wan')).toEqual([]);
     expect(ridingOn(tl, (seg.t0 + seg.t1) / 2, 'lan')).toEqual([]);

@@ -64,7 +64,7 @@ describe('what traceroute prints', () => {
   });
 
   it('takes much less watching than nine probes in full', () => {
-    expect(run('traceroute').total).toBeLessThan(60);
+    expect(run('traceroute').total).toBeLessThan(64);
   });
 
   it('thumbs up every router that answers: the same words from someone else are no duplicate', () => {
