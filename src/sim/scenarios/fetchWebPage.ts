@@ -539,7 +539,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
       },
       {
         id: 'isp',
-        label: 'ISP router',
+        label: "Internet provider's router",
         sublabel: 'internet',
         kind: 'router',
         layout: { x: 1040, y: 470 },
@@ -593,7 +593,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
       },
       {
         id: 'resolver',
-        label: 'DNS resolver',
+        label: 'DNS phone book',
         sublabel: ADDR.resolver.ip,
         kind: 'dns-resolver',
         layout: { x: 1480, y: 205 },
@@ -661,7 +661,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
         // The friend's phone, beyond the web server, on another provider's network. It is there in every run and only
         // speaks when called.
         id: 'friend',
-        label: "Friend's phone",
+        label: "Sam's phone",
         sublabel: `${ADDR.friend.name} · ${ADDR.friend.ip}`,
         kind: 'peer',
         layout: { x: 1900, y: 1000 },

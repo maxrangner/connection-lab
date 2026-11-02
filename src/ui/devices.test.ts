@@ -66,7 +66,7 @@ describe('your own devices', () => {
     expect(s.fetched).toEqual(['laptop', 'phone']);
     expect(s.joinProbes.map((x) => x.device)).toEqual(['tablet']);
     expect(second.joinReadouts.map((x) => x.device)).toEqual(['tablet']);
-    expect(second.joinReadouts[0]!.readout.screens.at(-1)!.lines.at(-1)).toMatch(/4 sent, 4 received/);
+    expect(second.joinReadouts[0]!.readout.screens.at(-1)!.lines.at(-1)).toMatch(/4 sent, 4 replies/);
     expect(s.trips.some((t) => t.client === 'tablet')).toBe(true);
   });
 

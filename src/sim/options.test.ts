@@ -930,7 +930,7 @@ describe('a voice call (RTP over UDP)', () => {
     }
     expect(seen).toBe(100);
     const plain = run({});
-    expect(plain.scenario.devices.find((d) => d.id === 'friend')).toMatchObject({ kind: 'peer', label: "Friend's phone" });
+    expect(plain.scenario.devices.find((d) => d.id === 'friend')).toMatchObject({ kind: 'peer', label: "Sam's phone" });
     expect(of(plain, 'tx').some((e) => e.linkId === 'bb6')).toBe(false);
     expect([...plain.packets.values()].some((p) => p.kind === 'rtp')).toBe(false);
   });

@@ -49,7 +49,7 @@ describe('what traceroute prints', () => {
     const tl = run('traceroute', { cuts: TO_SERVER });
     const lines = end(tl);
     expect(lines[2]).toMatch(/^2 {2}203\.0\.113\.1/);
-    expect(lines.at(-2)).toMatch(/^8 +\* +\* +\*$/);
+    expect(lines.at(-2)).toBe('8  no reply');
     expect(lines.at(-1)).toBe('not reached in 8 hops');
     expect(tl.readout.flags).toHaveLength(2);
   });
@@ -76,7 +76,7 @@ describe('what traceroute prints', () => {
 describe('what ping prints', () => {
   it('a line for each reply as it comes in, then the sum', () => {
     const tl = run('ping');
-    expect(end(tl)).toEqual(['ping example.com', '1  12 ms', '2  12 ms', '3  12 ms', '4  12 ms', '4 sent, 4 received, 12 ms']);
+    expect(end(tl)).toEqual(['ping example.com', '1  12 ms', '2  12 ms', '3  12 ms', '4  12 ms', '4 sent, 4 replies, average 12 ms']);
     expect(tl.readout.flags).toEqual([]);
   });
 
@@ -88,6 +88,6 @@ describe('what ping prints', () => {
 
   it('says so when no reply comes', () => {
     const tl = run('ping', { cuts: TO_SERVER });
-    expect(end(tl)).toEqual(['ping example.com', '1  no reply', '2  no reply', '3  no reply', '4  no reply', '4 sent, 0 received']);
+    expect(end(tl)).toEqual(['ping example.com', '1  no reply', '2  no reply', '3  no reply', '4  no reply', '4 sent, 0 replies']);
   });
 });

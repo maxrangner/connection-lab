@@ -95,7 +95,7 @@ function lineOf(t: Trip, walk: Walk): string | null {
       if (t.l4Label === 'SYN-ACK') return "Hi! Yes, let's.";
       return t.hello ? 'Great!' : null;
     case 'secret':
-      if (/^hello( 1\/\d+)?$/.test(card)) return t.outward ? "Let's agree on a secret" : "OK, here's my half";
+      if (/^hello( 1\/\d+)?$/.test(card)) return t.outward ? "Let's agree on a secret" : 'OK, work it out from this';
       if (t.identity) return 'It really is me';
       return card.startsWith('certificate') ? "Here's my ID" : null;
     case 'page':
@@ -137,7 +137,7 @@ function opening(story: Story): string | null {
 /** What it says at the end, if it got what it set out to get. */
 function closing(story: Story): string | null {
   const done = story.probe?.done;
-  if (done) return story.probe!.kind === 'ping' ? (done.received === done.sent ? 'It answered every time!' : null) : done.reached ? "That's the whole way there!" : null;
+  if (done) return story.probe!.kind === 'ping' ? (done.received === done.sent ? 'It answered every time!' : null) : done.reached ? "That's every stop that answered!" : null;
   if (story.reading || !story.fetched.includes(story.client)) return null;
   return `Got it! Now I can show the ${story.image ? 'photo' : 'page'}`;
 }

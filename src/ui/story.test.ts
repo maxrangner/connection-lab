@@ -128,7 +128,7 @@ describe('a voice call in the story', () => {
     expect(s.voice!.sent).toHaveLength(8000);
     expect(s.voice!.heard).toHaveLength(50);
     expect(s.voice!.heard.every((h) => h?.length === 160)).toBe(true);
-    expect(s.names['198.51.100.42']).toBe("Friend's phone");
+    expect(s.names['198.51.100.42']).toBe("Sam's phone");
     expect(story.call).toBe(false);
     expect(story.voice).toBeUndefined();
   });

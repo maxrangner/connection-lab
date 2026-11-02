@@ -28,7 +28,7 @@ import {
  * log and PDU snapshots; nothing is invented, we only leave things out (ARP, teardown). Plain ACKs run as small blocks.
  * TTL only shows in an opened pill, and ports there and at a NAT.
  *
- *   1 Find the address  DNS question to the resolver and the answer back (UDP); a cold resolver first walks
+ *   1 Find the site's address  DNS question to the resolver and the answer back (UDP); a cold resolver first walks
  *                       root → TLD → authoritative, each referral a card saying who to ask next
  *   2 Say hello         SYN, SYN-ACK, ACK
  *   3 Get the page      GET / out, 200 OK back

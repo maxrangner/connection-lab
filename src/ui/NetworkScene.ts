@@ -294,7 +294,7 @@ export class NetworkScene {
     private tl: Timeline,
   ) {
     // One picture to a screen reader: its words are labels on things, not text to read out.
-    this.svg = el('svg', { class: 'net-stage', preserveAspectRatio: 'xMidYMid meet', role: 'img', 'aria-label': 'A laptop and a phone, a home router, an ISP router, a DNS resolver and a web server, with the packets travelling between them' });
+    this.svg = el('svg', { class: 'net-stage', preserveAspectRatio: 'xMidYMid meet', role: 'img', 'aria-label': "A laptop and a phone, a home router, an internet provider's router, a DNS phone book and a web server, with the packets travelling between them" });
     host.appendChild(this.svg);
     this.photo = el('image', { id: PHOTO_ID, width: PAPER_W, height: PAPER_H, preserveAspectRatio: 'xMidYMid slice' }, el('defs', {}, this.svg));
     const world = el('g', {}, this.svg);
@@ -1942,8 +1942,9 @@ export class NetworkScene {
       .map(({ p, top }) => {
         const hidden = sealedInside(p.key) && !!items.find((x) => x.p.key === 'vpn');
         const rows = hidden ? [{ name: '🔒', value: 'sealed' }] : (details[p.key] ?? []);
-        const name = hidden ? '🔒' : p.key === 'card' ? (this.lock > 0.5 ? `🔒 ${this.cardText(trip)}`.trim() : this.cardText(trip)) : p.key === 'ethT' ? '' : p.key === 'l4' ? trip.l4Label : layerName(p.layer, trip, this.l2);
-        const text = `${name ? `${name} · ${p.bytes} B` : `${p.bytes} B`}${rows.length ? ' ▴' : ''}`;
+        const name = hidden ? '🔒' : p.key === 'card' ? (this.lock > 0.5 ? `🔒 ${this.cardText(trip)}`.trim() : this.cardText(trip)) : p.key === 'ethT' ? 'Error check' : p.key === 'l4' ? trip.l4Label : layerName(p.layer, trip, this.l2);
+        // The trailer has no room for its size on a phone: opening it says what it holds.
+        const text = `${p.key === 'ethT' ? name : `${name} · ${p.bytes} B`}${rows.length ? ' ▴' : ''}`;
         const c = p.key === 'card' && this.lock > 0.5 ? LOCKED : colorOf(p.layer, trip, this.l2);
         return { p, a: iso(top.x, top.y, top.z), text, rows, c, w: text.length * 6.6 + 14, x: 0 };
       })
