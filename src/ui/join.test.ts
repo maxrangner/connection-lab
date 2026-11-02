@@ -10,9 +10,14 @@ const OPTIONS = { page: {}, photo: { site: 'httpbin.org' }, call: { call: true }
 const story = (a: Job, extra: object = {}, faults: object = CLEAN): Story => buildStory(runScenario(fetchWebPage({ ...OPTIONS[a], ...extra }), { seed: 1, faults: { ...CLEAN, ...faults }, maxTime: 1000 }));
 const everyPacket = (t: Trip): Trip[] => (t.steps.some((s) => s.kind === 'flow') ? t.steps.flatMap((s) => (s.kind === 'flow' ? s.packets.flatMap(everyPacket) : [])) : [t]);
 
+/** The runs that cards are dropped into: only ever read. */
+const plain = new Map<string, Timeline>();
+
 /** A run with a card dropped in at this share of the way through. */
 function dropped(a: Job, b: Job, share: number, setup: object = {}): { before: Timeline; after: Timeline; s: Story; v: number; join: { job: Job; at: number } } {
-  const before = buildTimeline(story(a, setup));
+  const key = `${a} ${JSON.stringify(setup)}`;
+  const before = plain.get(key) ?? buildTimeline(story(a, setup));
+  plain.set(key, before);
   const v = before.settled * share;
   const join = { job: b, at: joinAt(before, v) };
   const s = story(a, { ...setup, joins: [join] });
@@ -168,6 +173,13 @@ describe('a card dropped in during a run', () => {
     }
   });
 
+  it('a packet cut short by the card says its line once', () => {
+    for (const share of [0.03, 0.05, 0.07, 0.3, 0.5]) {
+      const lines = dropped('page', 'page', share).after.speech.filter((b) => b.device === 'laptop').map((b) => b.text);
+      expect(new Set(lines).size, `at ${share}`).toBe(lines.length);
+    }
+  });
+
   it('teardown stays hidden when the other job sends more', () => {
     const acks = (s: Story): number => s.trips.flatMap(everyPacket).filter((t) => t.client === 'laptop' && t.l4Label === 'ACK').length;
     expect(acks(dropped('page', 'photo', 0.02).s)).toBe(acks(story('page')));
@@ -176,9 +188,9 @@ describe('a card dropped in during a run', () => {
   it('a cable cut during the traffic leaves what was on screen as it was', () => {
     for (const a of JOBS) {
       for (const b of JOBS) {
+        const { after, join, v: dropV } = dropped(a, b, 0.1);
         for (const line of ['wan', 'bb2', 'bb6', 'lan', 'wlan']) {
           for (const share of [0.15, 0.4, 0.65, 0.9]) {
-            const { after, join, v: dropV } = dropped(a, b, 0.1);
             const v = dropV + (after.settled - dropV) * share;
             const seen = seenSoFar(after, v, line);
             const faults: { decided: Record<string, boolean>; cuts: Cut[]; manual: ManualFault[] } = { decided: seen.decided, cuts: [{ link: line, from: seen.now }], manual: [] };

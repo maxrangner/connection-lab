@@ -68,6 +68,8 @@ let tl: Timeline;
 let client = 'laptop';
 /** What each device still remembers from an earlier visit, until the DNS record's real TTL runs out. */
 const known = new Map<string, { site: string; ip: string; until: number }>();
+/** All a device remembers, per device and site: `known` is only what its screen shows. */
+const memory = new Map<string, { site: string; ip: string; until: number }>();
 /** This run is a second visit: the address is remembered, so there is nothing to look up. */
 let revisit = false;
 /** The address it remembers, held for the whole run: the memory itself can run out before the run does. */
@@ -92,13 +94,25 @@ const pageSite = (): 'info.cern.ch' | 'example.com' => (features.big ? 'info.cer
 const siteName = (): 'info.cern.ch' | 'example.com' | 'httpbin.org' => (carried === 'photo' ? 'httpbin.org' : pageSite());
 /** The name the device will look up: a site, the friend to call, or the server a ping or trace goes to. */
 const wantedName = (): string => (carried === 'call' ? 'sam.example' : isProbe(carried) ? 'example.com' : siteName());
+const memoryKey = (device: string, site: string): string => `${device} ${site}`;
 function remembers(): boolean {
-  const k = known.get(client);
-  return !!k && k.site === wantedName() && performance.now() < k.until;
+  const k = memory.get(memoryKey(client, wantedName()));
+  return !!k && performance.now() < k.until;
 }
 function recall(): void {
   revisit = remembers();
-  knownIp = revisit ? known.get(client)?.ip : undefined;
+  const k = revisit ? memory.get(memoryKey(client, wantedName())) : undefined;
+  knownIp = k?.ip;
+  if (k) known.set(client, k);
+}
+/** Forget everything a device remembers. */
+function forgetAll(device: string): void {
+  known.delete(device);
+  for (const key of memory.keys()) if (key.startsWith(`${device} `)) memory.delete(key);
+}
+function noteDown(device: string, k: { site: string; ip: string; until: number }): void {
+  known.set(device, k);
+  memory.set(memoryKey(device, k.site), k);
 }
 /** How far the ISP router has been dragged away, in tiles: the fibre gets longer and so does its delay. */
 let stretch = 0;
@@ -298,6 +312,11 @@ function lineNear(p: { sx: number; sy: number }, cablesOnly: boolean, reach: num
 }
 const canSetUp = (): boolean => mode === 'idle' || mode === 'spring';
 
+const firstFrameAt = (t: Timeline): number => {
+  for (const s of t.segs) if (s.step.kind === 'travel') return s.step.at;
+  return 0;
+};
+
 /** Cut a cable, or mend it. It works mid-run too: the simulation re-runs from this moment on, what was seen stays, and whatever is on that cable right now falls in. */
 function toggleCut(line: string): void {
   const on = !cutLines.has(line);
@@ -314,7 +333,8 @@ function toggleCut(line: string): void {
     const seen = seenSoFar(tl, v, line);
     decided = { ...decided, ...seen.decided };
     cuts = cuts.map((c) => (c.to === undefined && c.link === line ? { ...c, to: seen.now } : c));
-    if (on) cuts = [...cuts, { link: line, from: seen.now }];
+    // Before the first frame only what the run doesn't show has moved: a device finding its router, which a cut there would stop.
+    if (on) cuts = [...cuts, { link: line, from: Math.max(seen.now, firstFrameAt(tl)) }];
     simulate();
     scene.setStory(story, tl);
   }
@@ -358,6 +378,7 @@ scene.setSpy(spyLine);
 scene.setCut([...cutLines]);
 
 const VPN_LINKS = ['bb3', 'bb4', 'bb5'];
+const COLD_LINKS = ['up1', 'up2', 'up3'];
 const SETUP: { id: Setting; label: string; hint: string; draw: (g: SVGGElement) => void; span: number }[] = [
   { id: 'https', label: 'Secure page (HTTPS)', hint: "Hides the page, not where it's going", draw: drawPadlock, span: 34 },
   { id: 'big', label: 'Bigger page', hint: 'Too big for one packet', draw: drawPage, span: 34 },
@@ -378,6 +399,11 @@ function setSetting(id: Setting, on: boolean): void {
   }
   // The line to the ISP becomes radio, which cannot be cut.
   if (id === 'slow' && on && cutLines.has('wan')) toggleCut('wan');
+  // The servers a lookup walks go with it, and their cables.
+  if (id === 'cold' && !on) {
+    for (const l of COLD_LINKS) clearLine(l);
+    if (spyLine && COLD_LINKS.includes(spyLine)) setSpyLine(null);
+  }
   // The VPN's cables go with it.
   if (id === 'vpn' && !on) {
     for (const l of VPN_LINKS) clearLine(l);
@@ -398,7 +424,7 @@ const CHAPTERS: Record<Chapter, string> = { address: 'Get an address', arp: 'Fin
 const chapterName = (ch: Chapter): string => {
   if (ch === 'dns' && story.call) return "Find Sam's address";
   if (ch === 'dns' && story.reading) return 'Find the broker';
-  return ch === 'page' && story.reading ? 'Send the reading' : ch === 'page' && story.image ? 'Get the photo' : CHAPTERS[ch];
+  return ch === 'page' && story.reading ? 'Send the reading' : ch === 'page' && story.photo ? 'Get the photo' : CHAPTERS[ch];
 };
 
 function chapterNumber(ch: Chapter): number {
@@ -540,7 +566,7 @@ function showSmart(): void {
   for (const n of [0, 1, 2] as const) smartMenu.setOn(`qos${n}`, qos === n);
 }
 showSmart();
-/** The height of a device's "+ action" (see app.css), and how high it can go: clear of the chapter name. */
+/** The height of a device's "+ action" (see app.css), and how high it can go during a run: clear of the chapter name. */
 const ACTION_H = 34;
 const ACTION_TOP = 110;
 /** What can start on a device with nothing to do, in the white of the cards. */
@@ -760,7 +786,7 @@ function joinIn(device: string, job: Job): void {
   decided = { ...decided, ...seen.decided };
   joined = [...joined, { device, job, at: joinAt(tl, v), v }];
   // A device joining in looks everything up afresh: it remembers nothing from before.
-  known.delete(device);
+  forgetAll(device);
   seek = null;
   camFree = false;
   simulate();
@@ -828,7 +854,7 @@ function toSvg(e: PointerEvent): { sx: number; sy: number } {
 for (const wanted of EVERY_JOB) {
   const g = CARDS[wanted];
   g.addEventListener('pointerdown', (e) => {
-    if (mode !== 'idle' && mode !== 'spring') return;
+    if (e.button !== 0 || (mode !== 'idle' && mode !== 'spring')) return;
     // A card still springing back lands at once, so the other one can be picked up.
     if (wanted !== carried) {
       carried = wanted;
@@ -926,6 +952,7 @@ function spread(): { d: number; x: number; y: number } {
 }
 
 svg.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
   // The first finger of a new touch: any other still listed lost its pointerup, and would turn every drag into a pinch.
   if (e.isPrimary) pointers.clear();
   // Working the stage leaves the Tools menu open while a tool is in hand; the other popups give way to it.
@@ -958,7 +985,7 @@ svg.addEventListener('pointerdown', (e) => {
   grabPress = onTable && target.closest('[data-grab]') ? { x: e.clientX, y: e.clientY } : null;
   toolPress = tool ? { x: e.clientX, y: e.clientY } : null;
   const device = target.closest('[data-device]')?.getAttribute('data-device');
-  screenPress = device && mode === 'idle' && known.has(device) ? { device, x: e.clientX, y: e.clientY } : null;
+  screenPress = device && !tool && mode === 'idle' && known.has(device) ? { device, x: e.clientX, y: e.clientY } : null;
   // Listed only once captured: a finger that cannot be followed must not stay listed as down.
   svg.setPointerCapture(e.pointerId);
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -987,6 +1014,7 @@ svg.addEventListener('pointermove', (e) => {
     if (next !== stretch) {
       stretch = next;
       tl = buildTimeline(story, knocks, stretch, drops());
+      if (idleV >= 0) idleV = tl.total;
       scene.setStory(story, tl);
     }
     return;
@@ -1035,11 +1063,9 @@ const release = (e: PointerEvent): void => {
   }
   airPress = null;
   grabPress = null;
-  if (screenPress) {
-    forget(screenPress.device);
-    screenPress = null;
-  }
-  if (toolPress && tool) {
+  if (screenPress && e.type === 'pointerup') forget(screenPress.device);
+  screenPress = null;
+  if (toolPress && tool && e.type === 'pointerup') {
     const line = toolLine(e);
     if (line) USE[tool](line);
   }
@@ -1067,7 +1093,7 @@ svg.addEventListener(
 
 /** Tap a screen between runs: the device forgets what it remembers, and the next visit starts from scratch. */
 function forget(device: string): void {
-  known.delete(device);
+  forgetAll(device);
   if (device === client) {
     idleV = -1;
     recall();
@@ -1104,6 +1130,7 @@ function reset(): void {
   knocks.clear();
   decided = {};
   known.clear();
+  memory.clear();
   client = 'laptop';
   reading = false;
   cardPos = { ...home };
@@ -1182,7 +1209,7 @@ function beginRun(): void {
 /** The run is over: the device remembers the address until its TTL runs out, and the card floats back. */
 function endRun(): void {
   const ip = story.remembered ?? story.dnsAnswer;
-  if (ip && !revisit && !reading) known.set(client, { site: story.site, ip, until: performance.now() + (story.dnsTtl ?? 0) * 1000 });
+  if (ip && !revisit && !reading) noteDown(client, { site: story.site, ip, until: performance.now() + (story.dnsTtl ?? 0) * 1000 });
   // A call over: hear what came through, holes and all.
   if (story.voice) sound.playVoice(story.voice.heard.map((b) => (b ? ulawDecodeAll(b) : null)), 160);
   idleV = tl.total;
@@ -1289,7 +1316,7 @@ function frame(now: number): void {
   const putAction = (b: HTMLButtonElement, device: string): void => {
     const spot = scene.actionSpot(device);
     const size = scene.actionSize();
-    b.hidden = spot.y < ACTION_TOP || spot.y > lowest;
+    b.hidden = spot.y < (mode === 'play' ? ACTION_TOP : 0) || spot.y > lowest;
     b.style.transform = `translate(${spot.x.toFixed(0)}px, ${spot.y.toFixed(0)}px) scale(${size.toFixed(3)})`;
     b.style.setProperty('--size', size.toFixed(3));
     b.dataset.points = spot.points;
@@ -1450,8 +1477,8 @@ if (import.meta.env.DEV) {
           reading = true;
           client = 'sensor';
         }
-        if (f.again) known.set(client, { site: siteName(), ip: '', until: Infinity });
-        else known.delete(client);
+        if (f.again) noteDown(client, { site: siteName(), ip: '', until: Infinity });
+        else forgetAll(client);
         beginRun();
         runSeed = 1;
         simulate();

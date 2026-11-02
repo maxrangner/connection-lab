@@ -25,8 +25,6 @@ const NEAR_END = 2;
 /** The voice packet that says why a call isn't resent: far enough in for its hello to be read. */
 const WHY_NO_RESEND = 20;
 const NO_FLOOD_ON_CALL = 'That flood never touched my call';
-/** Whoever runs an app, and hears of a reading. */
-const APPS = new Set(['laptop', 'phone']);
 
 const DHCP: Record<string, (rest: string) => string> = {
   DISCOVER: () => 'Can anyone give me an address?',
@@ -93,6 +91,7 @@ function lineOf(t: Trip, walk: Walk, story: Story): string | null {
     case 'dns':
       if (card.endsWith('?')) return t.origin === 'resolver' ? asking(card.slice(0, -1), walk) : 'First I need its address. Who knows it?';
       if (card.startsWith('ask ')) return card.startsWith('ask .') ? `Not me. Ask the ${card.slice(4)} server.` : 'Not me. Ask its name server.';
+      if (card === 'no address') return "I couldn't find that name";
       if (card === 'DNS') return null;
       if (t.origin !== 'resolver') return `That's mine: ${card}`;
       walk.answered.add(t.client);
@@ -147,7 +146,7 @@ function opening(story: Story, kindOf: Map<string, string>): string | null {
   if (story.probe) return story.probe.kind === 'ping' ? `Is ${story.probe.to} there?` : `What's the way to ${story.probe.to}?`;
   const how = story.vpn ? ' through my VPN' : kindOf.get(story.client) === 'phone' ? ' over Wi-Fi' : '';
   if (story.call) return `I want to call Sam${how}`;
-  return `I want to ${story.image ? 'get a photo' : `open ${story.site}`}${how}`;
+  return `I want to ${story.photo ? 'get a photo' : `open ${story.site}`}${how}`;
 }
 
 const QOS_ASK = ['Sent once, no receipt', 'Send me a receipt', 'Exactly once, please'] as const;
@@ -170,7 +169,7 @@ function attackPlans(story: Story, kindOf: Map<string, string>): [string, string
 /** What the client can say of an attack at the end, even if it made no difference. */
 function attackOutcome(story: Story, flooded: boolean, hurt: boolean, jammed: boolean): string | null {
   const done = story.probe?.done;
-  const finished = story.call || story.fetched.includes(story.client) || (done ? (story.probe!.kind === 'ping' ? done.received === done.sent : done.reached) : false);
+  const finished = story.call || story.fetched.includes(story.client) || story.told.length > 0 || (done ? (story.probe!.kind === 'ping' ? done.received === done.sent : done.reached) : false);
   if (!flooded) return finished && !hurt ? "I didn't notice a thing" : null;
   if (jammed) return story.fetched.includes(story.client) ? 'Got it, now the flood is over' : 'That flood got in my way';
   // What went wrong then was something else, and the client's own last line says so.
@@ -183,8 +182,9 @@ function attackOutcome(story: Story, flooded: boolean, hurt: boolean, jammed: bo
 function awayLine(story: Story, away: Story['away']): string {
   const who = away.map((a) => story.devices.find((d) => d.id === a.device)?.label.toLowerCase()).join(' and ');
   const kept = away.every((a) => a.kept);
-  if (away.length > 1) return `The ${who} are away. ${kept ? "I'll keep this for them" : 'They miss this one'}`;
-  return `The ${who} is away. ${kept ? "I'll keep this for it" : 'It misses this one'}`;
+  const back = away.every((a) => a.back);
+  if (away.length > 1) return `The ${who} ${back ? 'were' : 'are'} away. ${kept ? "I'll keep this for them" : `They ${back ? 'missed' : 'miss'} this one`}`;
+  return `The ${who} ${back ? 'was' : 'is'} away. ${kept ? "I'll keep this for it" : `It ${back ? 'missed' : 'misses'} this one`}`;
 }
 
 /** What came of the run for its client: the page was in parts, a part was lost before it arrived, noise, lost sound. */
@@ -208,7 +208,7 @@ function closing(story: Story, { many, dropped, noisy, soundLost }: Outcome): st
     if (!story.voice?.heard.some(Boolean)) return "I couldn't reach Sam";
     return soundLost || story.voice.heard.includes(null) ? 'Lost sound stays lost. Bye!' : 'Every sound got through. Bye!';
   }
-  const thing = story.image ? 'photo' : 'page';
+  const thing = story.photo ? 'photo' : 'page';
   if (!story.fetched.includes(story.client)) return `I couldn't get the ${thing}`;
   const wan = wanDelayOf(story);
   if (wan >= SLOW_DELAY) return 'Got it! Slow, because it went via space';
@@ -237,7 +237,13 @@ export function buildSpeech(story: Story, segs: Seg[], settled = segs[segs.lengt
   const first = segs[0];
   const opens = opening(story, kindOf);
   if (opens && first) say(story.client, 0, opens, first.t0);
-  if (first) for (const [device, plan] of attackPlans(story, kindOf)) say(device, 0, plan, first.t0);
+  /** Lines to be read before the same device goes on: what it has to say in the meantime waits for them. */
+  const early: Bubble[] = [];
+  // A reading has no quiet start to say a plan in.
+  if (first) for (const [device, plan] of attackPlans(story, kindOf)) {
+    const line = say(device, 0, plan, first.t0);
+    if (story.reading) early.push(line);
+  }
   const flooded = story.attackers.some((d) => kindOf.get(d) === 'bot');
   const home = story.devices.find((d) => d.kind === 'home-router')?.id;
   const webServer = story.devices.find((d) => d.kind === 'web-server')?.id ?? 'server';
@@ -245,7 +251,9 @@ export function buildSpeech(story: Story, segs: Seg[], settled = segs[segs.lengt
   const hurt = new Set<string>();
   const lastAt = new Map<string, number>();
   const callers = new Set<string>();
-  /** A packet of the client's was turned away at a full line: that is the flood, where a cut cable is not. */
+  const floodedLine = story.links.find((l) => l.queue !== undefined && (l.a === webServer || l.b === webServer))?.id;
+  const atFlood = (t: Trip): boolean => !!t.droppedAtQueue && t.steps.some((x) => x.kind === 'lost' && x.link === floodedLine);
+  /** A packet of the client's was turned away at the server's full line: that is the flood, where a cut cable is not. */
   let jammed = false;
   let scanDone = 0;
   const sent = segs.flatMap((s) => [s.trip, ...(s.flow ?? []).map((p) => p.trip)]);
@@ -262,40 +270,48 @@ export function buildSpeech(story: Story, segs: Seg[], settled = segs[segs.lengt
     if (!fall || fall.kind !== 'lost') return;
     const noise = story.noise > 0 && story.links.find((l) => l.id === fall.link)?.medium === 'wifi';
     if (p.client === story.client) {
-      if (p.chapter === 'call') soundLost = true;
-      if (noise || (p.chapter === 'page' && (p.part || p.message))) losses.push({ at, noise });
+      if (p.chapter === 'call' && p.lost) soundLost = true;
+      if (noise || (p.chapter === 'page' && !p.outward && (p.part || p.message))) losses.push({ at, noise });
     }
     if (noise && once('noise')) say(fall.from, at, 'Noisy air! Trying that again');
-    if (p.droppedAtQueue && !flooded && once('queue')) say(fall.from, at, 'My queue is full! That one is lost');
+    if (p.droppedAtQueue && !atFlood(p) && once('queue')) say(fall.from, at, 'My queue is full! That one is lost');
   };
   const waits = new Map<string, number>();
   /** How many times each device has sent the thing it is waiting on an answer for. */
   const tries = new Map<string, number>();
-  /** When what the run set out to get has reached the device that wanted it. */
+  /** When what the run set out to get has reached the device that wanted it: its last missing part. What comes after changes nothing. */
   let got = 0;
+  let whole = false;
+  const parts = new Set<number>();
+  const arrived = (t: Trip, at: number): void => {
+    if (whole || t.chapter !== 'page' || t.outward || t.client !== story.client || t.lost) return;
+    got = at;
+    if (t.part) parts.add(t.part.n);
+    whole = t.part ? parts.size >= t.part.of : t.message?.kind === 'http-response';
+  };
 
   for (const seg of segs) {
     const s = seg.step;
     for (const t of [seg.trip, ...(seg.flow ?? []).map((p) => p.trip)]) if (!t.retry) tries.delete(t.origin);
     for (const p of seg.flow ?? []) {
       // The quick repeats of a trace say nothing new.
-      const line = p.trip.chapter === 'trace' ? null : lineOf(p.trip, walk, story);
+      const line = p.trip.chapter === 'trace' || !once(p.trip.packetId) ? null : lineOf(p.trip, walk, story);
       // An attack goes too fast to read line by line: each says what it is once.
       if (line && (p.trip.chapter !== 'attack' || once(`${p.trip.origin}|${line}`))) say(p.trip.origin, p.t0, line);
-      if (p.trip.chapter === 'page' && !p.trip.outward && p.trip.client === story.client && !p.trip.steps.some((x) => x.kind === 'lost')) got = Math.max(got, p.t1);
-      if (p.trip.chapter === 'attack' && kindOf.get(p.trip.client) === 'scanner') scanDone = Math.max(scanDone, p.t1);
+      arrived(p.trip, p.t1);
+      if (p.trip.chapter === 'attack' && kindOf.get(p.trip.client) === 'scanner' && !p.trip.lost) scanDone = Math.max(scanDone, p.t1);
       said(p.trip, p.t1);
       if (story.joiners.includes(p.trip.client) && home && once('sharing')) say(home, p.t0, 'Two devices, one address: ports sort them out');
       if (p.trip.chapter !== 'attack') {
         lastAt.set(p.trip.client, Math.max(lastAt.get(p.trip.client) ?? 0, p.t1));
-        if (p.trip.steps.some((x) => x.kind === 'lost')) hurt.add(p.trip.client);
-        if (p.trip.droppedAtQueue && p.trip.client === story.client) jammed = true;
+        if (p.trip.lost) hurt.add(p.trip.client);
+        if (atFlood(p.trip) && p.trip.client === story.client) jammed = true;
         if (p.trip.chapter === 'call') callers.add(p.trip.client);
       }
-      if (flooded && p.trip.droppedAtQueue && once('line full')) say(webServer, p.t1, 'So much junk! My line is full');
-      if (flooded && !story.call && !story.probe && p.trip.retry && p.trip.client === story.client && once('stuck')) say(story.client, p.t0, `Where's my ${story.image ? 'photo' : 'page'}? It's stuck`);
+      if (atFlood(p.trip) && once('line full')) say(webServer, p.t1, 'So much junk! My line is full');
+      if (jammed && !story.call && !story.probe && !story.reading && p.trip.retry && p.trip.client === story.client && once('stuck')) say(story.client, p.t0, `Where's my ${story.photo ? 'photo' : 'page'}? It's stuck`);
     }
-    if (s.kind === 'read' && seg.trip.chapter === 'page' && !seg.trip.outward && seg.trip.client === story.client) got = seg.t1;
+    if (s.kind === 'read') arrived(seg.trip, seg.t1);
     for (const w of [...(seg.waits ?? []).map((x) => ({ step: x.step, t0: x.t0 })), ...(s.kind === 'wait' ? [{ step: s, t0: seg.t0 }] : [])]) {
       const longer = w.step.seconds > (waits.get(w.step.device) ?? Infinity) && once(`longer ${w.step.device}`);
       waits.set(w.step.device, w.step.seconds);
@@ -316,7 +332,8 @@ export function buildSpeech(story: Story, segs: Seg[], settled = segs[segs.lengt
     if (s.kind === 'lost') said(seg.trip, seg.t0);
     if (s.kind === 'nat' && kindOf.get(s.device) !== 'vpn-server' && once(`nat-${s.which}`)) {
       const out = wanDelayOf(story) >= SLOW_DELAY ? "Under our home's address, up to space it goes" : "Sending this out under our home's address";
-      say(s.device, seg.t0, s.which === 'from' ? out : `This reply is for the ${ownerOf(seg)}`, seg.t1);
+      const to = story.names[s.after]?.toLowerCase() ?? ownerOf(seg);
+      say(s.device, seg.t0, s.which === 'from' ? out : seg.trip.message?.kind === 'reading' ? `This is for the ${to}` : `This reply is for the ${to}`, seg.t1);
     }
     if (s.kind === 'unwrap' && kindOf.get(s.device) === 'router' && once('pass')) say(s.device, seg.t0, seg.trip.tunnel ? "It's locked. I can only pass it on" : 'Not for me, pass it on');
     if (s.kind === 'wrap' && s.layer === 'vpn' && s.device === seg.trip.client && once('vpn lock')) say(s.device, free(s.device, seg.t0), 'Locked! Only the VPN server can open this');
@@ -327,8 +344,6 @@ export function buildSpeech(story: Story, segs: Seg[], settled = segs[segs.lengt
   const end = settled;
   /** The last lines of a run, which nothing of the same device's talks over. */
   const finals: Bubble[] = [];
-  /** Those said long before the end: what the device has to say in the meantime waits for them. */
-  const early: Bubble[] = [];
   /** A last line stays up to the end if that is near. If not, the run goes on, and it is said again to end on. */
   const finish = (device: string, t0: number, text: string, stop: number, ending = text): void => {
     const line = say(device, t0, text);
@@ -341,11 +356,13 @@ export function buildSpeech(story: Story, segs: Seg[], settled = segs[segs.lengt
     }
   };
   if (end !== undefined && story.reading) {
-    const told = story.trips.filter((t) => t.message?.kind === 'reading').flatMap((t) => t.steps.flatMap((x) => (x.kind === 'read' && APPS.has(kindOf.get(x.device) ?? '') ? [x.device] : [])));
     const broker = story.devices.find((d) => d.kind === 'mqtt-broker')?.id;
-    if (broker && story.away.length) finish(broker, end, awayLine(story, story.away), end);
-    if (told[0]) finish(told[0], end, 'I never asked. The broker just told me', end);
-    else finish(story.client, end, 'Nobody heard that reading', end);
+    const missing = story.away.filter((a) => !story.told.includes(a.device));
+    if (broker && missing.length) finish(broker, end, awayLine(story, missing), end);
+    const outcome = story.attackers.length ? attackOutcome(story, flooded, hurt.has(story.client), jammed) : null;
+    if (story.told[0]) finish(story.told[0], end, 'I never asked. The broker just told me', end);
+    if (!story.told[0]) finish(story.client, end, 'Nobody heard that reading', end);
+    else if (outcome) finish(story.client, end, outcome, end);
   } else if (end !== undefined) {
     const outcome = story.attackers.length ? attackOutcome(story, flooded, hurt.has(story.client), jammed) : null;
     const last = lastAt.get(story.client) ?? end;
@@ -355,7 +372,7 @@ export function buildSpeech(story: Story, segs: Seg[], settled = segs[segs.lengt
     const before = losses.filter((l) => l.at < got);
     // The page came, and only then did the line go. The client tried to the last, and can't know how far its goodbye got.
     const lastBye = sent.filter((t) => t.chapter === 'page' && t.origin === story.client && isBye(t)).at(-1);
-    const unanswered = story.fetched.includes(story.client) && !!lastBye?.steps.some((x) => x.kind === 'lost');
+    const unanswered = story.fetched.includes(story.client) && !!lastBye?.lost;
     const text = outcome ?? closing(story, { many, dropped: before.some((l) => !l.noise), noisy: before.some((l) => l.noise), soundLost });
     if (others.length) finals.push(say(story.client, at, text));
     else finish(story.client, at, text, end, !outcome && unanswered ? 'Got it! My bye got no answer' : text);

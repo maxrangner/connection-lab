@@ -1799,7 +1799,7 @@ button.action-menu[data-points='right']::after {
   font-size: 12.5px;
   line-height: 1.45;
   font-variant-numeric: tabular-nums;
-  touch-action: pan-y;
+  touch-action: pan-x pan-y;
 }
 
 .hex-row {
