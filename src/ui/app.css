@@ -778,7 +778,7 @@ body {
 
 /* A call's notes: one colour for what each phone hears */
 .note-caller {
-  --note: #1f9a8c; /* Sam's voice, as the caller hears it */
+  --note: #2f86e6; /* Sam's voice, as the caller hears it */
 }
 
 .note-friend {
