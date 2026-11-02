@@ -34,6 +34,8 @@ const LABEL_SETTLED = '#d8f5ee';
 const WAIT = '#c2562f';
 const PHOTO_ID = 'net-photo';
 const sealedInside = (key: PartKey): boolean => key === 'ip' || key === 'l4' || key === 'card';
+/** How much of the VPN box fades away when a packet is opened up. */
+const BOX_CLEAR = 0.78;
 /** A cable comes in where these would have their name, so it goes straight under them instead. */
 const NAMED_BELOW = new Set(['dns-resolver', 'tld-server', 'vpn-server']);
 /** How far from a device its satellite dish stands. */
@@ -1706,7 +1708,8 @@ export class NetworkScene {
     // The VPN box closes over the whole packet: address, transport and card all go inside.
     const boxFront = placed.find((x) => x.p.key === 'vpn');
     const boxBack = boxFront && [...placed].reverse().find((x) => sealedInside(x.p.key));
-    const boxShut = !!boxFront && boxFront.p.f > 0.95 && Math.abs(boxFront.p.lift) < 0.05;
+    // Opened up, the box goes see-through, for a look at what travels inside it.
+    const boxShut = !!boxFront && boxFront.p.f > 0.95 && Math.abs(boxFront.p.lift) < 0.05 && pose.chips < 0.01;
     const dir = { x: Math.cos(pose.angle), y: Math.sin(pose.angle) };
     const across = { x: -dir.y, y: dir.x };
     const at = (uu: number): Vec3 => v3(pos.x + dir.x * uu, pos.y + dir.y * uu, pos.z);
@@ -1755,14 +1758,14 @@ export class NetworkScene {
       const centre = at((u0 + u1) / 2 + p.slide);
       const z = pos.z - h / 2 + p.lift + (p.key === 'card' ? wiggle : 0);
       const color = p.key === 'card' && this.lock > 0 ? mix(COLOR.app, LOCKED, this.lock) : colorOf(p.layer, trip, this.l2);
-      const g = el('g', { opacity: p.op.toFixed(3), class: `part part-${p.layer}` }, g0);
+      const g = el('g', { opacity: (p.op * (isBox ? 1 - BOX_CLEAR * pose.chips : 1)).toFixed(3), class: `part part-${p.layer}` }, g0);
       rbox(g, { cx: centre.x, cy: centre.y, z, len: along, wid: d, h, angle: pose.angle, color });
       // Name printed on the long side facing the viewer, if there is room for it.
       if (isBox) {
         const top = iso(centre.x, centre.y, z + h);
         drawShield(el('g', { transform: `translate(${top.sx.toFixed(1)} ${(top.sy - 8).toFixed(1)}) scale(0.62)` }, g));
       }
-      const label = p.key === 'card' ? this.cardText(trip) : p.key === 'ip' ? 'IP' : p.key === 'l4' ? trip.l4Label : p.key === 'vpn' ? 'VPN' : '';
+      const label = p.key === 'card' ? this.cardText(trip) : p.key === 'ip' ? 'IP' : p.key === 'l4' ? trip.l4Label : p.key === 'vpn' && pose.chips < 0.5 ? 'VPN' : '';
       const font = p.key === 'card' ? cardFont(label) : 10;
       const onSide = label && p.f > 0.6 ? faceText(dir, v3(centre.x + side.x * (d / 2), centre.y + side.y * (d / 2), z + h / 2)) : null;
       if (label && onSide) {
