@@ -134,7 +134,7 @@ const colorOf = (layer: Layer, trip: Trip, l2: L2 = 'ethernet'): string =>
   layer === 'l4' ? (trip.l4 === 'udp' ? COLOR.udp : COLOR.tcp) : layer === 'eth' && l2 === 'wifi' ? COLOR.wifi : COLOR[layer];
 const layerName = (layer: Layer, trip: Trip, l2: L2 = 'ethernet'): string =>
   ({ app: 'App', l4: trip.l4 === 'udp' ? 'UDP' : trip.l4 === 'none' ? '' : 'TCP', ip: 'IP', vpn: 'VPN', eth: l2 === 'wifi' ? 'Wi-Fi' : 'Ethernet' })[layer];
-const cardFont = (label: string): number => (label.length <= 7 ? 13 : label.length <= 14 ? 10.5 : 9);
+const cardFont = (label: string): number => (label.length <= 14 ? 13 : 9);
 const cardLen = (trip: Trip): number => {
   const label = trip.card ?? '';
   return Math.max(1.3 + 0.42 * Math.log2(Math.max(trip.dataBytes, 64) / 64), (label.length * cardFont(label) * 0.62 + 18) / U);

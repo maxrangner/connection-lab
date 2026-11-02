@@ -4,7 +4,7 @@ import { fetchWebPage, type Job } from './scenarios/fetchWebPage';
 
 const JOBS: Job[] = ['page', 'photo', 'call', 'ping', 'trace'];
 const CLEAN = { randomLoss: 0, manual: [] };
-const first = { page: {}, photo: { site: 'httpbin.org' }, call: { call: true }, ping: { probe: 'ping' }, trace: { probe: 'traceroute' } } as const;
+const first = { page: {}, photo: { site: 'connection-lab.rangner.com' }, call: { call: true }, ping: { probe: 'ping' }, trace: { probe: 'traceroute' } } as const;
 const run = (a: Job, b: Job, at: number): SimResult => runScenario(fetchWebPage({ ...first[a], joins: [{ job: b, at }] }), { seed: 1, faults: CLEAN, maxTime: 1000 });
 const alone = (a: Job): SimResult => runScenario(fetchWebPage(first[a]), { seed: 1, faults: CLEAN, maxTime: 1000 });
 /** The app says it finished. A second call finds the friend busy: it talks, hears nothing and hangs up, which is finished too. */

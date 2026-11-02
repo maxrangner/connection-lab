@@ -272,8 +272,8 @@ body {
   pointer-events: none;
 }
 
+/* Its size comes from cardFont, which the card's length goes by. */
 .card-label {
-  font-size: 13px;
   font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
 }
 

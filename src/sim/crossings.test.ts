@@ -73,7 +73,7 @@ describe('a NAT', () => {
 });
 
 describe('TCP in trouble', () => {
-  const photo = { site: 'httpbin.org', thin: true } as const;
+  const photo = { site: 'connection-lab.rangner.com', thin: true } as const;
 
   it('what the peer says it has is not on its way, so a hole does not wait a timer each', () => {
     const r = run(photo, 1, [{ link: 'wan', from: 0.0432, to: 0.0532 }]);
@@ -82,9 +82,9 @@ describe('TCP in trouble', () => {
   });
 
   it('recovering, dup ACKs do not start another fast retransmit', () => {
-    const data = [...run({ site: 'httpbin.org' }).packets.values()].filter((p) => p.origin === 'server' && /TCP|HTTP/.test(p.label));
+    const data = [...run({ site: 'connection-lab.rangner.com' }).packets.values()].filter((p) => p.origin === 'server' && /TCP|HTTP/.test(p.label));
     const lost = [data[1]!, data[9]!, data[10]!];
-    const x = runScenario(fetchWebPage({ site: 'httpbin.org' }), { seed: 1, faults: { ...CLEAN, manual: lost.map((p) => ({ packetId: p.id, linkId: 'bb2' })) }, maxTime: 1000 });
+    const x = runScenario(fetchWebPage({ site: 'connection-lab.rangner.com' }), { seed: 1, faults: { ...CLEAN, manual: lost.map((p) => ({ packetId: p.id, linkId: 'bb2' })) }, maxTime: 1000 });
     const causes = x.events.flatMap((e) => (e.type === 'tcp:retransmit' ? [e.cause] : []));
     expect(causes.filter((c) => c === 'fast').length).toBeLessThanOrEqual(1);
   });

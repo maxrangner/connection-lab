@@ -1,0 +1,179 @@
+{
+  "flights": [
+    {
+      "from": "client",
+      "length": 1497
+    },
+    {
+      "from": "server",
+      "length": 5182
+    },
+    {
+      "from": "client",
+      "length": 267
+    },
+    {
+      "from": "server",
+      "length": 35206
+    },
+    {
+      "from": "client",
+      "length": 24
+    }
+  ],
+  "records": [
+    {
+      "from": "client",
+      "offset": 0,
+      "length": 1497,
+      "type": 22,
+      "inner": [
+        "ClientHello"
+      ]
+    },
+    {
+      "from": "client",
+      "offset": 1497,
+      "length": 6,
+      "type": 20,
+      "inner": [
+        "ChangeCipherSpec"
+      ]
+    },
+    {
+      "from": "client",
+      "offset": 1503,
+      "length": 58,
+      "type": 23,
+      "inner": [
+        "Finished"
+      ]
+    },
+    {
+      "from": "client",
+      "offset": 1561,
+      "length": 203,
+      "type": 23,
+      "inner": [
+        "HTTP GET /cat.jpg HTTP/1.1"
+      ]
+    },
+    {
+      "from": "client",
+      "offset": 1764,
+      "length": 24,
+      "type": 23,
+      "inner": [
+        "Alert close_notify"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 0,
+      "length": 127,
+      "type": 22,
+      "inner": [
+        "ServerHello"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 127,
+      "length": 6,
+      "type": 20,
+      "inner": [
+        "ChangeCipherSpec"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 133,
+      "length": 47,
+      "type": 23,
+      "inner": [
+        "EncryptedExtensions"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 180,
+      "length": 4844,
+      "type": 23,
+      "inner": [
+        "Certificate"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 5024,
+      "length": 100,
+      "type": 23,
+      "inner": [
+        "CertificateVerify"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 5124,
+      "length": 58,
+      "type": 23,
+      "inner": [
+        "Finished"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 5182,
+      "length": 303,
+      "type": 23,
+      "inner": [
+        "NewSessionTicket"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 5485,
+      "length": 303,
+      "type": 23,
+      "inner": [
+        "NewSessionTicket"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 5788,
+      "length": 16406,
+      "type": 23,
+      "inner": [
+        "HTTP HTTP/1.1 200 OK"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 22194,
+      "length": 16406,
+      "type": 23,
+      "inner": [
+        "HTTP body"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 38600,
+      "length": 1764,
+      "type": 23,
+      "inner": [
+        "HTTP body"
+      ]
+    },
+    {
+      "from": "server",
+      "offset": 40364,
+      "length": 24,
+      "type": 23,
+      "inner": [
+        "Alert close_notify"
+      ]
+    }
+  ]
+}

@@ -33,7 +33,7 @@ describe('two devices fetching at once, in the story', () => {
   });
 
   it('the photo streams for the laptop while the phone gets the plain page', () => {
-    const s = buildStory(runScenario(fetchWebPage({ joins: [{}], site: 'httpbin.org' }), { seed: 1, faults: CLEAN, maxTime: 1000 }));
+    const s = buildStory(runScenario(fetchWebPage({ joins: [{}], site: 'connection-lab.rangner.com' }), { seed: 1, faults: CLEAN, maxTime: 1000 }));
     const streams = s.trips.filter((t) => t.steps.some((x) => x.kind === 'flow' && x.packets.length > 1));
     expect(streams).toHaveLength(1);
     expect(streams[0]!.client).toBe('laptop');

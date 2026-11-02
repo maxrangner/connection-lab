@@ -6,7 +6,7 @@ import { buildSpeech } from './speech';
 
 const JOBS: Job[] = ['page', 'photo', 'call', 'ping', 'trace'];
 const CLEAN = { randomLoss: 0, manual: [] };
-const OPTIONS = { page: {}, photo: { site: 'httpbin.org' }, call: { call: true }, ping: { probe: 'ping' }, trace: { probe: 'traceroute' } } as const;
+const OPTIONS = { page: {}, photo: { site: 'connection-lab.rangner.com' }, call: { call: true }, ping: { probe: 'ping' }, trace: { probe: 'traceroute' } } as const;
 const story = (a: Job, extra: object = {}, faults: object = CLEAN): Story => buildStory(runScenario(fetchWebPage({ ...OPTIONS[a], ...extra }), { seed: 1, faults: { ...CLEAN, ...faults }, maxTime: 1000 }));
 
 /** The runs that cards are dropped into: only ever read. */
@@ -120,7 +120,7 @@ describe('a card dropped in during a run', () => {
     expect(pageParts(dropped('page', 'call', 0.2).after)).toBeNull();
     const photo = pageParts(dropped('photo', 'call', 0.2).after)!;
     expect(photo.complete).toBeLessThan(Infinity);
-    expect(photo.of).toBe(25);
+    expect(photo.of).toBe(24);
   });
 
   it('each device shows what it asked for', () => {
@@ -129,7 +129,7 @@ describe('a card dropped in during a run', () => {
     expect(photoOnPhone.laptop!.image).toBeNull();
     expect(photoOnPhone.phone!.pageTitle).toBe('photo');
     expect(photoOnPhone.phone!.image).toMatch(/^data:image\/jpeg/);
-    expect(photoOnPhone.phone!.site).toBe('httpbin.org');
+    expect(photoOnPhone.phone!.site).toBe('connection-lab.rangner.com');
 
     const pageOnPhone = dropped('photo', 'page', 0.2).s.screens;
     expect(pageOnPhone.laptop!.image).toMatch(/^data:image\/jpeg/);

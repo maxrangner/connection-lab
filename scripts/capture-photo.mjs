@@ -1,4 +1,4 @@
-// Captures the exact bytes httpbin.org sends for its JPEG, as our simulated browser asks for it.
+// Captures the exact bytes this page's own site sends for its cat, as our simulated browser asks for it.
 // Usage: node scripts/capture-photo.mjs
 // Writes tests/fixtures/photo-response.http (raw bytes) and
 // src/sim/scenarios/photoCapture.ts (same bytes as a TS module the sim imports).
@@ -6,8 +6,8 @@ import net from 'node:net';
 import dns from 'node:dns/promises';
 import fs from 'node:fs';
 
-const HOST = 'httpbin.org';
-const PATH = '/image/jpeg';
+const HOST = 'connection-lab.rangner.com';
+const PATH = '/cat.jpg';
 const REQUEST =
   `GET ${PATH} HTTP/1.1\r\n` +
   `Host: ${HOST}\r\n` +

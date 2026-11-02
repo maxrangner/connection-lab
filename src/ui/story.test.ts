@@ -83,11 +83,12 @@ describe('network story', () => {
     expect(cardLabel('HTTP GET / HTTP/1.1')).toBe('GET /');
     expect(cardLabel('HTTP HTTP/1.1 200 OK')).toBe('200 OK');
     expect(dnsCardLabel('DNS query 0x85bb: example.com A?')).toBe('example.com?');
+    expect(dnsCardLabel('DNS query 0x85bb: connection-lab.rangner.com A?')).toBe('connection-lab…?');
     expect(dnsCardLabel('DNS response 0x85bb: example.com A 104.20.23.154, 172.66.147.243')).toBe('104.20.23.154');
     expect(dnsCardLabel('DNS referral 0xb8c1: example.com → com NS l.gtld-servers.net, j.gtld-servers.net, …')).toBe('ask .com');
     expect(dnsCardLabel('DNS referral 0x80dd: example.com → example.com NS hera.ns.cloudflare.com, elliott.ns.cloudflare.com')).toBe('ask name server');
     expect(dnsCardLabel('DNS referral 0x80dd: info.cern.ch → cern.ch NS scsnms.switch.ch, ext-dns-1.cern.ch, …')).toBe('ask name server');
-    expect(dnsCardLabel('DNS referral 0x80dd: httpbin.org → httpbin.org NS ns-173.awsdns-21.com, ns-884.awsdns-46.net, …')).toBe('ask name server');
+    expect(dnsCardLabel('DNS referral 0x80dd: connection-lab.rangner.com → rangner.com NS ns01.one.com, ns02.one.com')).toBe('ask name server');
   });
 });
 
@@ -806,7 +807,7 @@ describe('what the flow shows now', () => {
   });
 
   it('the spyglass tells a photo from something scrambled', () => {
-    const r = runScenario(fetchWebPage({ site: 'httpbin.org' }), { seed: 1, faults: { randomLoss: 0, manual: [] } });
+    const r = runScenario(fetchWebPage({ site: 'connection-lab.rangner.com' }), { seed: 1, faults: { randomLoss: 0, manual: [] } });
     const tl = buildTimeline(buildStory(r));
     const reads = spyLog(tl, 'wan', tl.total);
     expect(reads.some((x) => x.lines[0] === 'photo data, not scrambled' && x.kind === 'open')).toBe(true);

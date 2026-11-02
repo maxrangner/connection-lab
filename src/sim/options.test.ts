@@ -219,7 +219,7 @@ describe('noisy Wi-Fi: 802.11 Acks and link-layer retries', () => {
   });
 
   it('with noise 0 nothing changes: no Acks, no radio events, the phone and laptop runs byte for byte as before', () => {
-    const quiet = [plain, run({ from: 'phone', noise: 0 }), run({}), run({ noise: 0.5 }), run({ site: 'httpbin.org', noise: 0 })];
+    const quiet = [plain, run({ from: 'phone', noise: 0 }), run({}), run({ noise: 0.5 }), run({ site: 'connection-lab.rangner.com', noise: 0 })];
     for (const x of quiet) {
       expect([...x.packets.values()].some((p) => p.kind === 'wifi-ack')).toBe(false);
       expect(of(x, 'wifi:retry')).toHaveLength(0);
@@ -247,7 +247,7 @@ describe('noisy Wi-Fi: 802.11 Acks and link-layer retries', () => {
     const call = noisy({ call: true });
     expect(of(call, 'app').filter((e) => e.action === 'call-done').map((e) => e.info)).toEqual([{ received: 50, gaps: 0 }, { received: 50, gaps: 0 }]);
     expect(of(call, 'wifi:retry').length).toBeGreaterThan(0);
-    const photo = noisy({ site: 'httpbin.org' });
+    const photo = noisy({ site: 'connection-lab.rangner.com' });
     expect(of(photo, 'app').find((e) => e.action === 'done')?.info?.bytes).toBe(fromBase64(PHOTO_HTTP_RESPONSE_BASE64).length);
     expect(of(photo, 'wifi:retry').length).toBeGreaterThan(0);
     const both = noisy({ joins: [{}] });
@@ -297,7 +297,7 @@ describe('HTTPS (a real captured TLS 1.3 session)', () => {
 });
 
 describe('getting over a lost stretch', () => {
-  const photo = (faults: Partial<FaultPlan>) => runScenario(fetchWebPage({ site: 'httpbin.org' }), { seed: 1, faults: { randomLoss: 0, manual: [], ...faults }, maxTime: 1000 });
+  const photo = (faults: Partial<FaultPlan>) => runScenario(fetchWebPage({ site: 'connection-lab.rangner.com' }), { seed: 1, faults: { randomLoss: 0, manual: [], ...faults }, maxTime: 1000 });
   const doneAt = (r: SimResult) => of(r, 'app').find((e) => e.action === 'done')!.t;
   const clear = photo({});
   const firstData = of(clear, 'tx').find((e) => e.linkId === 'bb2' && e.fromDevice === 'server' && (clear.packets.get(e.packetId)!.tcp?.len ?? 0) > 0)!.start;
@@ -325,20 +325,20 @@ describe('getting over a lost stretch', () => {
 
   it('after a timeout what the SACK blocks said had arrived is not sent again', () => {
     const data = [...clear.packets.values()].filter((p) => (p.tcp?.len ?? 0) > 1000);
-    const lose = [20, 22, 24].map((i) => ({ packetId: data[i]!.id, linkId: 'bb2' }));
+    const lose = [19, 21, 23].map((i) => ({ packetId: data[i]!.id, linkId: 'bb2' }));
     // Three holes near the end: the fast retransmit would mend the first, so lose that too and leave it to the timer.
     const fast = of(photo({ manual: lose }), 'tcp:retransmit').find((e) => e.cause === 'fast')!;
     const r = photo({ manual: [...lose, { packetId: fast.packetId, linkId: 'bb2' }] });
     expect(of(r, 'tcp:retransmit').map((e) => e.cause)).toEqual(['fast', 'rto', 'recovery', 'recovery', 'recovery']);
     const resent = [...r.packets.values()].filter((p) => p.retransmitOf).map((p) => p.tcp!.relSeq);
-    for (const i of [21, 23]) expect(resent).not.toContain(data[i]!.tcp!.relSeq);
-    for (const i of [20, 22, 24]) expect(resent).toContain(data[i]!.tcp!.relSeq);
+    for (const i of [20, 22]) expect(resent).not.toContain(data[i]!.tcp!.relSeq);
+    for (const i of [19, 21, 23]) expect(resent).toContain(data[i]!.tcp!.relSeq);
     expect(of(r, 'app').some((e) => e.action === 'done')).toBe(true);
   });
 });
 
 describe('a thin pipe: DSL to the ISP, with a small buffer on its port', () => {
-  const photo = (opts: FetchWebPageOptions = {}) => runScenario(fetchWebPage({ site: 'httpbin.org', thin: true, ...opts }), { seed: 1, faults: { randomLoss: 0, manual: [] }, maxTime: 1000 });
+  const photo = (opts: FetchWebPageOptions = {}) => runScenario(fetchWebPage({ site: 'connection-lab.rangner.com', thin: true, ...opts }), { seed: 1, faults: { randomLoss: 0, manual: [] }, maxTime: 1000 });
   const r = photo();
   const wanOf = (opts: FetchWebPageOptions) => fetchWebPage(opts).links.find((l) => l.id === 'wan')!;
   /** The parts of the photo as the server first sent them, in order. */
@@ -409,7 +409,7 @@ describe('a thin pipe: DSL to the ISP, with a small buffer on its port', () => {
   });
 
   it('with thin off nothing is ever queued visibly, whatever else is on', () => {
-    for (const o of [{}, { site: 'httpbin.org' as const }, { slow: true, site: 'httpbin.org' as const }, { vpn: true }, { dhcp: true }]) {
+    for (const o of [{}, { site: 'connection-lab.rangner.com' as const }, { slow: true, site: 'connection-lab.rangner.com' as const }, { vpn: true }, { dhcp: true }]) {
       const x = runScenario(fetchWebPage(o), { seed: 1, faults: { randomLoss: 0, manual: [] }, maxTime: 1000 });
       expect(of(x, 'queue')).toHaveLength(0);
       expect(of(x, 'drop').filter((d) => d.reason === 'queue-full')).toHaveLength(0);
@@ -503,7 +503,7 @@ describe('VPN (a WireGuard tunnel)', () => {
   });
 
   it('the ISP never handles an opened packet: what the VPN server sends on takes its own cables', () => {
-    for (const o of [{}, { https: true }, { from: 'phone' as const }, { site: 'httpbin.org' as const }]) {
+    for (const o of [{}, { https: true }, { from: 'phone' as const }, { site: 'connection-lab.rangner.com' as const }]) {
       const x = run({ vpn: true, ...o });
       const crossed = new Set(of(x, 'tx').map((e) => e.linkId));
       for (const link of ['bb4', 'bb5']) expect(crossed.has(link)).toBe(true);
@@ -738,7 +738,7 @@ describe('a cold resolver (the real walk root → .com → authoritative)', () =
     expect(answer(r).ttl).toBe(300);
     expect(of(r, 'app').some((e) => e.action === 'done')).toBe(true);
     expect(of(r, 'drop')).toHaveLength(0);
-    for (const site of ['info.cern.ch', 'httpbin.org'] as const) {
+    for (const site of ['info.cern.ch', 'connection-lab.rangner.com'] as const) {
       const x = run({ cold: true, site });
       expect(onUp(x)).toHaveLength(6);
       expect(of(x, 'app').some((e) => e.action === 'done')).toBe(true);

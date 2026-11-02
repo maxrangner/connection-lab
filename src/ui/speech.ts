@@ -111,7 +111,7 @@ function lineOf(t: Trip, walk: Walk, story: Story): string | null {
       if (t.identity) return 'It really is me';
       return card.startsWith('certificate') ? "Here's my ID" : null;
     case 'page':
-      if (t.message?.kind === 'http-request') return `${t.locked ? 'Locked now: please' : 'Please'} send the ${t.message.path.startsWith('/image') ? 'photo' : 'page'}`;
+      if (t.message?.kind === 'http-request') return `${t.locked ? 'Locked now: please' : 'Please'} send the ${t.message.path.endsWith('.jpg') ? 'photo' : 'page'}`;
       if (t.part && t.part.of > 1) return t.part.n === 1 ? "Too big for one packet: here's part 1" : null;
       return t.part || t.message?.kind === 'http-response' ? 'Here it is' : null;
     case 'call':

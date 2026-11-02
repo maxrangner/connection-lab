@@ -4,7 +4,7 @@ import { buildStory, unrolled, type Story } from './story';
 import { buildTimeline, crossings, joinAt, namedAcks, type Timeline } from './timeline';
 
 const CLEAN = { randomLoss: 0, manual: [] };
-const JOBS = { page: {}, photo: { site: 'httpbin.org' }, call: { call: true }, ping: { probe: 'ping' }, trace: { probe: 'traceroute' } } as const;
+const JOBS = { page: {}, photo: { site: 'connection-lab.rangner.com' }, call: { call: true }, ping: { probe: 'ping' }, trace: { probe: 'traceroute' } } as const;
 const sim = (opts: object): SimResult => runScenario(fetchWebPage(opts), { seed: 1, faults: CLEAN, maxTime: 1000 });
 const run = (opts: object): { s: Story; tl: Timeline } => {
   const s = buildStory(sim(opts));
@@ -181,7 +181,7 @@ describe('attackers together', () => {
   }, 120_000);
 
   it('calls only an ACK an ACK: a SYN, a SYN-ACK or a reset has no data either', () => {
-    for (const opts of [{ attacks: ['scan'] }, { attacks: ['flood'] }, { joins: [{ job: 'page', at: 0.001 }] }, { site: 'httpbin.org' }]) {
+    for (const opts of [{ attacks: ['scan'] }, { attacks: ['flood'] }, { joins: [{ job: 'page', at: 0.001 }] }, { site: 'connection-lab.rangner.com' }]) {
       const flows = run(opts).tl.segs.flatMap((x) => (x.flow ? [x.flow] : []));
       expect(flows.flatMap(namedAcks).length).toBeGreaterThan(0);
       for (const flow of flows) {

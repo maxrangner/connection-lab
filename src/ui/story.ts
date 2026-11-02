@@ -295,10 +295,11 @@ export function arpCardLabel(summary: string): string {
 /**
  * "DNS query 0x85bb: example.com A?" → "example.com?", a response → its first address, a referral → who to ask next:
  * "ask .com" for a top-level zone, else "ask name server", which is what its map label says, not one of its long real names.
+ * A long name keeps only its first part, as a long path does: "connection-lab…?". Opened, the packet has all of it.
  */
 export function dnsCardLabel(summary: string): string {
   const q = /^DNS query \S+: (\S+)/.exec(summary);
-  if (q) return `${q[1]}?`;
+  if (q) return q[1]!.length > 16 ? `${q[1]!.split('.')[0]}…?` : `${q[1]}?`;
   const ref = /^DNS referral \S+: \S+ → (\S+) NS /.exec(summary);
   if (ref) {
     const zone = ref[1]!;
@@ -893,7 +894,7 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
     trips: shown,
     pageTitle: title,
     image: screens[client]!.image,
-    photo: /\/image\b/.test(new TextDecoder('latin1').decode(browserOf(r, client)?.request ?? new Uint8Array()).split('\r\n')[0]!),
+    photo: /\.jpg\b/.test(new TextDecoder('latin1').decode(browserOf(r, client)?.request ?? new Uint8Array()).split('\r\n')[0]!),
     dnsAnswer: dnsAnswer(r, client),
     dnsTtl: (() => {
       const e = r.events.find((x) => x.type === 'app' && x.action === 'dns-answer' && x.deviceId === client);

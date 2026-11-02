@@ -76,17 +76,6 @@ Your two files are now here:
 **Connection Lab doesn't appear, or you get a security warning?**
 Wait. It can take up to 24 hours. If it still fails after that, use **Plan B**.
 
----
-
-## Part 5: One last step
-
-Do this once, the first time.
-
-1. **Don't share the link yet.**
-2. Tell Claude the site is up.
-3. Claude records the cat from your site and makes a new `index.html`.
-4. Follow **Updating the site later** below.
-
 **Now you're done.** You can share the link.
 
 ---
@@ -103,7 +92,6 @@ Your address will be `https://rangner.com/connection-lab/`
 6. Open `https://rangner.com/connection-lab/`
 7. Open `https://rangner.com` and check that your portfolio is still there.
 8. Open `https://rangner.com/connection-lab/cat.jpg` and check that a yawning cat appears.
-9. Do **Part 5**.
 
 ---
 

@@ -68,7 +68,7 @@ describe('what the devices say', () => {
   });
 
   it('opens on what the run is for, before anything moves, and ends on having got it', () => {
-    const tl = run({ site: 'httpbin.org' });
+    const tl = run({ site: 'connection-lab.rangner.com' });
     const open = tl.speech[0]!;
     expect(open).toMatchObject({ device: 'laptop', t0: 0, text: 'I want to get a photo' });
     expect(open.t1).toBeGreaterThanOrEqual(tl.segs[0]!.t0);
@@ -91,7 +91,7 @@ describe('what the devices say', () => {
   });
 
   it('ends every run on a last line that stays after the last packet', () => {
-    const runs: [Parameters<typeof fetchWebPage>[0], Cut[]?][] = [[{}], [{ https: true }], [{ vpn: true }], [{ call: true }], [{ probe: 'ping' }], [{ probe: 'traceroute' }], [{ site: 'httpbin.org' }], [{ thin: true }], [{ slow: true }], [{ from: 'phone', noise: 0.5 }], [{ reading: true, smart: true }], [{ attacks: ['flood'] }], [{ attacks: ['scan'] }], [{ attacks: ['listen'] }], [{ joins: [{ job: 'call', at: 0.01 }] }], [{}, [{ link: 'wan', from: 0 }]], [{ probe: 'ping' }, [{ link: 'bb2', from: 0 }]]];
+    const runs: [Parameters<typeof fetchWebPage>[0], Cut[]?][] = [[{}], [{ https: true }], [{ vpn: true }], [{ call: true }], [{ probe: 'ping' }], [{ probe: 'traceroute' }], [{ site: 'connection-lab.rangner.com' }], [{ thin: true }], [{ slow: true }], [{ from: 'phone', noise: 0.5 }], [{ reading: true, smart: true }], [{ attacks: ['flood'] }], [{ attacks: ['scan'] }], [{ attacks: ['listen'] }], [{ joins: [{ job: 'call', at: 0.01 }] }], [{}, [{ link: 'wan', from: 0 }]], [{ probe: 'ping' }, [{ link: 'bb2', from: 0 }]]];
     for (const [opts, cuts] of runs) {
       const tl = run(opts, cuts);
       expect(tl.total - tl.settled, JSON.stringify(opts)).toBeGreaterThanOrEqual(2.5);
@@ -134,7 +134,7 @@ describe('what the devices say', () => {
       expect(space.at(-1)).toBe('laptop: Got it! Slow, because it went via space');
       expect(lines({ wanDelay: 0.03 }).at(-1)).toBe('laptop: Got it! The long cable made it slower');
       expect(lines({ thin: true }).at(-1)).toBe('laptop: Got it! This page fit down the slow line');
-      const queue = lines({ thin: true, site: 'httpbin.org' });
+      const queue = lines({ thin: true, site: 'connection-lab.rangner.com' });
       expect(queue).toContain('isp: My queue is full! That one is lost');
       expect(queue.at(-1)).toBe('laptop: Got it, once the lost part came again');
     });
@@ -269,7 +269,7 @@ describe('what the devices say', () => {
     });
 
     it('only the flooded line is the flood', () => {
-      const thin = lines({ site: 'httpbin.org', vpn: true, thin: true, attacks: ['flood'] });
+      const thin = lines({ site: 'connection-lab.rangner.com', vpn: true, thin: true, attacks: ['flood'] });
       expect(thin.join()).not.toContain('flood is over');
       expect(thin.join()).not.toContain('stuck');
       const cut = lines({ attacks: ['flood'] }, [{ link: 'wan', from: 0.05, to: 2 }]);
@@ -295,8 +295,8 @@ describe('what the devices say', () => {
     it('what counts as a lost part of the page', () => {
       const get = [...sim({}).packets.values()].find((p) => /GET/.test(p.label))!.createdAt;
       expect(lines({}, [{ link: 'wan', from: get - 1e-5, to: get + 0.5 }])).toContain('laptop: Got it! Now I can show the page');
-      const photo = sim({ site: 'httpbin.org' }).events.find((e) => e.type === 'app' && e.action === 'http-response-received')!.t;
-      expect(lines({ site: 'httpbin.org' }, [{ link: 'lan', from: photo, to: photo + 2.5 }]).join()).not.toContain('once the lost part');
+      const photo = sim({ site: 'connection-lab.rangner.com' }).events.find((e) => e.type === 'app' && e.action === 'http-response-received')!.t;
+      expect(lines({ site: 'connection-lab.rangner.com' }, [{ link: 'lan', from: photo, to: photo + 2.5 }]).join()).not.toContain('once the lost part');
     });
 
     it('a scan that reached nobody tried no doors', () => {
@@ -315,7 +315,7 @@ describe('what the devices say', () => {
       const none = [{ link: 'lan', from: 0 }];
       expect(lines({ dhcp: true }, none)[0]).toBe('laptop: I want to open example.com');
       expect(lines({ dhcp: true, probe: 'ping' }, none)[0]).toBe('laptop: Is example.com there?');
-      const photo = lines({ site: 'httpbin.org' }, [{ link: 'wan', from: 0 }]);
+      const photo = lines({ site: 'connection-lab.rangner.com' }, [{ link: 'wan', from: 0 }]);
       expect(photo[0]).toBe('laptop: I want to get a photo');
       expect(photo.at(-1)).toBe("laptop: I couldn't get the photo");
     });
@@ -467,7 +467,7 @@ describe('what the devices say', () => {
   });
 
   it('asks for the photo when the photo is what is wanted', () => {
-    expect(said(run({ site: 'httpbin.org' })).map((x) => x[1])).toContain('Please send the photo');
+    expect(said(run({ site: 'connection-lab.rangner.com' })).map((x) => x[1])).toContain('Please send the photo');
   });
 
   it('ping says it once, for the first echo', () => {
