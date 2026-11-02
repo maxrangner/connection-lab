@@ -236,6 +236,101 @@ describe('what the devices say', () => {
     });
   });
 
+  describe('does not mistake one thing for another', () => {
+    const sim = (opts: Parameters<typeof fetchWebPage>[0], cuts: Cut[] = [], seed = 1): SimResult => runScenario(fetchWebPage(opts), { seed, faults: { randomLoss: 0, manual: [], cuts }, maxTime: 1000 });
+    const lines = (opts: Parameters<typeof fetchWebPage>[0], cuts: Cut[] = [], seed = 1): string[] => said(buildTimeline(buildStory(sim(opts, cuts, seed)))).map((x) => x.join(': '));
+    const reading = { reading: true, smart: true } as const;
+
+    it('noisy air: a frame sent again by the radio was not lost', () => {
+      for (const seed of [1, 2, 3, 4, 5]) {
+        const opts = { from: 'phone', call: true, noise: 0.4 } as const;
+        const heard = buildStory(sim(opts, [], seed)).voice!.heard;
+        expect(lines(opts, [], seed).at(-1)).toBe(heard.includes(null) ? 'phone: Lost sound stays lost. Bye!' : 'phone: Every sound got through. Bye!');
+        expect(lines({ from: 'phone', https: true, noise: 0.4 }, [], seed).at(-1)).not.toContain('My bye got no answer');
+      }
+      const joined = lines({ noise: 0.4, joins: [{ device: 'phone', job: 'page', at: 0.1 }] });
+      expect(joined).toContain('phone: Got it too!');
+    });
+
+    it('an app that came back is not away', () => {
+      const mended = [{ link: 'lan', from: OFFLINE_AT, to: READING_AT + 1 }];
+      expect(lines({ ...reading, qos: 1 }, mended).join()).not.toContain('away');
+      expect(lines({ ...reading, qos: 2 }, mended).join()).not.toContain('away');
+      expect(lines({ ...reading, qos: 0 }, mended)).toContain('local-broker: The laptop was away. It missed this one');
+    });
+
+    it('a broker speaks of the apps it knows, and not of a sensor that never sent', () => {
+      expect(lines({ ...reading, qos: 0 }, [{ link: 'lan2', from: OFFLINE_AT }]).join()).not.toContain('The  is');
+      expect(lines({ ...reading, cloud: true, qos: 0 }, [{ link: 'wan', from: OFFLINE_AT }]).join()).not.toContain('The  is');
+    });
+
+    it('a copy of a reading is no reply, and is for the app it is for', () => {
+      expect(lines({ ...reading, cloud: true, qos: 0 })).toContain('home: This is for the laptop');
+    });
+
+    it('only the flooded line is the flood', () => {
+      const thin = lines({ site: 'httpbin.org', vpn: true, thin: true, attacks: ['flood'] });
+      expect(thin.join()).not.toContain('flood is over');
+      expect(thin.join()).not.toContain('stuck');
+      const cut = lines({ attacks: ['flood'] }, [{ link: 'wan', from: 0.05, to: 2 }]);
+      expect(cut.join()).not.toContain('slow line');
+      expect(lines({ attacks: ['flood'] }, [{ link: 'wan', from: 0, to: 1 }]).find((l) => l.includes('stuck'))).toBeUndefined();
+      expect(lines({ ...reading, attacks: ['flood'] }, [{ link: 'lan', from: OFFLINE_AT }]).join()).not.toContain('stuck');
+    });
+
+    it('an attack on a reading has its plan and its outcome', () => {
+      const flood = lines({ ...reading, attacks: ['flood'] });
+      expect(flood).toContain("bot1: Let's flood the web server!");
+      expect(flood).toContain('sensor: That flood never touched me');
+      expect(lines({ ...reading, attacks: ['scan'] })).toContain("scanner: Let's try all the server's doors");
+    });
+
+    it("an app's screen shows the reading with attackers about too", () => {
+      for (const attacks of [['scan'], ['flood']] as const) {
+        const tl = buildTimeline(buildStory(sim({ ...reading, attacks: [...attacks] })));
+        expect(tl.pages.has('laptop'), attacks[0]).toBe(true);
+      }
+    });
+
+    it('what counts as a lost part of the page', () => {
+      const get = [...sim({}).packets.values()].find((p) => /GET/.test(p.label))!.createdAt;
+      expect(lines({}, [{ link: 'wan', from: get - 1e-5, to: get + 0.5 }])).toContain('laptop: Got it! Now I can show the page');
+      const photo = sim({ site: 'httpbin.org' }).events.find((e) => e.type === 'app' && e.action === 'http-response-received')!.t;
+      expect(lines({ site: 'httpbin.org' }, [{ link: 'lan', from: photo, to: photo + 2.5 }]).join()).not.toContain('once the lost part');
+    });
+
+    it('a scan that reached nobody tried no doors', () => {
+      expect(lines({ attacks: ['scan'] }, [{ link: 'bb2', from: 0 }]).join()).not.toContain('Someone tried');
+      const tl = buildTimeline(buildStory(sim({ attacks: ['scan'] }, [{ link: 'bb2', from: 0.03 }])));
+      expect(tl.attackReadouts.flatMap((r) => r.readout.screens.at(-1)!.lines).join()).toMatch(/\d door/);
+    });
+
+    it('a resolver that could not find out says so', () => {
+      const failed = lines({ cold: true }, [{ link: 'up1', from: 0 }]);
+      expect(failed).toContain("resolver: I couldn't find that name");
+      expect(failed.join()).not.toContain('Got the address');
+    });
+
+    it('what a run set out to do, however far it got', () => {
+      const none = [{ link: 'lan', from: 0 }];
+      expect(lines({ dhcp: true }, none)[0]).toBe('laptop: I want to open example.com');
+      expect(lines({ dhcp: true, probe: 'ping' }, none)[0]).toBe('laptop: Is example.com there?');
+      const photo = lines({ site: 'httpbin.org' }, [{ link: 'wan', from: 0 }]);
+      expect(photo[0]).toBe('laptop: I want to get a photo');
+      expect(photo.at(-1)).toBe("laptop: I couldn't get the photo");
+    });
+
+    it('cries once, when it is over, and only for a fetch', () => {
+      const moods = (opts: Parameters<typeof fetchWebPage>[0], cuts: Cut[]): string[] => buildTimeline(buildStory(sim(opts, cuts))).segs.flatMap((s) => (s.step.kind === 'wait' && s.step.giveUp ? [s.step.mood] : []));
+      expect(moods({ probe: 'ping' }, [{ link: 'bb2', from: 0 }])).not.toContain('cry');
+      expect(moods({ dhcp: true }, [{ link: 'lan', from: 0 }])).toEqual(['cry']);
+      const after = sim({ site: 'info.cern.ch' }).events.find((e) => e.type === 'app' && e.action === 'http-request-sent');
+      const big = buildTimeline(buildStory(sim({ site: 'info.cern.ch' }, [{ link: 'bb2', from: after?.t ?? 0.03 }])));
+      const tears = big.segs.filter((s) => s.step.kind === 'wait' && s.step.giveUp);
+      for (const s of tears) expect(big.segs.some((x) => x.t0 > s.t1 && x.trip.origin === s.trip.origin && x.trip.retry)).toBe(false);
+    });
+  });
+
   describe('gives each line its time', () => {
     const bubble = (tl: Timeline, text: string) => tl.speech.filter((b) => b.text === text);
 

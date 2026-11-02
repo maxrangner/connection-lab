@@ -179,6 +179,7 @@ interface DeviceView {
   /** The frame tray (Ethernet or Wi-Fi) and its name. */
   l2Tray: SVGPathElement | null;
   l2Name: SVGTextElement | null;
+  name: SVGTextElement;
 }
 
 interface Screen {
@@ -348,7 +349,7 @@ export class NetworkScene {
       const s = NAMED_BELOW.has(d.kind) ? iso(p.x + 0.7, p.y + 0.7, 0) : iso(p.x, p.y + 1.9, 0);
       const name = el('text', { class: 'device-name', 'text-anchor': 'middle', x: s.sx.toFixed(1), y: (s.sy + 26).toFixed(1) }, g);
       name.textContent = d.label;
-      this.devices.push({ id: d.id, kind: d.kind, g, trays, l4Name, l2Tray, l2Name });
+      this.devices.push({ id: d.id, kind: d.kind, g, trays, l4Name, l2Tray, l2Name, name });
     }
   }
 
@@ -364,6 +365,8 @@ export class NetworkScene {
     this.yours = new Set(story.devices.filter((d) => d.actions.length).map((d) => d.id));
     this.owners = new Map(story.devices.flatMap((d) => (d.color ? [[d.id, d.color]] : [])));
     if (this.layoutKey() !== this.laidOut) this.buildDevices();
+    // A name can change with the run, as the TLD server's does with the site.
+    for (const d of this.devices) d.name.textContent = story.devices.find((x) => x.id === d.id)?.label ?? d.name.textContent;
     const stops = (t: Trip): string[] => t.steps.flatMap((s) => (s.kind === 'flow' ? s.packets.flatMap(stops) : 'device' in s ? [s.device] : [s.from, s.to]));
     this.used = new Set([...story.trips.flatMap(stops), ...(story.listener ? [story.listener] : [])]);
     this.fit();
@@ -1335,7 +1338,7 @@ export class NetworkScene {
     const lines = terminals.map((x) => (v < 0 ? null : screenAt(x.readout, v)));
     const flags = v < 0 ? [] : terminals.flatMap((x) => x.readout.flags).filter((f) => v >= f.t);
     const sizes = flags.map((f) => easeOutBack(clamp01((v - f.t) / 0.3)));
-    const drawn = `${lines.map((l) => l?.join('\n')).join('|')}|${sizes.map((s) => s.toFixed(2)).join(' ')}`;
+    const drawn = `${this.laidOut}|${lines.map((l) => l?.join('\n')).join('|')}|${sizes.map((s) => s.toFixed(2)).join(' ')}`;
     if (drawn === this.readoutDrawn) return;
     this.readoutDrawn = drawn;
     this.readoutLayer.replaceChildren();

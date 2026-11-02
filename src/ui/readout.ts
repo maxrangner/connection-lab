@@ -113,7 +113,8 @@ export function scanReadout(scan: Scan, timing: Timing, total: number): Readout 
     rows.push(`${String(p.port).padEnd(6)}${p.answer ?? 'no answer'}`);
     screens.push({ t: p.t, lines: [title, ...rows] });
   }
-  screens[screens.length - 1]!.lines.push(`${answers.filter((p) => p.answer === 'open').length} doors open`);
+  const open = answers.filter((p) => p.answer === 'open').length;
+  screens[screens.length - 1]!.lines.push(`${open} ${open === 1 ? 'door' : 'doors'} open`);
   return { screens, flags: [] };
 }
 

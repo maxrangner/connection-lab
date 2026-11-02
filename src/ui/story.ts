@@ -205,8 +205,10 @@ export interface Story {
   reading: boolean;
   /** The QoS it was really published at. */
   qos: 0 | 1 | 2;
-  /** The apps the broker knew to be gone when a reading came, and whether it kept the reading for them. */
-  away: { device: string; kept: boolean }[];
+  /** The apps the broker knew to be gone when a reading came, whether it kept the reading for them, and whether they came back. */
+  away: { device: string; kept: boolean; back: boolean }[];
+  /** The apps that really got the reading. */
+  told: string[];
   /** The sim time the story starts at: what came before is how things stood. */
   startsAt: number;
   /** The attackers sending packets this run. Whatever they send runs alongside the rest from the start. */
@@ -244,8 +246,10 @@ export interface Story {
   trips: Trip[];
   /** The page's <title> if the page arrived, else null. */
   pageTitle: string | null;
-  /** What was asked for, if it is a picture: its real bytes as a data URL. */
+  /** What was asked for, if it is a picture: its real bytes as a data URL, once the server has sent it. */
   image: string | null;
+  /** A picture is what was asked for, whether or not one ever came. */
+  photo: boolean;
   /** The address the DNS answer gave, if it arrived. */
   dnsAnswer: string | null;
   /** How long (seconds) the DNS answer may be remembered, from the record's real TTL. */
@@ -270,6 +274,9 @@ function layer(s: PduSnapshot, protocol: LayerPdu['protocol']): LayerPdu | undef
 function field(l: LayerPdu | undefined, key: string): string {
   return l?.fields.find((f) => f.key === key)?.display ?? '';
 }
+
+/** A DNS answer that has no address in it: the server could not find out, or there is no such name. */
+const noAddress = (summary: string): boolean => /^DNS response .* (server failure|no such name|error \d+|\(no address\))/.test(summary);
 
 /** "HTTP GET / HTTP/1.1" → "GET /", "HTTP HTTP/1.1 200 OK" → "200 OK". */
 export function cardLabel(summary: string): string {
@@ -299,6 +306,7 @@ export function dnsCardLabel(summary: string): string {
     const zone = ref[1]!;
     return zone.includes('.') ? 'ask name server' : `ask .${zone}`;
   }
+  if (noAddress(summary)) return 'no address';
   return /\d+\.\d+\.\d+\.\d+/.exec(summary)?.[0] ?? 'DNS';
 }
 
@@ -419,7 +427,7 @@ function messageOf(app: LayerPdu | undefined): Message | undefined {
   if (app?.protocol === 'mqtt') return { kind: isPublish(app) ? 'reading' : 'mqtt-control' };
   if (app?.protocol === 'http') return httpMessage(app.summary.replace(/^HTTP /, ''));
   // A referral is a server's answer too: "not me, ask these"; it looked the name up to say so.
-  if (app?.protocol === 'dns' && /^DNS (response|referral)/.test(app.summary)) return { kind: 'dns-answer', name: field(app, 'dns.question').split(' ')[0]! };
+  if (app?.protocol === 'dns' && /^DNS (response|referral)/.test(app.summary) && !noAddress(app.summary)) return { kind: 'dns-answer', name: field(app, 'dns.question').split(' ')[0]! };
   return undefined;
 }
 
@@ -743,8 +751,9 @@ function voiceOf(r: SimResult, client: string): Story['voice'] {
 
 /** What ping or traceroute reported, from its own events, for the owner to show as it likes. */
 function probeOf(r: SimResult, client: string): Probe | undefined {
-  const start = r.events.find((e) => e.type === 'app' && (e.app === 'ping' || e.app === 'traceroute') && e.action === 'start' && e.deviceId === client);
-  if (start?.type !== 'app') return undefined;
+  // A device with no address never gets as far as starting: what it was set to do is still what it was there for.
+  const job = r.scenario.devices.find((d) => d.id === client)?.apps.find((a) => a.kind === 'ping' || a.kind === 'traceroute');
+  if (job?.kind !== 'ping' && job?.kind !== 'traceroute') return undefined;
   const infos = (action: AppAction): Record<string, string | number | string[]>[] =>
     r.events.flatMap((e) => (e.type === 'app' && e.deviceId === client && e.action === action ? [e.info ?? {}] : []));
   /** The packet each of these events was about, in the same order as `infos`. */
@@ -753,8 +762,8 @@ function probeOf(r: SimResult, client: string): Probe | undefined {
   const num = (v: unknown): number => Number(v ?? 0);
   const str = (v: unknown): string => String(v ?? '');
   return {
-    kind: start.app === 'ping' ? 'ping' : 'traceroute',
-    to: str(start.info?.to),
+    kind: job.kind,
+    to: job.to,
     replies: infos('ping-reply').map((i, n) => ({ seq: num(i.seq), from: str(i.from), ttl: num(i.ttl), rttMs: num(i.rttMs), packetId: packets('ping-reply')[n]! })),
     hops: infos('trace-hop').map((i, n) => ({ ttl: num(i.ttl), probe: num(i.probe), from: str(i.from), rttMs: num(i.rttMs), reached: i.reached === 1, packetId: packets('trace-hop')[n]! })),
     done: infos('ping-done')[0] ?? infos('trace-done')[0] ?? null,
@@ -767,10 +776,16 @@ function dnsAnswer(r: SimResult, client: string, action: 'dns-answer' | 'dns-cac
   return Array.isArray(a) ? (a[0] ?? null) : null;
 }
 
+/** What a device's browser was set to fetch: known from the start, however far the fetch gets. */
+function browserOf(r: SimResult, device: string): Extract<SimResult['scenario']['devices'][number]['apps'][number], { kind: 'browser' }> | undefined {
+  const app = r.scenario.devices.find((d) => d.id === device)?.apps.find((a) => a.kind === 'browser');
+  return app?.kind === 'browser' ? app : undefined;
+}
+
 /** What a device has to show for its job. */
 function screenOf(r: SimResult, device: string, job: number): Screenful {
   const start = r.events.find((e) => e.type === 'app' && e.action === 'start' && e.deviceId === device);
-  const url = start?.type === 'app' ? String(start.info?.url ?? '') : '';
+  const url = browserOf(r, device)?.url ?? (start?.type === 'app' ? String(start.info?.url ?? '') : '');
   return {
     // A call starts with the friend's name instead of a URL.
     site: url ? new URL(url).hostname : start?.type === 'app' ? String(start.info?.to ?? '') : '',
@@ -861,7 +876,12 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
     joiners,
     reading: r.scenario.quietUntil !== undefined,
     qos: readingQos(r),
-    away: r.events.flatMap((e) => (e.type === 'app' && (e.action === 'mqtt-held' || e.action === 'mqtt-missed') ? [{ device: String(e.info?.client), kept: e.action === 'mqtt-held' }] : [])),
+    away: r.events.flatMap((e) => {
+      if (e.type !== 'app' || e.app !== 'mqtt-broker' || (e.action !== 'mqtt-held' && e.action !== 'mqtt-missed')) return [];
+      const device = String(e.info?.client);
+      return [{ device, kept: e.action === 'mqtt-held', back: r.events.some((x) => x.type === 'app' && x.action === 'mqtt-back' && x.deviceId === device && x.t > e.t) }];
+    }),
+    told: [...new Set(r.events.flatMap((e) => (e.type === 'app' && e.action === 'mqtt-received' ? [e.deviceId] : [])))],
     startsAt: r.scenario.quietUntil ?? 0,
     attackers,
     ...(listener ? { listener } : {}),
@@ -874,7 +894,7 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
     dhcp: r.scenario.devices.some((d) => d.id === client && d.apps.some((a) => a.kind === 'dhcp-client')),
     call: !!voice,
     ...(voice ? { voice } : {}),
-    thin: r.scenario.links.some((l) => l.queue !== undefined),
+    thin: r.scenario.links.some((l) => l.id === 'wan' && l.queue !== undefined),
     noise: Math.max(0, ...r.scenario.links.map((l) => l.noise ?? 0)),
     // An address a device gets by DHCP belongs to whoever has the MAC it is leased to.
     names: Object.fromEntries(r.scenario.devices.flatMap((d) => [
@@ -885,6 +905,7 @@ export function buildStory(r: SimResult, opts: StoryOptions = {}): Story {
     trips: shown,
     pageTitle: title,
     image: screens[client]!.image,
+    photo: /\/image\b/.test(new TextDecoder('latin1').decode(browserOf(r, client)?.request ?? new Uint8Array()).split('\r\n')[0]!),
     dnsAnswer: dnsAnswer(r, client),
     dnsTtl: (() => {
       const e = r.events.find((x) => x.type === 'app' && x.action === 'dns-answer' && x.deviceId === client);

@@ -9,8 +9,8 @@ import { COLOR } from './NetworkScene';
  */
 
 /** The colour of each protocol's bytes, by the piece of the packet it is drawn as. */
-const PROTO_COLOR: Record<string, string> = { ethernet: COLOR.eth, wifi: COLOR.wifi, arp: COLOR.app, ipv4: COLOR.ip, udp: COLOR.udp, tcp: COLOR.tcp, dns: COLOR.app, mqtt: COLOR.app, http: COLOR.app, tls: COLOR.app, wireguard: COLOR.vpn };
-const PROTO_NAME: Record<string, string> = { ethernet: 'Ethernet', wifi: 'Wi-Fi', arp: 'ARP', ipv4: 'IP', udp: 'UDP', tcp: 'TCP', dns: 'DNS', mqtt: 'MQTT', http: 'HTTP', tls: 'TLS', wireguard: 'WireGuard' };
+const PROTO_COLOR: Record<string, string> = { ethernet: COLOR.eth, wifi: COLOR.wifi, arp: COLOR.app, icmp: COLOR.app, ipv4: COLOR.ip, udp: COLOR.udp, tcp: COLOR.tcp, dns: COLOR.app, dhcp: COLOR.app, mqtt: COLOR.app, http: COLOR.app, tls: COLOR.app, wireguard: 'var(--tunnel)' };
+const PROTO_NAME: Record<string, string> = { ethernet: 'Ethernet', wifi: 'Wi-Fi', arp: 'ARP', icmp: 'ICMP', ipv4: 'IP', udp: 'UDP', tcp: 'TCP', dns: 'DNS', dhcp: 'DHCP', mqtt: 'MQTT', http: 'HTTP', tls: 'TLS', wireguard: 'WireGuard' };
 const PER_ROW = 16;
 
 /** Which layer each byte belongs to: the innermost one that spans it. */
@@ -39,7 +39,7 @@ export function rangeOf(pdu: PduSnapshot, key: PartKey): [number, number] | null
     case 'l4':
       return l4 && !wg ? [l4.start, l4.headerEnd] : null;
     case 'card': {
-      const app = find('http', 'dns', 'tls', 'arp');
+      const app = find('http', 'dns', 'dhcp', 'tls', 'arp', 'icmp');
       if (app) return [app.start, app.end];
       return l4 && !wg && l4.payloadEnd > l4.headerEnd ? [l4.headerEnd, l4.payloadEnd] : null;
     }

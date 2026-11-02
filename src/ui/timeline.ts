@@ -408,10 +408,12 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
     streak = trip.lost ? streak + 1 : 0;
     // Nobody tries again and the page never came: tears. A lost ACK needs no retry, the next data says the same thing, and a
     // lost SYN needs none once the other side's own resend has got through. A DNS answer is for the asker to miss.
+    // Tears are for a fetch that really failed: a ping or a trace only found nothing there.
     const dns = trip.chapter === 'dns';
-    const askedAgain = dns && story.trips.slice(ti + 1).some((x) => x.chapter === 'dns' && x.retry);
-    if (trip.lost && !story.pageTitle && trip.l4Label !== 'ACK' && !resent.has(trip.packetId) && !askedAgain) {
-      ring({ kind: 'wait', device: dns ? trip.client : trip.origin, seconds: 0, giveUp: true, mood: 'cry' });
+    const later = story.trips.slice(ti + 1);
+    const tryingOn = later.some((x) => x.origin === trip.origin && x.chapter === trip.chapter && (x.retry || x.card === trip.card)) || (dns && later.some((x) => x.chapter === 'dns'));
+    if (trip.lost && !story.pageTitle && trip.l4Label !== 'ACK' && !resent.has(trip.packetId) && !tryingOn) {
+      ring({ kind: 'wait', device: dns || story.probe ? trip.client : trip.origin, seconds: 0, giveUp: true, mood: story.probe ? 'surprise' : 'cry' });
     }
     // The server has forgotten the connection, and says so: that is the end of it.
     if (trip.l4Label.includes('RST') && !trip.outward && !story.pageTitle) ring({ kind: 'wait', device: trip.client, seconds: 0, giveUp: true, mood: 'cry' });
@@ -448,6 +450,10 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
       pages.set(client, done.t1);
       reactions.push({ t: done.t1, device: client, face: 'love' });
       cues.push({ t: done.t1, sound: 'chime' });
+    }
+    for (const app of story.told) {
+      const copy = packets.find((x) => x.trip.message?.kind === 'reading' && !x.trip.lost && x.hops.at(-1)?.to === app);
+      if (copy) pages.set(app, copy.t1);
     }
     for (const client of story.clients) {
       const answer = packets.find((x) => x.trip.chapter === 'dns' && !x.trip.lost && x.hops.at(-1)?.to === client);
