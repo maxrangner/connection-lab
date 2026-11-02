@@ -217,7 +217,7 @@ const toolCard = (text: string, draw: (g: SVGGElement) => void): SVGGElement => 
 };
 const CARDS: Record<Job, SVGGElement> = { page: card, photo: photoCard, call: callCard, ping: toolCard('ping', drawPing), trace: toolCard('trace route', drawTrace) };
 
-/** What each card does, in a beginner's words: it goes along beside the card for as long as the card is held. */
+/** What each card does, in a beginner's words: it goes along to the right of the card for as long as the card is held. */
 const CARD_HELP: Record<Job, [string, string]> = {
   page: ['Open a website using packets:', 'small messages you can tap open'],
   photo: ['Fetch a photo:', 'too big for one packet'],
@@ -1255,14 +1255,10 @@ function frame(now: number): void {
   moving.setAttribute('opacity', cardOp.toFixed(3));
   cardHelp.style.display = mode === 'drag' ? '' : 'none';
   if (mode === 'drag') {
-    // Readable however far back the camera is. Beside the card, away from the finger holding it: on whichever side has room, or above it.
+    // Readable however far back the camera is. To the right of the card, away from the finger holding it, even past the screen's edge.
     const size = Math.max(1, HELP_FLOOR / cam.scale);
-    const edge = (svg.clientWidth || 1) / 2 / cam.scale - (CARD_HELP_W / 2) * size - 6 / cam.scale;
-    const beside = 100 + (CARD_HELP_W / 2) * size;
-    const roomy = (x: number): boolean => Math.abs(x - cam.cx) <= edge;
-    const side = [cardPos.sx + beside, cardPos.sx - beside].find(roomy);
-    const x = side ?? (edge > 0 ? Math.max(cam.cx - edge, Math.min(cam.cx + edge, cardPos.sx)) : cardPos.sx);
-    const y = side === undefined ? cardPos.sy - 32 - CARD_HELP_H * size : cardPos.sy - (CARD_HELP_H / 2) * size;
+    const x = cardPos.sx + 100 + (CARD_HELP_W / 2) * size;
+    const y = cardPos.sy - (CARD_HELP_H / 2) * size;
     cardHelp.setAttribute('transform', `translate(${x.toFixed(1)} ${y.toFixed(1)}) scale(${size.toFixed(3)})`);
   }
   for (const w of EVERY_JOB) {
