@@ -96,6 +96,9 @@ const TERM_PAD = 12;
 /** A speech bubble's tip below the spot a device's name hangs from, or below a hop's flag there, and the width of a character. */
 const SPEECH_UNDER_NAME = 34;
 const SPEECH_UNDER_FLAG = 70;
+/** A speech bubble's height, and the screen pixels it keeps clear of the bar. */
+const SPEECH_H = 40;
+const SPEECH_OVER_BAR = 10;
 const TERM_UNDER_NAME = 100;
 /** How far along an attacker's terminal its name is: it hangs out to the right, away from the phone's. */
 const TERM_TIP = 60;
@@ -1357,6 +1360,8 @@ export class NetworkScene {
     const live = this.quiet ? [] : this.tl.speech.filter((b) => v >= b.t0 && v < b.t1);
     // The camera sits further back on a phone.
     const big = (this.svg.clientWidth || 1) < 520 ? 1.3 : 1;
+    const flags = [...this.tl.readout.flags, ...this.tl.joinReadouts.flatMap((x) => x.readout.flags)];
+    const lowest = this.viewY + ((this.svg.clientHeight || 1) - this.bar - SPEECH_OVER_BAR) / this.viewScale - SPEECH_H * big;
     const looks = live.map((b) => {
       const d = this.tl.pos.get(b.device) ?? { x: 0, y: 0 };
       const s = iso(d.x, d.y + 1.9, 0);
@@ -1364,15 +1369,16 @@ export class NetworkScene {
       // A long line under a device at the edge of the view moves in, and points back at it.
       const room = (w / 2) * big + 8;
       const x = room * 2 < this.viewW ? Math.max(this.viewX + room, Math.min(this.viewX + this.viewW - room, s.sx)) : s.sx;
-      return { b, s, w, x, size: easeOutBack(clamp01((v - b.t0) / 0.25)), op: clamp01((b.t1 - v) / 0.25) };
+      const flagged = flags.filter((f) => f.device === b.device && v >= f.t).length;
+      // On a low screen a device's name can reach the bar: what it says stops above that.
+      const y = Math.min(s.sy + (flagged ? SPEECH_UNDER_FLAG + (flagged - 1) * FLAG_ROW : SPEECH_UNDER_NAME), lowest);
+      return { b, s, w, x, y, size: easeOutBack(clamp01((v - b.t0) / 0.25)), op: clamp01((b.t1 - v) / 0.25) };
     });
-    const drawn = looks.map(({ b, x, size, op }) => `${b.device} ${b.text} ${x.toFixed(0)} ${size.toFixed(2)} ${op.toFixed(2)}`).join('|');
+    const drawn = looks.map(({ b, x, y, size, op }) => `${b.device} ${b.text} ${x.toFixed(0)} ${y.toFixed(0)} ${size.toFixed(2)} ${op.toFixed(2)}`).join('|');
     if (drawn === this.speechDrawn) return;
     this.speechDrawn = drawn;
     this.speechLayer.replaceChildren();
-    for (const { b, s, w, x, size, op } of looks) {
-      const flagged = [...this.tl.readout.flags, ...this.tl.joinReadouts.flatMap((x) => x.readout.flags)].filter((f) => f.device === b.device && v >= f.t).length;
-      const y = s.sy + (flagged ? SPEECH_UNDER_FLAG + (flagged - 1) * FLAG_ROW : SPEECH_UNDER_NAME);
+    for (const { b, s, w, x, y, size, op } of looks) {
       const g = el('g', { class: 'mood', opacity: op.toFixed(3), transform: `translate(${x.toFixed(1)} ${y.toFixed(1)}) scale(${(size * big).toFixed(3)})` }, this.speechLayer);
       const tip = Math.max(-w / 2 + 28, Math.min(w / 2 - 28, (s.sx - x) / big));
       el('path', { d: `M${-w / 2 + 16} 8 H${tip - 9} L${tip} -2 L${tip + 9} 8 H${w / 2 - 16} a16 16 0 0 1 0 32 H${-w / 2 + 16} a16 16 0 0 1 0 -32 Z`, class: 'speech-bg' }, g);
@@ -2009,14 +2015,14 @@ export class NetworkScene {
     // With a VPN the numbers alone don't say much: name who they belong to.
     const caption = (word: string, addr: string): string => {
       const name = this.story.names[addr.split(':')[0]!];
-      return this.story.vpn && name ? `${word} ${name}` : word;
+      return this.story.vpn && name ? `${word} ${name}` : `${word} ip`;
     };
     const fromCap = caption('from', a.from);
     const toCap = caption('to', a.to);
     const fromW = Math.max(a.from.length * 7.2, fromCap.length * 6.6);
     const toW = Math.max(a.to.length * 7.2, toCap.length * 6.6);
     const width = fromW + toW + 44;
-    // Small "from" / "to" captions sit above the addresses; the numbers sit on the lower line.
+    // Small "from ip" / "to ip" captions sit above the addresses; the numbers sit on the lower line.
     const NUM_Y = 7;
     const swapping = changed && m.grow > 0.01;
     el('rect', { x: -width / 2, y: -19, width, height: 38, rx: 7, class: swapping ? 'addr-bg addr-swap' : 'addr-bg' }, g);
