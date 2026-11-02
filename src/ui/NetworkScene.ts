@@ -34,6 +34,8 @@ const LABEL_SETTLED = '#d8f5ee';
 const WAIT = '#c2562f';
 const PHOTO_ID = 'net-photo';
 const sealedInside = (key: PartKey): boolean => key === 'ip' || key === 'l4' || key === 'card';
+/** Screen pixels kept clear beside the chips of an opened packet. */
+const CHIP_MARGIN = 8;
 /** How much of the VPN box fades away when a packet is opened up. */
 const BOX_CLEAR = 0.78;
 /** A cable comes in where these would have their name, so it goes straight under them instead. */
@@ -203,6 +205,8 @@ export class NetworkScene {
   readonly packet: SVGGElement;
   private readonly devices: DeviceView[] = [];
   private readonly tags: SVGGElement;
+  /** Where the size chips of an opened packet are, left and right. */
+  private chipRow: { left: number; right: number } | null = null;
   /** Emoji statuses over devices; on top of everything. */
   private readonly moods: SVGGElement;
   /** A call's music notes. */
@@ -914,6 +918,14 @@ export class NetworkScene {
   }
 
   /** Sets the viewBox so it matches the element's aspect ratio. */
+  /** A camera that cuts off the chips of an opened packet stands further back, with the whole row in the middle. */
+  fitChips(c: Camera): Camera {
+    const row = this.chipRow;
+    const width = this.svg.clientWidth || 1;
+    if (!row || (row.left >= c.cx - (width / 2 - CHIP_MARGIN) / c.scale && row.right <= c.cx + (width / 2 - CHIP_MARGIN) / c.scale)) return c;
+    return { cx: (row.left + row.right) / 2, cy: c.cy, scale: Math.min(c.scale, (width - CHIP_MARGIN * 2) / (row.right - row.left)) };
+  }
+
   applyCamera(c: Camera): void {
     const w = (this.svg.clientWidth || 1) / c.scale;
     const h = (this.svg.clientHeight || 1) / c.scale;
@@ -1473,6 +1485,7 @@ export class NetworkScene {
     this.packetDrawn = { tl: this.tl, moment };
     this.packet.replaceChildren();
     this.tags.replaceChildren();
+    this.chipRow = null;
     this.fx.replaceChildren();
     this.keys.replaceChildren();
     this.keyhole = null;
@@ -1960,6 +1973,7 @@ export class NetworkScene {
       c.x = x + c.w / 2;
       x += c.w + 6;
     }
+    this.chipRow = { left: chips[0]!.x - chips[0]!.w / 2, right: x - 6 };
     const y = Math.min(...chips.map((c) => c.a.sy)) - 30 - 20 * op;
     for (const c of chips) {
       const color = c.c;
