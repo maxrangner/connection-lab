@@ -58,7 +58,7 @@ function look(step) {
     seen.set(e, gone);
     return gone;
   };
-  const OVERLAY = [['button.action-menu', 'pill'], ['.net-controls', 'bar'], ['.chapter', 'chapter'], ['.real-clock', 'clock'], ['.follow', 'follow'], ['.logo', 'logo'], ['.spy-card', 'spy'], ['.menu-panel', 'menu']];
+  const OVERLAY = [['button.action-menu', 'pill'], ['.net-controls', 'bar'], ['.about-button', 'bar'],['.chapter', 'chapter'], ['.real-clock', 'clock'], ['.follow', 'follow'], ['.logo', 'logo'], ['.spy-card', 'spy'], ['.menu-panel', 'menu']];
   const ownerOf = (e) => {
     if (faded(e)) return null;
     const dev = e.closest('[data-id]');

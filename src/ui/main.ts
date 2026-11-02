@@ -1,4 +1,5 @@
 import './app.css';
+import { version } from '../../package.json';
 import { crossingKey, EVERY_JOB, fetchWebPage, OFFLINE_AT, RTP_SAMPLES_PER_PACKET, runScenario, ulawDecodeAll, type Attack, type Cut, type Job, type ManualFault } from '../sim';
 import { el, setAttr, setText } from './svg';
 import { clamp01, easeInOut, easeOutBack, iso, ISO_X, ISO_Y, lerp, U } from './project';
@@ -192,14 +193,22 @@ const HOMES: Record<Job, { sx: number; sy: number }> = {
   ping: { sx: home.sx, sy: home.sy + 186 },
   trace: { sx: home.sx, sy: home.sy + 248 },
 };
+const CARD_W = 176;
+/** The widest a card gets on screen. The camera sets its size, which on a big screen would pass 300px. */
+const CARD_MAX_PX = 160;
+/** How far the cards are drawn down to keep to that, and the stack with them, around its middle: below that camera scale they are as they are. */
+let cardFit = 1;
+const stackMiddle = home.sy + 124;
+const restAt = (job: Job): { sx: number; sy: number } => ({ sx: HOMES[job].sx, sy: stackMiddle + (HOMES[job].sy - stackMiddle) * cardFit });
 /** Whether a run has started: until then the hint names a first thing to try. */
 let played = false;
 // Above the stack, as it goes for every card in it. The first card's badges stick out above it, so this clears them.
-const hint = el('text', { class: 'cards-hint', 'text-anchor': 'middle', x: home.sx, y: home.sy - 46 }, svg);
+const HINT_OVER = 46;
+const hint = el('text', { class: 'cards-hint', 'text-anchor': 'middle' }, svg);
 const card = (text: string, draw: (g: SVGGElement) => void, transform: string): SVGGElement => {
   const c = el('g', { class: 'site-card' }, svg);
   const body = el('g', {}, c);
-  el('rect', { x: -88, y: -22, width: 176, height: 44, rx: 10, class: 'site-card-bg' }, body);
+  el('rect', { x: -CARD_W / 2, y: -22, width: CARD_W, height: 44, rx: 10, class: 'site-card-bg' }, body);
   draw(el('g', { transform, class: 'site-card-globe' }, body));
   el('text', { x: 12, y: 0, dy: '0.35em', 'text-anchor': 'middle' }, body).textContent = text;
   return c;
@@ -419,6 +428,24 @@ const chapterName = (ch: Chapter): string => {
   if (ch === 'dns' && story.reading) return 'Find the broker';
   return ch === 'page' && story.reading ? 'Send the reading' : ch === 'page' && story.photo ? 'Get the photo' : CHAPTERS[ch];
 };
+/** What each chapter is for, under the current one in the list. It stays up whatever happens, so it says what is being tried, never that it worked. */
+const CHAPTER_ABOUT: Record<Chapter, string> = {
+  address: 'Your device has no address yet, so it asks the home router for one.',
+  arp: 'To send anything to the home router, your device needs its hardware address, so it calls out on the home network and asks.',
+  dns: 'Computers find each other by address, not by name, so your device asks a name server for this one.',
+  hello: 'Before sending anything, the two ends check that they can hear each other.',
+  secret: "Your device checks the server's proof of who it is, and both try to work out a key that only they have.",
+  page: 'Your device asks the server for the page, and waits for it to come back in packets.',
+  call: 'Your voices go both ways as a stream of small packets. A lost one is a gap, and nothing is sent again.',
+  ping: 'Your device sends the server small packets to answer, and times how long each answer takes.',
+  trace: 'Each probe can only make a set number of stops. The router where it runs out answers, and that shows the path.',
+  traffic: 'Everything still going runs side by side, each device in its own colour.',
+  attack: 'The attackers are sending packets of their own.',
+};
+const chapterAbout = (ch: Chapter): string => {
+  if (ch === 'page' && story.reading) return 'The sensor sends its reading to the broker, whose job is to pass a copy to every app listening.';
+  return ch === 'page' && story.photo ? 'Your device asks the server for the photo, and waits for it to come back in many packets, as it is too big for one.' : CHAPTER_ABOUT[ch];
+};
 
 function chapterNumber(ch: Chapter): number {
   const order: Chapter[] = [];
@@ -440,6 +467,19 @@ chapterMenu.hidden = true;
 root.appendChild(chapterMenu);
 /** The list's items by chapter, so the current one can be marked as the run moves on. */
 const chapterItems = new Map<Chapter, HTMLButtonElement>();
+const chapterLine = document.createElement('p');
+chapterLine.className = 'chapter-about';
+/** Mark the chapter the run is in, with what it is for right under it. */
+function markChapter(ch: Chapter | null): void {
+  for (const [c, item] of chapterItems) item.classList.toggle('current', c === ch);
+  const item = ch && chapterItems.get(ch);
+  if (!ch || !item) {
+    chapterLine.remove();
+    return;
+  }
+  chapterLine.textContent = chapterAbout(ch);
+  item.after(chapterLine);
+}
 function showChapterMenu(open: boolean): void {
   chapterMenu.hidden = !open;
   chapter.setAttribute('aria-expanded', String(open));
@@ -456,7 +496,6 @@ chapter.addEventListener('click', () => {
     if (chapterItems.has(ch)) continue;
     const item = document.createElement('button');
     item.innerHTML = `<span class="chapter-num">${chapterNumber(ch)}</span><span>${chapterName(ch)}</span>`;
-    item.classList.toggle('current', ch === shownChapter);
     item.addEventListener('click', () => {
       // Jumping keeps the viewer's pause: they land at the chapter's start, playing or not as before.
       v = s.t0;
@@ -468,6 +507,7 @@ chapter.addEventListener('click', () => {
     chapterItems.set(ch, item);
     chapterMenu.appendChild(item);
   }
+  markChapter(shownChapter);
   showChapterMenu(true);
 });
 
@@ -650,6 +690,7 @@ for (const { label, url } of LINKS) {
 }
 aboutText('h3', 'Cookies and privacy');
 aboutText('p', PRIVACY);
+aboutText('p', `v${version}`).className = 'about-version';
 root.append(aboutCard);
 const about = {
   button: aboutBtn,
@@ -729,8 +770,12 @@ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e)
 button('↺', 'Reset', reset);
 // On a narrow screen the bar breaks into two rows here (see app.css).
 controls.appendChild(Object.assign(document.createElement('span'), { className: 'bar-break' }));
-controls.appendChild(aboutBtn);
 root.appendChild(controls);
+// A wide screen has room for the "?" alone in the corner. A narrower bar has none beside it, so there it stays in the bar (see app.css).
+const wideEnough = window.matchMedia('(min-width: 900px)');
+const placeAbout = (): void => void (wideEnough.matches ? root : controls).appendChild(aboutBtn);
+placeAbout();
+wideEnough.addEventListener('change', placeAbout);
 
 /** The sensor takes a reading and publishes it: to the broker, and from there to every app listening. */
 function takeReading(): void {
@@ -820,7 +865,7 @@ for (const wanted of EVERY_JOB) {
     // A card still springing back lands at once, so the other one can be picked up.
     if (wanted !== carried) {
       carried = wanted;
-      cardPos = { ...HOMES[wanted] };
+      cardPos = restAt(wanted);
     }
     const p = toSvg(e);
     grab = { dx: cardPos.sx - p.sx, dy: cardPos.sy - p.sy };
@@ -863,7 +908,7 @@ function dropCard(): void {
     client = drop.id;
     reading = false;
   }
-  anim = { from: { ...cardPos }, to: drop ?? { ...HOMES[carried] }, t: 0, dur: drop ? 0.35 : 0.5 };
+  anim = { from: { ...cardPos }, to: drop ?? restAt(carried), t: 0, dur: drop ? 0.35 : 0.5 };
   mode = drop ? 'drop' : 'spring';
   if (drop) {
     camFree = false;
@@ -1182,8 +1227,8 @@ function endRun(): void {
   scene.setCut(cutSpans);
   scene.setRevealed(tl.reveals.keys());
   // No card went in for a reading, so none comes out of the sensor: it was on the table all along.
-  const from = (reading ? null : scene.dropPoints().find((d) => d.id === client)) ?? (reading ? { ...HOMES[carried] } : home);
-  anim = { from, to: { ...HOMES[carried] }, t: 0, dur: 0.8 };
+  const from = (reading ? null : scene.dropPoints().find((d) => d.id === client)) ?? (reading ? restAt(carried) : home);
+  anim = { from, to: restAt(carried), t: 0, dur: 0.8 };
   mode = 'return';
   camFree = false;
 }
@@ -1232,7 +1277,9 @@ function frame(now: number): void {
   if (!pillTarget && hexCard.isOpen) hexCard.hide();
   pillOpen += (pillTarget - pillOpen) * Math.min(1, dt * 12);
 
-  const bob = mode === 'idle' && !stillness.matches ? Math.sin(clock * 2.4) * 4 : 0;
+  cardFit = Math.min(1, CARD_MAX_PX / (CARD_W * cam.scale));
+  if (mode === 'idle') cardPos = restAt(carried);
+  const bob = mode === 'idle' && !stillness.matches ? Math.sin(clock * 2.4) * 4 * cardFit : 0;
   const dropK = mode === 'drop' ? clamp01(anim.t / anim.dur) : 0;
   const riseK = mode === 'return' ? clamp01(anim.t / anim.dur) : 1;
   cardPop += dt;
@@ -1241,25 +1288,26 @@ function frame(now: number): void {
   const cardOp = (1 - dropK) * riseK;
   const moving = CARDS[carried];
   moving.style.display = mode === 'play' ? 'none' : '';
-  setAttr(moving, 'transform', `translate(${cardPos.sx.toFixed(1)} ${(cardPos.sy + bob).toFixed(1)}) scale(${scale.toFixed(3)})`);
+  setAttr(moving, 'transform', `translate(${cardPos.sx.toFixed(1)} ${(cardPos.sy + bob).toFixed(1)}) scale(${(scale * cardFit).toFixed(3)})`);
   setAttr(moving, 'opacity', cardOp.toFixed(3));
   cardHelp.style.display = mode === 'drag' ? '' : 'none';
   if (mode === 'drag') {
     // Readable however far back the camera is. To the right of the card, away from the finger holding it, even past the screen's edge.
-    const size = Math.max(1, HELP_FLOOR / cam.scale);
-    const x = cardPos.sx + 100 + (CARD_HELP_W / 2) * size;
+    const size = Math.max(cardFit, HELP_FLOOR / cam.scale);
+    const x = cardPos.sx + 12 + (CARD_W / 2) * cardFit + (CARD_HELP_W / 2) * size;
     const y = cardPos.sy - (CARD_HELP_H / 2) * size;
     setAttr(cardHelp, 'transform', `translate(${x.toFixed(1)} ${y.toFixed(1)}) scale(${size.toFixed(3)})`);
   }
   for (const w of EVERY_JOB) {
     if (w === carried) continue;
     const resting = CARDS[w];
-    const rest = HOMES[w];
+    const rest = restAt(w);
     resting.style.display = mode === 'play' ? 'none' : '';
-    setAttr(resting, 'transform', `translate(${rest.sx.toFixed(1)} ${(rest.sy + bob).toFixed(1)})`);
+    setAttr(resting, 'transform', `translate(${rest.sx.toFixed(1)} ${(rest.sy + bob).toFixed(1)}) scale(${cardFit.toFixed(3)})`);
     setAttr(resting, 'opacity', '1');
   }
   hint.style.display = mode === 'idle' ? '' : 'none';
+  setAttr(hint, 'transform', `translate(${home.sx.toFixed(1)} ${(restAt('page').sy - HINT_OVER * cardFit).toFixed(1)}) scale(${cardFit.toFixed(3)})`);
   setText(hint, played ? 'drag a card onto a device' : `Start: drag ${pageSite()} onto Laptop`);
 
   // The camera eases between the whole network (between runs) and a close follow of the packet,
@@ -1305,7 +1353,7 @@ function frame(now: number): void {
     shownChapter = ch;
     chapter.hidden = !ch;
     if (!ch) showChapterMenu(false);
-    for (const [c, item] of chapterItems) item.classList.toggle('current', c === ch);
+    markChapter(ch);
     if (ch) {
       chapter.innerHTML = `<span class="chapter-num">${chapterNumber(ch)}</span><span>${chapterName(ch)}</span>`;
       chapter.classList.remove('enter');
