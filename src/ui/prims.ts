@@ -173,6 +173,22 @@ export function panel(parent: Element, s: { x: number; y: number; z: number; w: 
   outline(parent, [...face, ...edge.map(([a, b]) => on(a, b, s.t))]);
 }
 
+/**
+ * Turning on a spine along y at this x: a plate with rounded corners, `w` wide from the spine and `t` thick, lying towards
+ * +x at angle 0 and towards -x at π. `up` is its upper side lying to the right, `under` the other.
+ */
+export function leaf(parent: Element, s: { x: number; y: number; z: number; w: number; d: number; t: number; r: number; angle: number; up: string; under: string }): void {
+  const [cos, sin] = [Math.cos(s.angle), Math.sin(s.angle)];
+  const at = (a: number, b: number, out: number): Pt => iso(s.x + a * cos - out * sin, s.y + b, s.z + a * sin + out * cos);
+  const edge = roundedRect(s.w, s.d, s.r);
+  const [inner, outer] = [0, s.t].map((out) => edge.map(([a, b]) => at(a, b, out))) as [Pt[], Pt[]];
+  // The view comes from (1, 1, 1), so the upper side turns away at 45°.
+  const upSeen = cos > sin;
+  el('path', { d: pathOf(hull([...inner, ...outer])), fill: shade(s.up, ROUNDED.right) }, parent);
+  el('path', { d: pathOf(upSeen ? outer : inner), fill: shade(upSeen ? s.up : s.under, FACE.top) }, parent);
+  outline(parent, [...inner, ...outer]);
+}
+
 /** The shadow a thing with this footprint throws on the table. */
 export function groundShadow(parent: Element, s: { x: number; y: number; w: number; d: number; r: number }): void {
   el('path', { d: pathOf(roundedRect(s.w, s.d, s.r).map(([a, b]) => iso(s.x + a, s.y + b))), class: 'dev-shadow' }, parent);

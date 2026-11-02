@@ -1,5 +1,6 @@
 import { el } from './svg';
-import { rbox, tile } from './prims';
+import { line, slab, tiles } from './prims';
+import { v3 } from './project';
 
 /** The things you handle, drawn from simple shapes around the origin, for the menus and the scene alike. */
 
@@ -45,8 +46,18 @@ export function drawSpyglass(g: SVGGElement): void {
 
 /** A small satellite, the same boxes and panels as a device. */
 export function drawSatellite(g: SVGGElement): void {
-  rbox(g, { cx: 0, cy: 0, z: -0.35, len: 0.7, wid: 0.7, h: 0.7, angle: 0, color: '#cfc6b8' });
-  for (const s of [-1, 1]) tile(g, -0.45 + s * 1.15, -0.35, 0.9, 0.7, 0, { class: 'panel' });
+  const wing = (x: number): void => {
+    slab(g, { x, y: -0.4, z: -0.04, w: 1, d: 0.8, h: 0.08, r: 0.06, color: '#2f3f5a' });
+    tiles(g, Array.from({ length: 6 }, (_, i) => ({ x: x + 0.06 + (i % 3) * 0.3, y: -0.34 + Math.floor(i / 3) * 0.35, w: 0.28, d: 0.33 })), 0.04, { class: 'dev-cell' });
+  };
+  // Back to front, so the body hides the far arm and the near wing lies over nothing.
+  wing(-1.75);
+  line(g, v3(-0.75, 0, 0), v3(-0.42, 0, 0), { class: 'dev-arm' });
+  slab(g, { x: -0.42, y: -0.42, z: -0.38, w: 0.84, d: 0.84, h: 0.76, r: 0.12, color: '#f2ebdd' });
+  slab(g, { x: -0.1, y: -0.1, z: 0.38, w: 0.2, d: 0.2, h: 0.12, r: 0.1, color: '#f2ebdd' });
+  slab(g, { x: -0.3, y: -0.3, z: 0.5, w: 0.6, d: 0.6, h: 0.06, r: 0.3, color: '#5b8ec4' });
+  line(g, v3(0.42, 0, 0), v3(0.75, 0, 0), { class: 'dev-arm' });
+  wing(0.75);
 }
 
 /** A shield with a keyhole: the VPN. */

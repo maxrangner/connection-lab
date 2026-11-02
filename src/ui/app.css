@@ -106,6 +106,16 @@ body {
 }
 
 .dev-notch,
+.dev-cell {
+  fill: #5b8ec4;
+}
+
+.dev-arm {
+  stroke: #1f2633;
+  stroke-width: 3.4;
+  stroke-linecap: round;
+}
+
 .dev-bay {
   fill: #1f2633;
 }
@@ -800,12 +810,6 @@ body {
   stroke-width: 2.5;
   stroke-dasharray: 2 7;
   stroke-linecap: round;
-}
-
-.panel {
-  fill: #4a6a8a;
-  stroke: #2f4a66;
-  stroke-width: 1;
 }
 
 /* The chapter label is a button that opens the chapter list */
@@ -1794,11 +1798,6 @@ button.action-menu[data-points='right']::after {
 }
 
 /* What the servers do: the resolver's book and the web server's shelves */
-.book-page {
-  stroke: #cdbf9f;
-  stroke-width: 1;
-}
-
 .book-bar {
   fill: #d8cfbe;
 }

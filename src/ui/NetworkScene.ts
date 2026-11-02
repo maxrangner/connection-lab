@@ -7,7 +7,7 @@ import { shade } from './shade';
 import type { Details, PartKey, Row, Story, Trip, Wrap } from './story';
 import { bandPoint, pageContent, Paper, PAPER_H, PAPER_W, photoContent } from './paper';
 import { screenAt, type Readout } from './readout';
-import { drawBook, drawShelf, SERVER } from './stations';
+import { BOOK, drawBook, drawShelf, SERVER } from './stations';
 import { addressBefore, ATTACKER_KINDS, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, LEVEL, lockPose, NO_LOCK, NOTE_LIFE, namedAcks, packetPos, packetPose, pageParts, segAt, swapLanding, swapMoment, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowHop, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
 
 export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', vpn: '#2e5e6e', eth: '#e08b33', wifi: '#2a9d8f' } as const;
@@ -16,7 +16,6 @@ const DEVICE = '#f2ebdd';
 const DEVICE_BLUE = '#5b8ec4';
 const GLASS = '#5b8ec4';
 const DARK_GLASS = '#3b4049';
-const BOOK = '#b0824f';
 /** Everything an attacker brings to the table. */
 const ATTACKER = '#d23b3b';
 /** A locked (encrypted) card: dark, under a padlock. */

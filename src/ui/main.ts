@@ -337,7 +337,7 @@ const VPN_LINKS = ['bb3', 'bb4', 'bb5'];
 const SETUP: { id: Setting; label: string; hint: string; draw: (g: SVGGElement) => void; span: number }[] = [
   { id: 'https', label: 'Secure page (HTTPS)', hint: 'Scrambles everything after hello', draw: drawPadlock, span: 34 },
   { id: 'big', label: 'Bigger page', hint: 'Too big for one packet', draw: drawPage, span: 34 },
-  { id: 'slow', label: 'Satellite internet', hint: 'To space and back: long waits', draw: drawSatellite, span: 56 },
+  { id: 'slow', label: 'Satellite internet', hint: 'To space and back: long waits', draw: drawSatellite, span: 64 },
   { id: 'vpn', label: 'VPN', hint: 'Sealed tunnel past your ISP', draw: drawShield, span: 34 },
   { id: 'arp', label: 'Find the router first', hint: 'Shouts for its hardware address', draw: drawQuestion, span: 34 },
   { id: 'dhcp', label: 'New on the network', hint: 'Asks for an address first', draw: drawTag, span: 34 },
