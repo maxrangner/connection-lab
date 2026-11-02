@@ -201,7 +201,7 @@ const photoBadges = el('g', {}, photoCard);
 const callCard = el('g', { class: 'site-card' }, svg);
 const callBody = el('g', {}, callCard);
 el('rect', { x: -88, y: -22, width: 176, height: 44, rx: 10, class: 'site-card-bg' }, callBody);
-drawHandset(el('g', { transform: 'translate(-66 0) scale(0.42)', class: 'site-card-globe' }, callBody));
+drawHandset(el('g', { transform: 'translate(-69 -2) scale(0.36)', class: 'site-card-globe' }, callBody));
 el('text', { x: 12, y: 0, dy: '0.35em', 'text-anchor': 'middle' }, callBody).textContent = 'call Sam';
 const callBadges = el('g', {}, callCard);
 
