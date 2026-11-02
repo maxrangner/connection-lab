@@ -245,13 +245,17 @@ describe('what the devices say', () => {
       const r = runScenario(fetchWebPage({ https: true }), { seed: 1, faults: { randomLoss: 0, manual: [] }, maxTime: 1000 });
       const pageIn = r.events.find((e) => e.type === 'app' && e.action === 'http-response-received')!.t;
       for (const tl of [https, run({ https: true }, [{ link: 'wan', from: pageIn + 1e-4 }])]) {
-        const [first, again] = bubble(tl, after.text);
-        expect(first!.t1 - first!.t0).toBeLessThan(5);
-        expect(again!.t0).toBeCloseTo(tl.settled);
-        expect(again!.t1).toBeCloseTo(tl.total);
+        const first = bubble(tl, after.text)[0]!;
+        const again = tl.speech.at(-1)!;
+        expect(first.t1 - first.t0).toBeLessThan(5);
+        expect(again.t0).toBeCloseTo(tl.settled);
+        expect(again.t1).toBeCloseTo(tl.total);
       }
       expect(bubble(https, 'Bye! Closing our connection').filter((b) => b.device === 'laptop')[0]!.t0).toBeGreaterThanOrEqual(after.t1);
       expect(bubble(run(), after.text)).toHaveLength(1);
+      expect(https.speech.at(-1)!.text).toBe(after.text);
+      expect(run({ https: true }, [{ link: 'wan', from: pageIn + 1e-4 }]).speech.at(-1)!.text).toBe('Got it! My bye got no answer');
+      expect(run({ https: true }, [{ link: 'wan', from: pageIn + 1e-4, to: pageIn + 2 }]).speech.at(-1)!.text).toBe(after.text);
     });
 
     it('a VPN waits for the line before it to be read', () => {

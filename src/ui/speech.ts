@@ -64,6 +64,8 @@ function asking(name: string, walk: Walk): string {
   return "I don't have it saved. I'll ask around.";
 }
 
+const isBye = (t: Trip): boolean => t.card === 'bye' || t.l4Label.includes('FIN');
+
 /** The plain meaning of a packet, if it has one worth saying. */
 function lineOf(t: Trip, walk: Walk, story: Story): string | null {
   if (t.chapter === 'attack') {
@@ -74,7 +76,7 @@ function lineOf(t: Trip, walk: Walk, story: Story): string | null {
   }
   if (t.retry) return 'Sending that again';
   const card = t.card ?? '';
-  if (card === 'bye' || t.l4Label.includes('FIN')) return t.chapter === 'page' && t.origin === t.client ? 'Bye! Closing our connection' : 'Bye!';
+  if (isBye(t)) return t.chapter === 'page' && t.origin === t.client ? 'Bye! Closing our connection' : 'Bye!';
   if (t.message?.kind === 'reading' && t.outward) return `It's ${card}. ${QOS_ASK[story.qos]}`;
   if (t.l4Label.includes('RST')) return 'No, sorry';
   if (card === 'unreachable') return "Can't get there";
@@ -246,7 +248,8 @@ export function buildSpeech(story: Story, segs: Seg[], settled = segs[segs.lengt
   /** A packet of the client's was turned away at a full line: that is the flood, where a cut cable is not. */
   let jammed = false;
   let scanDone = 0;
-  const many = segs.some((s) => [s.trip, ...(s.flow ?? []).map((p) => p.trip)].some((t) => t.chapter === 'page' && t.client === story.client && (t.part?.of ?? 0) > 1));
+  const sent = segs.flatMap((s) => [s.trip, ...(s.flow ?? []).map((p) => p.trip)]);
+  const many = sent.some((t) => t.chapter === 'page' && t.client === story.client && (t.part?.of ?? 0) > 1);
   /** When the client lost something of its page, or anything to noisy air; and whether a call of its lost sound either way. */
   const losses: { at: number; noise: boolean }[] = [];
   let soundLost = false;
@@ -327,14 +330,14 @@ export function buildSpeech(story: Story, segs: Seg[], settled = segs[segs.lengt
   /** Those said long before the end: what the device has to say in the meantime waits for them. */
   const early: Bubble[] = [];
   /** A last line stays up to the end if that is near. If not, the run goes on, and it is said again to end on. */
-  const finish = (device: string, t0: number, text: string, stop: number): void => {
+  const finish = (device: string, t0: number, text: string, stop: number, ending = text): void => {
     const line = say(device, t0, text);
     if (line.t1 + NEAR_END >= stop) {
       line.t1 = Math.max(line.t1, stop + END_HOLD);
       finals.push(line);
     } else {
       early.push(line);
-      finals.push(say(device, stop, text, stop + END_HOLD));
+      finals.push(say(device, stop, ending, stop + END_HOLD));
     }
   };
   if (end !== undefined && story.reading) {
@@ -350,9 +353,12 @@ export function buildSpeech(story: Story, segs: Seg[], settled = segs[segs.lengt
     // Someone who joined in ends the run if it finished; anyone else gets to the end on the client's word.
     const others = story.joiners.filter((d) => lastAt.has(d) && !hurt.has(d));
     const before = losses.filter((l) => l.at < got);
+    // The page came, and only then did the line go. The client tried to the last, and can't know how far its goodbye got.
+    const lastBye = sent.filter((t) => t.chapter === 'page' && t.origin === story.client && isBye(t)).at(-1);
+    const unanswered = story.fetched.includes(story.client) && !!lastBye?.steps.some((x) => x.kind === 'lost');
     const text = outcome ?? closing(story, { many, dropped: before.some((l) => !l.noise), noisy: before.some((l) => l.noise), soundLost });
     if (others.length) finals.push(say(story.client, at, text));
-    else finish(story.client, at, text, end);
+    else finish(story.client, at, text, end, !outcome && unanswered ? 'Got it! My bye got no answer' : text);
     for (const d of others) finish(d, lastAt.get(d)!, callers.has(d) ? (flooded ? NO_FLOOD_ON_CALL : 'Call done. Bye!') : story.fetched.includes(d) ? 'Got it too!' : 'All done', end);
   }
   if (scanDone) say(webServer, scanDone, 'Someone tried all my doors');
