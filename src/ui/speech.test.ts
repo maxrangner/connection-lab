@@ -87,6 +87,13 @@ describe('what the devices say', () => {
     expect(lines.join()).not.toContain('Now I can show');
   });
 
+  it('does not stop on a line that is still being said', () => {
+    for (const tl of [run(), run({ probe: 'ping' }), run({ call: true })]) {
+      expect(tl.total).toBeGreaterThanOrEqual(tl.settled);
+      expect(Math.max(...tl.speech.map((b) => b.t1))).toBeLessThanOrEqual(tl.total);
+    }
+  });
+
   it('keeps a line up long enough to read it', () => {
     const tl = run();
     expect(tl.speech.filter((b) => b.text.startsWith("I'm like a phone book"))[0]!.t1 - tl.speech.filter((b) => b.text.startsWith("I'm like a phone book"))[0]!.t0).toBeGreaterThanOrEqual(3.5);
