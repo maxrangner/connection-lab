@@ -206,6 +206,36 @@ describe('what the devices say', () => {
     });
   });
 
+  describe('explains what went wrong', () => {
+    const lines = (opts: Parameters<typeof fetchWebPage>[0], cuts: Cut[] = []): string[] => said(run(opts, cuts)).map((x) => x.join(': '));
+    const lost = { reading: true, smart: true, cloud: true, qos: 1 } as const;
+    const offline = [{ link: 'wan', from: READING_AT }];
+
+    it('blames a flood only for what it did', () => {
+      const cut = lines({ attacks: ['flood'] }, [{ link: 'wan', from: 0 }]);
+      expect(cut.join()).not.toContain('flood got in my way');
+      expect(cut.at(-1)).toBe("laptop: I couldn't get the page");
+      expect(lines({ attacks: ['flood'] }).at(-1)).toBe('laptop: Got it, now the flood is over');
+      const call = lines({ call: true, attacks: ['flood'] }, [{ link: 'wan', from: 0 }]);
+      expect(call.join()).not.toContain('Where');
+      expect(call.at(-1)).toBe("laptop: I couldn't reach Sam");
+    });
+
+    it('tells giving up on a connection from giving up', () => {
+      const sensor = lines(lost, offline).filter((l) => l.startsWith('sensor: '));
+      expect(sensor.filter((l) => l === "sensor: No answer. I'll start over")).toHaveLength(1);
+      expect(sensor.indexOf('sensor: Hi, can we talk?')).toBe(sensor.indexOf("sensor: No answer. I'll start over") + 1);
+      expect(sensor.at(-2)).toBe('sensor: No answer. I give up.');
+    });
+
+    it('counts the tries, and from one again for something new', () => {
+      const sensor = lines(lost, offline);
+      expect(sensor).toEqual(expect.arrayContaining(['sensor: Try 3: still nothing', 'sensor: Try 4: still nothing']));
+      expect(sensor.slice(sensor.indexOf("sensor: No answer. I'll start over"))).toContain('sensor: No answer yet...');
+      expect(new Set(sensor.filter((l) => l.includes('Try '))).size).toBeGreaterThan(3);
+    });
+  });
+
   describe('gives each line its time', () => {
     const bubble = (tl: Timeline, text: string) => tl.speech.filter((b) => b.text === text);
 
@@ -220,7 +250,7 @@ describe('what the devices say', () => {
         expect(again!.t0).toBeCloseTo(tl.settled);
         expect(again!.t1).toBeCloseTo(tl.total);
       }
-      expect(bubble(https, 'Bye!').filter((b) => b.device === 'laptop')[0]!.t0).toBeGreaterThanOrEqual(after.t1);
+      expect(bubble(https, 'Bye! Closing our connection').filter((b) => b.device === 'laptop')[0]!.t0).toBeGreaterThanOrEqual(after.t1);
       expect(bubble(run(), after.text)).toHaveLength(1);
     });
 
