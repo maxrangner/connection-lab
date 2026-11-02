@@ -860,9 +860,15 @@ body {
   text-align: left;
 }
 
-.chapter-menu button:hover,
 .chapter-menu button.current {
   background: var(--paper-2);
+}
+
+/* Only where a pointer really hovers: a phone counts a tap as a hover that stays until the next tap elsewhere. */
+@media (hover: hover) {
+  .chapter-menu button:hover {
+    background: var(--paper-2);
+  }
 }
 
 /* Wi-Fi: radio through the air */
@@ -1440,8 +1446,10 @@ button.action-menu[data-points='right']::after {
   cursor: pointer;
 }
 
-.menu-item:hover {
-  background: var(--paper-2);
+@media (hover: hover) {
+  .menu-item:hover {
+    background: var(--paper-2);
+  }
 }
 
 /* A menu whose items need saying: one row each, the icon beside the name and what it does. */
