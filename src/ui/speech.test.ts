@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fetchWebPage, runScenario, type Cut } from '../sim';
+import { fetchWebPage, OFFLINE_AT, READING_AT, runScenario, type Cut, type SimResult } from '../sim';
 import { buildStory } from './story';
 import { buildTimeline, type Timeline } from './timeline';
 
@@ -95,7 +95,7 @@ describe('what the devices say', () => {
     for (const [opts, cuts] of runs) {
       const tl = run(opts, cuts);
       expect(tl.total - tl.settled, JSON.stringify(opts)).toBeGreaterThanOrEqual(2.5);
-      expect(tl.speech.some((b) => b.t1 >= tl.total - 0.01), JSON.stringify(opts)).toBe(true);
+      expect(tl.speech.some((b) => b.t0 <= tl.settled + 0.01 && b.t1 >= tl.total - 0.01), JSON.stringify(opts)).toBe(true);
     }
   });
 
@@ -155,13 +155,81 @@ describe('what the devices say', () => {
     });
 
     it('a reading: what QoS was asked for, who was told, and an app that is away', () => {
-      const away = (qos: 0 | 1): string[] => lines({ reading: true, smart: true, cloud: true, qos }, [{ link: 'wlan', from: 0 }]);
+      const away = (qos: 0 | 1): string[] => lines({ reading: true, smart: true, cloud: true, qos }, [{ link: 'wlan', from: OFFLINE_AT }]);
       expect(lines({ reading: true, smart: true, qos: 0 })[0]).toMatch(/^sensor: It's .* °C\. Sent once, no receipt$/);
       expect(lines({ reading: true, smart: true, qos: 1 })[0]).toMatch(/Send me a receipt$/);
       expect(lines({ reading: true, smart: true, qos: 2 })[0]).toMatch(/Exactly once, please$/);
       expect(lines({ reading: true, smart: true }).at(-1)).toBe('laptop: I never asked. The broker just told me');
       expect(away(0)).toContain('broker: The phone is away. It misses this one');
       expect(away(1)).toContain("broker: The phone is away. I'll keep this for it");
+    });
+  });
+
+  describe('only claims what happened', () => {
+    const sim = (opts: Parameters<typeof fetchWebPage>[0], cuts: Cut[] = []): SimResult => runScenario(fetchWebPage(opts), { seed: 1, faults: { randomLoss: 0, manual: [], cuts }, maxTime: 1000 });
+    const lines = (opts: Parameters<typeof fetchWebPage>[0], cuts: Cut[] = []): string[] => said(buildTimeline(buildStory(sim(opts, cuts)))).map((x) => x.join(': '));
+    const pageIn = (opts: Parameters<typeof fetchWebPage>[0] = {}): number => sim(opts).events.find((e) => e.type === 'app' && e.action === 'http-response-received')!.t;
+
+    it('a lost part of the page, and not whatever else was lost around it', () => {
+      const plain = 'laptop: Got it! Now I can show the page';
+      expect(lines({}, [{ link: 'wan', from: pageIn() + 1e-4 }])).toContain(plain);
+      expect(lines({}, [{ link: 'wan', from: 0, to: 1 }])).toContain(plain);
+    });
+
+    it('a call that never was, and sound lost either way', () => {
+      expect(lines({ call: true }, [{ link: 'wan', from: 0 }]).at(-1)).toBe("laptop: I couldn't reach Sam");
+      const first = [...sim({ call: true }).packets.values()].find((p) => p.rtp)!.createdAt;
+      expect(lines({ call: true }, [{ link: 'wan', from: first - 1e-4, to: first + 0.1 }]).at(-1)).toBe('laptop: Lost sound stays lost. Bye!');
+    });
+
+    it('the QoS that was asked for, even if the reading got nowhere', () => {
+      const cut = [{ link: 'wan', from: READING_AT }];
+      expect(lines({ reading: true, smart: true, cloud: true, qos: 2 }, cut)[0]).toMatch(/Exactly once, please$/);
+      expect(lines({ reading: true, smart: true, cloud: true, qos: 1 }, cut)[0]).toMatch(/Send me a receipt$/);
+    });
+
+    it('a device that joined in is not told what the first job did', () => {
+      const vpn = lines({ vpn: true, joins: [{ job: 'page', at: 0.01 }] }).filter((l) => l.startsWith('server: '));
+      expect(vpn.filter((l) => l === 'server: This came from the VPN server')).toHaveLength(1);
+      expect(vpn).toContain("server: Hi! Yes, let's.");
+      expect(lines({ noise: 0.5, joins: [{ job: 'page', at: 0.01 }] })).toContain('laptop: Got it! Now I can show the page');
+      expect(lines({ joins: [{ job: 'photo', at: 0.01 }] })).toContain('laptop: Got it! Now I can show the page');
+    });
+
+    it('what the broker knows: both apps gone, or a reading it never got', () => {
+      const both = [{ link: 'lan', from: OFFLINE_AT }, { link: 'wlan', from: OFFLINE_AT }];
+      expect(lines({ reading: true, smart: true, qos: 1 }, both)).toContain("local-broker: The laptop and phone are away. I'll keep this for them");
+      expect(lines({ reading: true, smart: true, qos: 0 }, both)).toContain('local-broker: The laptop and phone are away. They miss this one');
+      const never = lines({ reading: true, smart: true, cloud: true, qos: 1 }, [{ link: 'wan', from: READING_AT }]);
+      expect(never.join()).not.toContain('away');
+      expect(never.at(-1)).toBe('sensor: Nobody heard that reading');
+    });
+  });
+
+  describe('gives each line its time', () => {
+    const bubble = (tl: Timeline, text: string) => tl.speech.filter((b) => b.text === text);
+
+    it('a last line said long before the end has its moment, lets the run go on, and is said again to end on', () => {
+      const https = run({ https: true });
+      const after = https.speech.find((b) => b.text === 'Got it! Now I can show the page')!;
+      const r = runScenario(fetchWebPage({ https: true }), { seed: 1, faults: { randomLoss: 0, manual: [] }, maxTime: 1000 });
+      const pageIn = r.events.find((e) => e.type === 'app' && e.action === 'http-response-received')!.t;
+      for (const tl of [https, run({ https: true }, [{ link: 'wan', from: pageIn + 1e-4 }])]) {
+        const [first, again] = bubble(tl, after.text);
+        expect(first!.t1 - first!.t0).toBeLessThan(5);
+        expect(again!.t0).toBeCloseTo(tl.settled);
+        expect(again!.t1).toBeCloseTo(tl.total);
+      }
+      expect(bubble(https, 'Bye!').filter((b) => b.device === 'laptop')[0]!.t0).toBeGreaterThanOrEqual(after.t1);
+      expect(bubble(run(), after.text)).toHaveLength(1);
+    });
+
+    it('a VPN waits for the line before it to be read', () => {
+      const first = bubble(run({ vpn: true }), 'First I need its address. Who knows it?')[0]!;
+      expect(first.t1 - first.t0).toBeGreaterThanOrEqual(3.9);
+      const known = bubble(run({ revisit: true, knownIp: '104.20.23.154', vpn: true }), 'I remember the address! Hi, can we talk?')[0]!;
+      expect(known.t1 - known.t0).toBeGreaterThanOrEqual(4);
+      expect(bubble(run({ vpn: true }), 'Locked! Only the VPN server can open this')).toHaveLength(1);
     });
   });
 
