@@ -211,7 +211,13 @@ export class Router extends Device {
     });
 
     // Outbound NAT (after routing): replace the private source with our public address and a port of our own.
-    const out = nat && route.iface === nat.outside && nat.inside.includes(inIface.id) ? natKeyOut(bytes) : undefined;
+    const leaving = nat && route.iface === nat.outside && nat.inside.includes(inIface.id);
+    const out = leaving ? natKeyOut(bytes) : undefined;
+    // An error from a host inside would go out with its private address: nothing here translates what it quotes.
+    if (leaving && !out) {
+      sim.emit({ type: 'drop', packetId, reason: 'no-nat-mapping', deviceId: this.id });
+      return;
+    }
     if (out) {
       const outside = this.iface(nat!.outside);
       let e = this.natTable.find(natMatch(out, 'inside'));

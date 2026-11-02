@@ -94,7 +94,8 @@ export class Simulator {
   newPacket(origin: string, kind: PacketKind, label: string, extra: Partial<PacketInfo> = {}): PacketInfo {
     // Each sender counts its own in each job, so a packet that is never sent does not renumber anyone else's: the other
     // job's, or those of the other end of a call, which talks on its own clock.
-    const sender = `${this.job}.${origin}`;
+    // A radio's Ack counts apart: whether one is sent depends on what got across, and that must renumber nothing either.
+    const sender = `${this.job}.${origin}${kind === 'wifi-ack' ? '.ack' : ''}`;
     const n = this.packetCounters.get(sender) ?? 0;
     this.packetCounters.set(sender, n + 1);
     const info: PacketInfo = { id: `pk${sender}.${n}`, origin, kind, label, createdAt: this.now, job: this.job, ...extra };

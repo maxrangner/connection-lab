@@ -147,7 +147,7 @@ export class VpnServer extends Host {
     if (!e) {
       let port: number;
       do port = this.random32() % 28000 + 32768;
-      while (this.nat.some((n) => n.outside.port === port));
+      while (port === WG_PORT || this.nat.some((n) => n.outside.port === port));
       e = { proto: key.proto, inside: { ip: ip.src, port: key.port }, outside: { ip: this.ip, port }, remote: key.remote };
       this.nat.push(e);
     }

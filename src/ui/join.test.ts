@@ -173,6 +173,14 @@ describe('a card dropped in during a run', () => {
     }
   });
 
+  it('a ping cut short by the card keeps what it has printed', () => {
+    for (const share of [0.2, 0.3, 0.32, 0.34, 0.4]) {
+      const { before, after, v } = dropped('ping', 'page', share);
+      const said = (tl: Timeline): string[] => tl.readout.screens.filter((x) => x.t <= v).flatMap((x) => x.lines);
+      expect(said(after), `at ${share}`).toEqual(said(before));
+    }
+  });
+
   it('a packet cut short by the card says its line once', () => {
     for (const share of [0.03, 0.05, 0.07, 0.3, 0.5]) {
       const lines = dropped('page', 'page', share).after.speech.filter((b) => b.device === 'laptop').map((b) => b.text);

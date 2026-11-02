@@ -633,11 +633,11 @@ function trip(r: SimResult, p: PacketInfo, asked: Map<string, number>, clients: 
   const flags = p.tcp?.flags ?? 0;
   const firstTx = steps.find((s): s is Extract<Step, { kind: 'travel' | 'lost' }> => s.kind === 'travel' || s.kind === 'lost');
   const to = arp ? field(arp, 'arp.tpa') : field(ip, 'ipv4.dst');
-  // A DNS question asked again by the same device of the same server, or the same DHCP message sent again: its timer ran
+  // A DNS question asked again by the same device of the same server, or the same DHCP or ARP message sent again: its timer ran
   // out. (A cold resolver asks the same question of one server after another on its way down the hierarchy; those are not
   // retries, and nor is a walk it makes for another job.)
-  const askKey = p.kind === 'dhcp' ? `${origin}|${card}` : `${p.job}|${origin}>${to}`;
-  const ownDhcp = p.kind === 'dhcp' && clients.includes(origin);
+  const askKey = p.kind === 'dhcp' || p.kind === 'arp' ? `${origin}|${card}` : `${p.job}|${origin}>${to}`;
+  const ownDhcp = (p.kind === 'dhcp' || (p.kind === 'arp' && !!card?.startsWith('who has'))) && clients.includes(origin);
   const askedAt = p.kind === 'dns' || ownDhcp ? asked.get(askKey) : undefined;
   if ((p.kind === 'dns' && packet.layers.some((x) => x.summary.startsWith('DNS query'))) || ownDhcp) asked.set(askKey, p.createdAt);
   const resend = r.events.find((e) => e.type === 'tcp:retransmit' && e.packetId === p.id);

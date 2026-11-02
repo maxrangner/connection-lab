@@ -1,5 +1,5 @@
 import './app.css';
-import { EVERY_JOB, fetchWebPage, OFFLINE_AT, runScenario, ulawDecodeAll, type Attack, type Cut, type Job, type ManualFault } from '../sim';
+import { crossingKey, EVERY_JOB, fetchWebPage, OFFLINE_AT, runScenario, ulawDecodeAll, type Attack, type Cut, type Job, type ManualFault } from '../sim';
 import { el } from './svg';
 import { clamp01, easeInOut, easeOutBack, iso, ISO_X, ISO_Y, lerp, U } from './project';
 import { HexCard } from './hexCard';
@@ -8,11 +8,11 @@ import logoLight from './logo/logo-light.png';
 import { drawDoor, drawEar, drawHandset, drawMoon, drawPadlock, drawPage, drawPause, drawPing, drawPlay, drawPipe, drawSatellite, drawScissors, drawShield, drawSnowflake, drawSpyglass, drawSun, drawSwarm, drawTag, drawTalk, drawThermometer, drawTrace } from './icons';
 import { KeepAwake } from './awake';
 import { Menu } from './menus';
-import { NetworkScene, type Camera } from './NetworkScene';
+import { NetworkScene, type Camera, type CutSpan } from './NetworkScene';
 import { Sound } from './sound';
 import { SpyCard } from './spyCard';
 import { buildStory, type Chapter, type PartKey, type Story } from './story';
-import { buildTimeline, chapterAt, formatWait, joinAt, MAX_STRETCH, pduAt, realAt, ridingOn, seenSoFar, segAt, spyLog, stepTarget, wanDelayFor, type Timeline } from './timeline';
+import { buildTimeline, chapterAt, formatWait, joinAt, MAX_STRETCH, NO_PAST, pastAt, pduAt, realAt, ridingOn, seenSoFar, segAt, spyLog, stepTarget, wanDelayFor, type Past, type Timeline } from './timeline';
 
 /**
  * Connection Lab. Drag a card onto the laptop or the phone. The bar below holds the playback buttons, and popups for the
@@ -58,6 +58,10 @@ const knocks = new Map<string, number>();
 let runSeed = 1;
 /** What the viewer has already seen happen in this run. */
 let decided: Record<string, boolean> = {};
+/** What this run has shown, which a mended cable must not take back. */
+let past: Past = NO_PAST;
+/** When the cut cables are cut, for the picture. */
+let cutSpans: CutSpan[] = [];
 /** When (sim time) cables were cut during this run. */
 let cuts: Cut[] = [];
 /** A cable was already cut at the start of the run, so the ARP that would not get through is left out of it. */
@@ -153,7 +157,7 @@ function simulate(): void {
   // Long enough for TCP to give up on a dead line (15 resends, backing off to a minute apart).
   // A device new on the network knows nobody yet, so it finds the router as well as getting an address.
   story = buildStory(runScenario(scenario, { seed: runSeed, faults: plan, maxTime: 1000 }), { arp: features.dhcp && !reading });
-  tl = buildTimeline(story, knocks, stretch, drops());
+  tl = buildTimeline(story, knocks, stretch, drops(), past);
 }
 simulate();
 
@@ -327,18 +331,22 @@ function toggleCut(line: string): void {
     // A step under way was aimed at the old timeline.
     seek = null;
     for (const r of on ? ridingOn(tl, v, line) : []) {
-      faults.push({ packetId: r.packetId, linkId: line });
-      knocks.set(`${r.packetId}@${line}`, r.k);
+      faults.push({ packetId: r.packetId, linkId: line, crossing: r.crossing });
+      knocks.set(crossingKey(r.packetId, line, r.crossing), r.k);
     }
     const seen = seenSoFar(tl, v, line);
     decided = { ...decided, ...seen.decided };
+    past = pastAt(tl, v, past);
     cuts = cuts.map((c) => (c.to === undefined && c.link === line ? { ...c, to: seen.now } : c));
     // Before the first frame only what the run doesn't show has moved: a device finding its router, which a cut there would stop.
     if (on) cuts = [...cuts, { link: line, from: Math.max(seen.now, firstFrameAt(tl)) }];
     simulate();
     scene.setStory(story, tl);
   }
-  scene.setCut([...cutLines]);
+  const during = mode === 'play';
+  if (on) cutSpans = [...cutSpans, { link: line, from: during ? v : -Infinity }];
+  else cutSpans = during ? cutSpans.map((s) => (s.link === line && s.to === undefined ? { ...s, to: v } : s)) : cutSpans.filter((s) => s.link !== line);
+  scene.setCut(cutSpans);
   sound.play(on ? 'snip' : 'snap');
 }
 
@@ -375,7 +383,8 @@ function pickUp(t: Tool | null): void {
 /** The line under the pointer that the tool in hand can work on. Radio cannot be cut. */
 const toolLine = (e: PointerEvent): string | null => lineNear(toSvg(e), tool === 'cut', 26 / cam.scale);
 scene.setSpy(spyLine);
-scene.setCut([...cutLines]);
+cutSpans = [...cutLines].map((link) => ({ link, from: -Infinity }));
+scene.setCut(cutSpans);
 
 const VPN_LINKS = ['bb3', 'bb4', 'bb5'];
 const COLD_LINKS = ['up1', 'up2', 'up3'];
@@ -1013,7 +1022,7 @@ svg.addEventListener('pointermove', (e) => {
     const next = Math.round(Math.max(0, Math.min(MAX_STRETCH, stretchPress.from + tiles)));
     if (next !== stretch) {
       stretch = next;
-      tl = buildTimeline(story, knocks, stretch, drops());
+      tl = buildTimeline(story, knocks, stretch, drops(), past);
       if (idleV >= 0) idleV = tl.total;
       scene.setStory(story, tl);
     }
@@ -1129,6 +1138,7 @@ function reset(): void {
   faults.length = 0;
   knocks.clear();
   decided = {};
+  past = NO_PAST;
   known.clear();
   memory.clear();
   client = 'laptop';
@@ -1137,6 +1147,7 @@ function reset(): void {
   pickUp(null);
   // Everything goes back at once: one simulation and one sound, not one of each per thing undone.
   cutLines.clear();
+  cutSpans = [];
   scene.setCut([]);
   if (spyLine) {
     spyLine = null;
@@ -1184,6 +1195,14 @@ function beginRun(): void {
   knocks.clear();
   runSeed = 1 + Math.floor(Math.random() * 1e6);
   decided = {};
+  past = NO_PAST;
+  // Sam's cable is only there for a call: a cut on it goes with it.
+  if (carried !== 'call') {
+    cutLines.delete('bb6');
+    if (spyLine === 'bb6') setSpyLine(null);
+  }
+  cutSpans = [...cutLines].map((link) => ({ link, from: -Infinity }));
+  scene.setCut(cutSpans);
   // A line already cut when a reading is taken has been out for a while, long enough for everyone to have noticed.
   cuts = [...cutLines].map((link) => ({ link, from: reading ? OFFLINE_AT : 0 }));
   warmArp = !reading && cutLines.size > 0;
@@ -1213,6 +1232,9 @@ function endRun(): void {
   // A call over: hear what came through, holes and all.
   if (story.voice) sound.playVoice(story.voice.heard.map((b) => (b ? ulawDecodeAll(b) : null)), 160);
   idleV = tl.total;
+  // Over: a cable cut during it is simply cut now.
+  cutSpans = [...cutLines].map((link) => ({ link, from: -Infinity }));
+  scene.setCut(cutSpans);
   scene.setRevealed(tl.reveals.keys());
   // No card went in for a reading, so none comes out of the sensor: it was on the table all along.
   const from = (reading ? null : scene.dropPoints().find((d) => d.id === client)) ?? (reading ? { ...HOMES[carried] } : home);

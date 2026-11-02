@@ -26,6 +26,17 @@ export interface DecodeContext {
  * Decodes a PDU starting at `first` and walks inwards, returning one LayerPdu per protocol, outermost first.
  * Every view in the UI (strip colors, clean/full fields, hex highlights) derives from this.
  */
+/**
+ * A port alone can't say what a datagram is: any program's random port, or one a NAT picked, can land on a well-known one.
+ * WireGuard messages start with a type of 1 to 4 and three zero bytes, and its data messages are at least 32 bytes long.
+ */
+function looksLikeWireguard(b: Uint8Array, start: number, end: number): boolean {
+  return end - start >= 32 && b[start]! >= 1 && b[start]! <= 4 && !b[start + 1] && !b[start + 2] && !b[start + 3];
+}
+
+/** RTP starts with version 2 in its top two bits, and its fixed header is 12 bytes. */
+const looksLikeRtp = (b: Uint8Array, start: number, end: number): boolean => end - start >= 12 && b[start]! >> 6 === 2;
+
 export function decodePdu(bytes: Uint8Array, first: Protocol, ctx: DecodeContext = {}): LayerPdu[] {
   const out: LayerPdu[] = [];
   walk(bytes, first, 0, bytes.length, ctx, out);
@@ -82,13 +93,13 @@ function walk(b: Uint8Array, proto: Protocol, o: number, end: number, ctx: Decod
       const u = parseUdp(b, o);
       const pdu = describeUdp(b, o, ctx.srcIp, ctx.dstIp);
       out.push(pdu);
-      if (u.payloadEnd > u.payloadStart && (u.srcPort === WG_PORT || u.dstPort === WG_PORT)) {
+      if (u.payloadEnd > u.payloadStart && (u.srcPort === WG_PORT || u.dstPort === WG_PORT) && looksLikeWireguard(b, u.payloadStart, u.payloadEnd)) {
         walk(b, 'wireguard', u.payloadStart, u.payloadEnd, ctx, out);
       } else if (u.payloadEnd > u.payloadStart && (u.srcPort === 53 || u.dstPort === 53 || ctx.appHint === 'dns')) {
         walk(b, 'dns', u.payloadStart, u.payloadEnd, ctx, out);
       } else if (u.payloadEnd > u.payloadStart && ([DHCP_SERVER_PORT, DHCP_CLIENT_PORT].includes(u.dstPort) || ctx.appHint === 'dhcp')) {
         walk(b, 'dhcp', u.payloadStart, u.payloadEnd, ctx, out);
-      } else if (u.payloadEnd > u.payloadStart && (u.srcPort === RTP_PORT || u.dstPort === RTP_PORT || ctx.appHint === 'rtp')) {
+      } else if (u.payloadEnd > u.payloadStart && (ctx.appHint === 'rtp' || ((u.srcPort === RTP_PORT || u.dstPort === RTP_PORT) && looksLikeRtp(b, u.payloadStart, u.payloadEnd)))) {
         walk(b, 'rtp', u.payloadStart, u.payloadEnd, ctx, out);
       }
       return pdu.end;

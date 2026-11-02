@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fetchWebPage, OFFLINE_AT, READING_AT, runScenario, type Cut, type SimResult } from '../sim';
 import { buildStory } from './story';
-import { buildTimeline, type Timeline } from './timeline';
+import { buildTimeline, crossings, pastAt, seenSoFar, NO_PAST, type Timeline } from './timeline';
 
 function run(opts: Parameters<typeof fetchWebPage>[0] = {}, cuts: Cut[] = []): Timeline {
   return buildTimeline(buildStory(runScenario(fetchWebPage(opts), { seed: 1, faults: { randomLoss: 0, manual: [], cuts }, maxTime: 1000 })));
@@ -244,8 +244,8 @@ describe('what the devices say', () => {
     it('noisy air: a frame sent again by the radio was not lost', () => {
       for (const seed of [1, 2, 3, 4, 5]) {
         const opts = { from: 'phone', call: true, noise: 0.4 } as const;
-        const heard = buildStory(sim(opts, [], seed)).voice!.heard;
-        expect(lines(opts, [], seed).at(-1)).toBe(heard.includes(null) ? 'phone: Lost sound stays lost. Bye!' : 'phone: Every sound got through. Bye!');
+        const received = sim(opts, [], seed).events.filter((e) => e.type === 'app' && e.action === 'rtp-received').length;
+        expect(lines(opts, [], seed).at(-1)).toBe(received < 100 ? 'phone: Lost sound stays lost. Bye!' : 'phone: Every sound got through. Bye!');
         expect(lines({ from: 'phone', https: true, noise: 0.4 }, [], seed).at(-1)).not.toContain('My bye got no answer');
       }
       const joined = lines({ noise: 0.4, joins: [{ device: 'phone', job: 'page', at: 0.1 }] });
@@ -329,6 +329,47 @@ describe('what the devices say', () => {
       const tears = big.segs.filter((s) => s.step.kind === 'wait' && s.step.giveUp);
       for (const s of tears) expect(big.segs.some((x) => x.t0 > s.t1 && x.trip.origin === s.trip.origin && x.trip.retry)).toBe(false);
     });
+  });
+
+  describe('keeps what was seen when a cable is cut or mended', () => {
+    const CLEAN = { randomLoss: 0, manual: [] };
+    const story = (opts: Parameters<typeof fetchWebPage>[0], faults: object) => buildStory(runScenario(fetchWebPage(opts), { seed: 1, faults: { ...CLEAN, ...faults }, maxTime: 1000 }));
+    const mended = (opts: Parameters<typeof fetchWebPage>[0], link: string, from: number, v: number): { before: Timeline; after: Timeline } => {
+      const before = buildTimeline(story(opts, { cuts: [{ link, from }] }));
+      const seen = seenSoFar(before, v, link);
+      return { before, after: buildTimeline(story(opts, { cuts: [{ link, from, to: seen.now }], decided: seen.decided }), new Map(), 0, new Map(), pastAt(before, v, NO_PAST)) };
+    };
+
+    it('a packet already on its way is not held back by a reply that only now exists', () => {
+      const v = 26.63;
+      const { before, after } = mended({ probe: 'ping', attacks: ['flood'] }, 'bb2', 0, v);
+      const went = (tl: Timeline): Map<string, number> => new Map(crossings(tl).filter((c) => c.trip.client === 'laptop').reverse().map((c) => [c.trip.packetId, c.t0]));
+      const was = went(before);
+      const is = went(after);
+      for (const [id, t0] of was) if (t0 <= v && is.has(id)) expect(is.get(id), id).toBeLessThanOrEqual(t0 + 1);
+    });
+
+    it('a device seen to give up stays given up', () => {
+      const v = 125;
+      const { before, after } = mended({ https: true, from: 'phone', thin: true }, 'bb2', 0.09, v);
+      const rings = (tl: Timeline): string[] => tl.segs.filter((s) => s.step.kind === 'wait' && s.step.giveUp && s.t0 <= v).map((s) => s.trip.packetId);
+      expect(rings(after)).toEqual(expect.arrayContaining(rings(before)));
+    });
+  });
+
+  describe('says when a device tries again', () => {
+    const moods = (tl: Timeline): string[] => tl.segs.flatMap((s) => (s.step.kind === 'wait' ? [s.step.mood] : []));
+
+    it('an address request sent again gets cross, as a resend does', () => {
+      expect(moods(run({ dhcp: true }, [{ link: 'lan', from: 0, to: 27 }]))).toContain('angry');
+    });
+
+    it('a fetch that dies among attackers ends in tears too', () => {
+      const tl = run({ attacks: ['scan'] }, [{ link: 'bb2', from: 0 }]);
+      const tears = [...tl.segs.flatMap((s) => s.waits ?? []).map((w) => w.step), ...tl.segs.flatMap((s) => (s.step.kind === 'wait' ? [s.step] : []))].filter((s) => s.giveUp);
+      expect(tears.map((s) => s.mood)).toContain('cry');
+    });
+
   });
 
   describe('gives each line its time', () => {
