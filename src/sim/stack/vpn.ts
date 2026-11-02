@@ -101,6 +101,10 @@ export class VpnServer extends Host {
     const back = ip.dst === this.ip ? natKeyIn(bytes) : undefined;
     const e = back && this.nat.find(natMatch(back, 'outside'));
     if (e && this.peer) {
+      if (ip.ttl <= 1) {
+        sim.emit({ type: 'drop', packetId, reason: 'ttl-expired', deviceId: this.id });
+        return;
+      }
       const aged = rewriteIpv4(bytes, { ttl: ip.ttl - 1 });
       sim.emit({ type: 'forward', deviceId: this.id, packetId, ttlBefore: ip.ttl, ttlAfter: ip.ttl - 1, pduId: sim.pdu(packetId, aged, 'ipv4') });
       const inner = natRewrite(aged, { dst: e.inside });
@@ -150,6 +154,7 @@ export class VpnServer extends Host {
       while (port === WG_PORT || this.nat.some((n) => n.outside.port === port));
       e = { proto: key.proto, inside: { ip: ip.src, port: key.port }, outside: { ip: this.ip, port }, remote: key.remote };
       this.nat.push(e);
+      sim.emit({ type: 'nat:add', deviceId: this.id, entry: e });
     }
     const out = natRewrite(aged, { src: e.outside });
     sim.emit({ type: 'nat:translate', deviceId: this.id, packetId, direction: 'out', before: { ...e.inside }, after: { ...e.outside }, pduId: sim.pdu(packetId, out, 'ipv4') });

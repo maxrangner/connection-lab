@@ -515,6 +515,7 @@ const speedMenu = new Menu<string>(controls, root, '1×', 'Speed', SPEEDS.map((i
   speedMenu.setOpen(false);
 });
 speedMenu.setOn('1', true);
+speedMenu.button.classList.add('speed-button');
 const toolsMenu = new Menu<Tool>(
   controls,
   root,
@@ -656,7 +657,7 @@ function setAttack(id: Attack, on: boolean): void {
 /** Where to find me. A link goes here once its address is known; nothing shows a dead one. GitHub is the profile until the repo is out. */
 const LINKS = [{ label: 'GitHub', url: 'https://github.com/maxrangner' }];
 /** True of the page as it stands. Anything that stores more or sends anything, cookies included, has to change this first. */
-const PRIVACY = "This page sets no cookies and doesn't track you. Your theme, sound and Setup choices are saved in this browser only and are never sent anywhere. The site hosting the page may have its own rules.";
+const PRIVACY = "This page sets no cookies and doesn't track you. Your theme, sound, Quiet devices and Setup choices are saved in this browser only and are never sent anywhere. The site hosting the page may have its own rules.";
 const aboutBtn = document.createElement('button');
 aboutBtn.className = 'about-button';
 aboutBtn.textContent = '?';
@@ -765,6 +766,7 @@ const showTheme = (): void => {
 };
 const themeBtn = button('', 'Dark theme', () => {
   dark = !dark;
+  themeChosen = true;
   showTheme();
   try {
     localStorage.setItem('net.theme', dark ? 'dark' : 'light');
@@ -773,6 +775,13 @@ const themeBtn = button('', 'Dark theme', () => {
   }
 });
 showTheme();
+// Until a theme is chosen here, it follows the system's.
+let themeChosen = !!savedTheme;
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+  if (themeChosen) return;
+  dark = e.matches;
+  showTheme();
+});
 button('↺', 'Reset', reset);
 // On a narrow screen the bar breaks into two rows here (see app.css).
 controls.appendChild(Object.assign(document.createElement('span'), { className: 'bar-break' }));

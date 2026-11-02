@@ -14,7 +14,7 @@ const HEADER_EXPLAIN: Record<string, string> = {
   accept: 'Which media types the client can handle.',
   connection: '"close" means: after this response the connection is torn down instead of being reused.',
   date: 'When the server produced the response.',
-  'content-type': 'What the body is (HTML) and its character encoding, so the browser knows how to interpret the bytes.',
+  'content-type': 'What the body is and, for text, its character encoding, so the browser knows how to interpret the bytes.',
   'transfer-encoding': '"chunked" means the body is sent in pieces, each prefixed with its size in hex, ending with a zero-size chunk. Used when the length is not known up front.',
   server: 'Software or network that produced the response.',
   'last-modified': 'When the document last changed; useful for caching.',
@@ -45,7 +45,7 @@ export function describeHttp(b: Uint8Array, o: number, end: number): LayerPdu {
   const startLine = toAscii(b, i, lineEnd < 0 ? end : lineEnd);
   const summary = `HTTP ${startLine}`;
   f.add(isRequest ? 'http.request_line' : 'http.status_line', isRequest ? 'Request line' : 'Status line', i, (lineEnd < 0 ? end : lineEnd + 2) - i, startLine, 'key', isRequest
-    ? 'Method, path and protocol version: "give me the document at / using HTTP/1.1". Plain text, ending in CR LF.'
+    ? 'Method, path and protocol version: which document to get, and how. Plain text, ending in CR LF.'
     : 'Protocol version, status code and reason. 200 OK means the request succeeded.');
   if (lineEnd < 0) return { protocol: 'http', layer: 5, start: o, headerEnd: end, payloadEnd: end, end, summary, fields: f.list };
   i = lineEnd + 2;

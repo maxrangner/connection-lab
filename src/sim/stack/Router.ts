@@ -111,7 +111,11 @@ function natRewriteIcmp(out: Uint8Array, ip: ParsedIpv4, change: NatChange): voi
       if (!echo) setU16(out, ql4 + 2, change.src.port);
     }
     const csum = echo ? ql4 + 2 : m.quoted.ip.protocol === IPPROTO_UDP ? ql4 + 6 : -1;
-    if (csum >= 0 && u16(out, csum) !== 0) setU16(out, csum, adjustChecksum(u16(out, csum), before, words()));
+    if (csum >= 0 && u16(out, csum) !== 0) {
+      const sum = adjustChecksum(u16(out, csum), before, words());
+      // In UDP a checksum of 0 means there is none, so a real 0 is sent as 0xffff.
+      setU16(out, csum, !echo && sum === 0 ? 0xffff : sum);
+    }
     setU16(out, q + 10, 0);
     setU16(out, q + 10, internetChecksum(out, q, ql4));
   }

@@ -90,6 +90,8 @@ export class TcpConnection {
   private dupAcks = 0;
   /** After a fast retransmit: everything sent up to here must be ACKed before recovery is over (RFC 6582). */
   private recover: number | undefined;
+  /** The last sequence number acknowledged to the peer. */
+  private lastAcked: number | undefined;
   /** What the peer's latest SACK option says it already holds beyond its ACK: a timeout need not resend it (RFC 6675, in short). */
   private sacked: [number, number][] = [];
   // congestion control (RFC 5681); the window opens with the first data
@@ -278,7 +280,7 @@ export class TcpConnection {
       if (this.ooo.has(s)) sim.emit({ type: 'tcp:duplicate', deviceId: this.host.id, connId: this.id, packetId });
       else {
         this.ooo.set(s, { data: data.slice(), fin, packetId });
-        sim.emit({ type: 'tcp:ooo', deviceId: this.host.id, connId: this.id, packetId, seq: seqDiff(s, this.irs), len: data.length });
+        sim.emit({ type: 'tcp:ooo', deviceId: this.host.id, connId: this.id, packetId, relSeq: seqDiff(s, this.irs), len: data.length });
       }
       this.sendAck('dup ACK');
       return;
@@ -291,7 +293,8 @@ export class TcpConnection {
       this.ooo.delete(this.rcvNxt);
       this.accept(next.data, next.fin, next.packetId);
     }
-    this.sendAck('ACK');
+    // An application that answered at once has said this already, on what it sent.
+    if (this.lastAcked !== this.rcvNxt) this.sendAck('ACK');
   }
 
   private accept(data: Uint8Array, fin: boolean, packetId: string): void {
@@ -531,14 +534,14 @@ export class TcpConnection {
     } else {
       options = [];
       if (this.tsOk) options.push({ kind: 'nop' }, { kind: 'nop' }, { kind: 'ts', val: tsVal, ecr: this.tsRecent });
-      if (this.sackOk && this.ooo.size && data.length === 0) {
-        options.push({ kind: 'nop' }, { kind: 'nop' }, { kind: 'sack', blocks: this.sackBlocks() });
-      }
+      const blocks = this.sackOk && data.length === 0 ? this.sackBlocks() : [];
+      if (blocks.length) options.push({ kind: 'nop' }, { kind: 'nop' }, { kind: 'sack', blocks });
     }
     const window = isSyn
       ? Math.min(RECV_BUFFER, 0xffff)
       : Math.min(0xffff, this.wsOk ? RECV_BUFFER >> this.opts.wscale : RECV_BUFFER);
     const ack = ackOn ? this.rcvNxt : 0;
+    if (ackOn) this.lastAcked = this.rcvNxt;
     const tcpBytes = buildTcp(
       { srcPort: this.localPort, dstPort: this.remotePort, seq, ack, flags, window, options },
       data,
@@ -561,15 +564,18 @@ export class TcpConnection {
 
   private sackBlocks(): [number, number][] {
     // SACK blocks describe data bytes only; a FIN waiting behind the gap is not reported.
-    const starts = [...this.ooo.keys()].filter((s) => this.ooo.get(s)!.data.length > 0).sort((a, b) => seqDiff(a, b));
-    const blocks: [number, number][] = [];
-    for (const s of starts) {
+    const arrivals = [...this.ooo.keys()].filter((s) => this.ooo.get(s)!.data.length > 0);
+    const blocks: { edges: [number, number]; newest: number }[] = [];
+    for (const s of [...arrivals].sort((a, b) => seqDiff(a, b))) {
       const e = seqAdd(s, this.ooo.get(s)!.data.length);
       const last = blocks[blocks.length - 1];
-      if (last && last[1] === s) last[1] = e;
-      else blocks.push([s, e]);
+      if (last && last.edges[1] === s) {
+        last.edges[1] = e;
+        last.newest = Math.max(last.newest, arrivals.indexOf(s));
+      } else blocks.push({ edges: [s, e], newest: arrivals.indexOf(s) });
     }
-    return blocks.slice(0, 3);
+    // The block with what arrived last comes first (RFC 2018 section 4), and the newest news fits in if not all of it does.
+    return blocks.sort((a, b) => b.newest - a.newest).slice(0, 3).map((b) => b.edges);
   }
 
   private readSynOptions(seg: ParsedTcp): void {
@@ -610,8 +616,10 @@ export class TcpConnection {
       if (!first) return;
       const limit = first.syn ? SYN_RETRIES : DATA_RETRIES;
       if (first.retransmits >= limit) {
+        // An application done with the connection has nothing left to fail.
+        const inUse = this.state === 'SYN_SENT' || this.state === 'SYN_RCVD' || this.state === 'ESTABLISHED' || this.state === 'CLOSE_WAIT';
         this.closeNow();
-        this.handlers.onError?.(this, 'connection timed out');
+        if (inUse) this.handlers.onError?.(this, 'connection timed out');
         return;
       }
       this.recover = undefined;

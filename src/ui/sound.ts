@@ -12,7 +12,7 @@ export class Sound {
     if (this.muted) return;
     try {
       this.ctx ??= new AudioContext();
-      if (this.ctx.state === 'suspended') void this.ctx.resume();
+      if (this.ctx.state !== 'running') void this.ctx.resume();
     } catch {
       return;
     }
@@ -89,7 +89,7 @@ export class Sound {
     if (this.muted) return;
     try {
       this.ctx ??= new AudioContext();
-      if (this.ctx.state === 'suspended') void this.ctx.resume();
+      if (this.ctx.state !== 'running') void this.ctx.resume();
     } catch {
       return;
     }

@@ -42,6 +42,26 @@ describe('what belongs to one device', () => {
   });
 });
 
+describe('TCP options', () => {
+  const sackOf = (r: SimResult, id: string): number[][] => {
+    const frame = r.events.find((e) => e.type === 'tx' && e.packetId === id);
+    const bytes = frame?.type === 'tx' ? JSON.stringify(r.pdus.get(frame.frameId)!.layers.find((l) => l.protocol === 'tcp')?.fields) : '';
+    return bytes.includes('SACK') ? [[1]] : [];
+  };
+
+  it('a dup ACK with only a FIN waiting carries no empty SACK option', () => {
+    const ok = [...run().packets.values()].find((p) => p.origin === 'server' && /200/.test(p.label))!;
+    const x = runScenario(fetchWebPage({}), { seed: 1, faults: { ...CLEAN, manual: [{ packetId: ok.id, linkId: 'bb2' }] }, maxTime: 1000 });
+    for (const p of x.packets.values()) {
+      if (p.origin !== 'laptop' || !p.tcp || p.tcp.len) continue;
+      expect(sackOf(x, p.id).length).toBeLessThanOrEqual(1);
+      const frame = x.events.find((e) => e.type === 'tx' && e.packetId === p.id);
+      const tcp = frame?.type === 'tx' ? x.pdus.get(frame.frameId)!.layers.find((l) => l.protocol === 'tcp') : undefined;
+      if (tcp) expect((tcp.headerEnd - tcp.start) % 4).toBe(0);
+    }
+  });
+});
+
 describe('a NAT', () => {
   it('lets no private address out on the public line', () => {
     const r = run({ cold: true }, 1, [{ link: 'up1', from: 0, to: 1 }, { link: 'up2', from: 0, to: 3 }, { link: 'up3', from: 0, to: 5 }]);

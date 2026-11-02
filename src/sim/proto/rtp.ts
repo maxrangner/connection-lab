@@ -67,12 +67,15 @@ export function parseRtp(b: Uint8Array, o: number, end = b.length): ParsedRtp {
   const padding = !!(b0 & 0x20);
   const csrcs: number[] = [];
   for (let i = 0; i < csrcCount; i++) csrcs.push(u32(b, o + RTP_HEADER_LEN + i * 4));
-  const payloadStart = o + RTP_HEADER_LEN + csrcCount * 4;
+  const extended = !!(b0 & 0x10);
+  const fixed = o + RTP_HEADER_LEN + csrcCount * 4;
+  // An extension is a word of ID and length, then that many words (RFC 3550 section 5.3.1).
+  const payloadStart = extended ? fixed + 4 + u16(b, fixed + 2) * 4 : fixed;
   const padLength = padding ? u8(b, end - 1) : 0;
   return {
     version: b0 >> 6,
     padding,
-    extension: !!(b0 & 0x10),
+    extension: extended,
     csrcCount,
     marker: !!(b1 & 0x80),
     payloadType: b1 & 0x7f,

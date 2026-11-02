@@ -1278,6 +1278,11 @@ body {
   min-width: 78px;
 }
 
+/* Room for the longest speed, so choosing one moves nothing else. */
+.speed-button {
+  min-width: 92px;
+}
+
 /* On a device with nothing to do. It starts something, like the cards. It moves with the camera, so on a layer of its own. */
 button.action-menu {
   position: fixed;
