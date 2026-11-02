@@ -34,6 +34,8 @@ const LABEL_SETTLED = '#d8f5ee';
 const WAIT = '#c2562f';
 const PHOTO_ID = 'net-photo';
 const sealedInside = (key: PartKey): boolean => key === 'ip' || key === 'l4' || key === 'card';
+/** A cable comes in where these would have their name, so it goes straight under them instead. */
+const NAMED_BELOW = new Set(['dns-resolver', 'tld-server', 'vpn-server']);
 /** How far from a device its satellite dish stands. */
 const DISH = 2.4;
 
@@ -335,7 +337,7 @@ export class NetworkScene {
         screen.face.setAttribute('data-device', d.id);
       }
       const { l4Name, l2Tray, l2Name } = this.buildTrays(trays, d.id, p.x, p.y);
-      const s = iso(p.x, p.y + 1.9, 0);
+      const s = NAMED_BELOW.has(d.kind) ? iso(p.x + 0.7, p.y + 0.7, 0) : iso(p.x, p.y + 1.9, 0);
       const name = el('text', { class: 'device-name', 'text-anchor': 'middle', x: s.sx.toFixed(1), y: (s.sy + 26).toFixed(1) }, g);
       name.textContent = d.label;
       this.devices.push({ id: d.id, kind: d.kind, g, trays, l4Name, l2Tray, l2Name });

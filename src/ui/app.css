@@ -433,6 +433,10 @@ body {
   font-size: 32px;
 }
 
+.bar-talk {
+  fill: currentColor;
+}
+
 .follow {
   position: fixed;
   top: calc(58px + env(safe-area-inset-top, 0px));
@@ -1600,14 +1604,14 @@ button.action-menu[data-points='right']::after {
   }
 }
 
-/* The smallest phones: six round buttons still have to share a row */
+/* The smallest phones: seven round buttons still have to share a row */
 @media (max-width: 340px) {
   .net-controls {
-    gap: 6px;
+    gap: 4px;
   }
 
   .net-controls button:not(.menu-button) {
-    width: 42px;
+    width: 38px;
   }
 
   .net-controls button.menu-button {
@@ -1861,20 +1865,6 @@ button.action-menu[data-points='right']::after {
   fill: #3d7ea6;
 }
 
-/* The Setup menu's ARP bubble */
-.bubble {
-  fill: #fffdf8;
-  stroke: #3d7ea6;
-  stroke-width: 3;
-  stroke-linejoin: round;
-}
-
-.bubble-text {
-  font-size: 30px;
-  font-weight: 800;
-  fill: #3d7ea6;
-}
-
 /* What the servers do: the resolver's book and the web server's shelves */
 .book-bar {
   fill: #d8cfbe;
@@ -1885,7 +1875,7 @@ button.action-menu[data-points='right']::after {
 }
 
 .book-name {
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 700;
   font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
   fill: var(--card-ink);

@@ -75,12 +75,6 @@ export function drawPadlock(g: SVGGElement): void {
   el('rect', { x: -1.6, y: 8, width: 3.2, height: 9, class: 'padlock-hole' }, g);
 }
 
-/** A speech bubble with a question in it: the ARP "who has…?" shouted on the cable. */
-export function drawQuestion(g: SVGGElement): void {
-  el('path', { d: 'M-22 -24 H22 V10 H-4 L-14 22 V10 H-22 Z', class: 'bubble' }, g);
-  el('text', { x: 0, y: -6, dy: '0.35em', 'text-anchor': 'middle', class: 'bubble-text' }, g).textContent = '?';
-}
-
 /** An address tag with nothing written on it yet: the device that has to ask for an address first. */
 export function drawTag(g: SVGGElement): void {
   el('path', { d: 'M-24 -14 H10 L24 0 L10 14 H-24 Z', class: 'tag' }, g);
@@ -119,9 +113,8 @@ export function drawPipe(g: SVGGElement): void {
 }
 
 /** A speech bubble struck through: the devices keep quiet. */
-export function drawHush(g: SVGGElement): void {
-  el('path', { d: 'M-16 -22 H16 a10 10 0 0 1 10 10 V4 a10 10 0 0 1 -10 10 H-2 L-12 26 V14 H-16 a10 10 0 0 1 -10 -10 V-12 a10 10 0 0 1 10 -10 Z', class: 'page-sheet' }, g);
-  el('line', { x1: -24, y1: 22, x2: 24, y2: -26, class: 'pipe' }, g);
+export function drawTalk(g: SVGGElement): void {
+  el('path', { d: 'M-7 -9 H7 a3 3 0 0 1 3 3 V3 a3 3 0 0 1 -3 3 H-1 L-5 10 V6 H-7 a3 3 0 0 1 -3 -3 V-6 a3 3 0 0 1 3 -3 Z', class: 'bar-talk' }, g);
 }
 
 /** A ping: a dot and the rings it sends out. */

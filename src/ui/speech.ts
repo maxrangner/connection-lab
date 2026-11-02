@@ -34,8 +34,22 @@ const MQTT: Record<string, string> = {
   CONNACK: 'Welcome back',
 };
 
+/** A resolver going from server to server: it says why once, and knows when an answer is one it went looking for. */
+interface Walk {
+  asked: Set<string>;
+  looking: boolean;
+}
+
+/** What the resolver says as it asks a server. */
+function asking(name: string, walk: Walk): string {
+  walk.looking = true;
+  if (walk.asked.has(name)) return `Where is ${name}?`;
+  walk.asked.add(name);
+  return "I don't have it saved. I'll ask around.";
+}
+
 /** The plain meaning of a packet, if it has one worth saying. */
-function lineOf(t: Trip): string | null {
+function lineOf(t: Trip, walk: Walk): string | null {
   if (t.chapter === 'attack') {
     if (t.card === 'junk') return 'Flood it!';
     if (t.l4Label === 'SYN') return 'Anyone home?';
@@ -58,9 +72,13 @@ function lineOf(t: Trip): string | null {
     case 'arp':
       return card.startsWith('who has') ? `W${card.slice(1)}` : "That's me!";
     case 'dns':
-      if (card.endsWith('?')) return `What's the address of ${card.slice(0, -1)}?`;
-      if (card.startsWith('ask ')) return `Not me. A${card.slice(1)}`;
-      return card === 'DNS' ? null : `It's ${card}`;
+      if (card.endsWith('?')) return t.origin === 'resolver' ? asking(card.slice(0, -1), walk) : `What's the address of ${card.slice(0, -1)}?`;
+      if (card.startsWith('ask ')) return card.startsWith('ask .') ? `Not me. Ask the ${card.slice(4)} server.` : 'Not me. Ask its name server.';
+      if (card === 'DNS') return null;
+      if (t.origin !== 'resolver') return `That's mine: ${card}`;
+      if (!walk.looking) return `It's ${card}`;
+      walk.looking = false;
+      return `Found it! It's ${card}`;
     case 'hello':
       if (t.l4Label === 'SYN') return 'Hi, can we talk?';
       if (t.l4Label === 'SYN-ACK') return "Hi! Yes, let's.";
@@ -109,12 +127,13 @@ export function buildSpeech(story: Story, segs: Seg[]): Bubble[] {
     return true;
   };
   const kindOf = new Map(story.devices.map((d) => [d.id, d.kind]));
+  const walk: Walk = { asked: new Set(), looking: false };
 
   for (const seg of segs) {
     const s = seg.step;
     for (const p of seg.flow ?? []) {
       // The quick repeats of a trace say nothing new.
-      const line = p.trip.chapter === 'trace' ? null : lineOf(p.trip);
+      const line = p.trip.chapter === 'trace' ? null : lineOf(p.trip, walk);
       // An attack goes too fast to read line by line: each says what it is once.
       if (line && (p.trip.chapter !== 'attack' || once(`${p.trip.origin}|${line}`))) say(p.trip.origin, p.t0, line);
     }
@@ -123,7 +142,7 @@ export function buildSpeech(story: Story, segs: Seg[]): Bubble[] {
     }
     // A server finds what was asked first, and speaks when it has it.
     if (!seg.flow && s.kind !== 'lookup' && s.kind !== 'wait' && once(seg.trip.packetId)) {
-      const line = lineOf(seg.trip);
+      const line = lineOf(seg.trip, walk);
       const leaves = segs.find((x) => x.trip === seg.trip && (x.step.kind === 'travel' || x.step.kind === 'lost'));
       // A certificate takes several packets, and it only needs saying once.
       if (line && ((seg.trip.chapter !== 'secret' && seg.trip.message?.kind !== 'reading') || once(line))) say(seg.trip.origin, seg.t0, line, leaves?.t0);
