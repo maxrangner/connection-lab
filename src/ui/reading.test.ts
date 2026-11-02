@@ -89,7 +89,7 @@ describe('the sensor takes a reading', () => {
   it('the devices say what is happening', () => {
     const { s, tl } = run();
     const lines = buildSpeech(s, tl.segs).map((b) => `${b.device}: ${b.text}`);
-    expect(lines).toContain(`sensor: It's ${readings(s.trips)[0]!.card}`);
+    expect(lines).toContain(`sensor: It's ${readings(s.trips)[0]!.card}. Sent once, no receipt`);
     expect(lines.filter((l) => l === 'broker: A copy for everyone listening')).toHaveLength(1);
   });
 

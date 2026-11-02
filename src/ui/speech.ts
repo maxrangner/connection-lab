@@ -17,7 +17,16 @@ const SAY = 3.5;
 const SAY_CHAR = 0.1;
 /** A line cut shorter than this by the same device's next one is not worth showing. */
 const SHORTEST = 0.6;
+/** Seconds a run's last line stays up after the last packet is done, so that a run ends rather than stops. */
+const END_HOLD = 3.5;
+/** The voice packet that says why a call isn't resent: far enough in for its hello to be read. */
+const WHY_NO_RESEND = 20;
 const NO_FLOOD_ON_CALL = 'That flood never touched my call';
+/** One-way seconds on the line out of the house: past FIBRE its cable has been stretched, past SATELLITE it goes to space. */
+const FIBRE = 0.002;
+const SATELLITE = 0.2;
+/** Whoever runs an app, and hears of a reading. */
+const APPS = new Set(['laptop', 'phone']);
 
 const DHCP: Record<string, (rest: string) => string> = {
   DISCOVER: () => 'Can anyone give me an address?',
@@ -56,7 +65,7 @@ function asking(name: string, walk: Walk): string {
 }
 
 /** The plain meaning of a packet, if it has one worth saying. */
-function lineOf(t: Trip, walk: Walk): string | null {
+function lineOf(t: Trip, walk: Walk, story: Story): string | null {
   if (t.chapter === 'attack') {
     if (t.card === 'junk') return 'Flood it!';
     if (t.l4Label === 'SYN') return 'Anyone home?';
@@ -66,18 +75,19 @@ function lineOf(t: Trip, walk: Walk): string | null {
   if (t.retry) return 'Sending that again';
   const card = t.card ?? '';
   if (card === 'bye' || t.l4Label.includes('FIN')) return 'Bye!';
+  if (t.message?.kind === 'reading' && t.outward) return `It's ${card}. ${QOS_ASK[qosOf(story)]}`;
   if (t.l4Label.includes('RST')) return 'No, sorry';
   if (card === 'unreachable') return "Can't get there";
   if (t.message?.kind === 'mqtt-control') return MQTT[card] ?? null;
   // The broker says this once, for everyone: it sends a copy to each app.
-  if (t.message?.kind === 'reading') return t.outward ? `It's ${card}` : 'A copy for everyone listening';
+  if (t.message?.kind === 'reading') return 'A copy for everyone listening';
   switch (t.chapter) {
     case 'address': {
       const [kind = '', ip = ''] = card.split(' ');
       return DHCP[kind]?.(ip) ?? null;
     }
     case 'arp':
-      return card.startsWith('who has') ? `W${card.slice(1)}` : "That's me!";
+      return card.startsWith('who has') ? `Which of you is ${card.slice(8, -1)}?` : "That's me!";
     case 'dns':
       if (card.endsWith('?')) return t.origin === 'resolver' ? asking(card.slice(0, -1), walk) : 'First I need its address. Who knows it?';
       if (card.startsWith('ask ')) return card.startsWith('ask .') ? `Not me. Ask the ${card.slice(4)} server.` : 'Not me. Ask its name server.';
@@ -92,17 +102,19 @@ function lineOf(t: Trip, walk: Walk): string | null {
       walk.explained = true;
       return `I'm like a phone book. It's ${card}`;
     case 'hello':
-      if (t.l4Label === 'SYN') return walk.answered.delete(t.client) ? 'Got the address! Hi, can we talk?' : 'Hi, can we talk?';
-      if (t.l4Label === 'SYN-ACK') return "Hi! Yes, let's.";
+      if (t.l4Label === 'SYN') return walk.answered.delete(t.client) ? 'Got the address! Hi, can we talk?' : story.remembered && t.client === story.client ? 'I remember the address! Hi, can we talk?' : 'Hi, can we talk?';
+      if (t.l4Label === 'SYN-ACK') return story.vpn ? 'This came from the VPN server' : "Hi! Yes, let's.";
       return t.hello ? 'Great!' : null;
     case 'secret':
-      if (/^hello( 1\/\d+)?$/.test(card)) return t.outward ? "Let's agree on a secret" : 'OK, work it out from this';
+      if (/^hello( 1\/\d+)?$/.test(card)) return t.outward ? "Let's agree on a secret nobody else can read" : 'OK, work it out from this';
       if (t.identity) return 'It really is me';
       return card.startsWith('certificate') ? "Here's my ID" : null;
     case 'page':
-      if (t.message?.kind === 'http-request') return t.message.path.startsWith('/image') ? 'Please send the photo' : 'Please send the page';
-      return (t.part ? t.part.n === 1 : t.message?.kind === 'http-response') ? 'Here it is' : null;
+      if (t.message?.kind === 'http-request') return `${t.locked ? 'Locked now: please' : 'Please'} send the ${t.message.path.startsWith('/image') ? 'photo' : 'page'}`;
+      if (t.part && t.part.of > 1) return t.part.n === 1 ? "Too big for one packet: here's part 1" : null;
+      return t.part || t.message?.kind === 'http-response' ? 'Here it is' : null;
     case 'call':
+      if (t.part?.n === WHY_NO_RESEND && t.outward) return 'Tiny packets: no time to resend any';
       return t.part?.n === 1 ? (t.outward ? 'Hello?' : 'Hello!') : null;
     case 'ping':
       if (card.startsWith('ping 1/')) return 'Are you there?';
@@ -128,12 +140,20 @@ export function listenerSpeech(device: string, heard: Heard[], heardAt: Readonly
 }
 
 /** What the device starting the run sets out to do. */
-function opening(story: Story): string | null {
+function opening(story: Story, kindOf: Map<string, string>): string | null {
   if (story.reading) return null;
   if (story.probe) return story.probe.kind === 'ping' ? `Is ${story.probe.to} there?` : `What's the way to ${story.probe.to}?`;
-  if (story.call) return 'I want to call Sam';
-  return story.image ? 'I want to get a photo' : `I want to open ${story.site}`;
+  const how = story.vpn ? ' through my VPN' : kindOf.get(story.client) === 'phone' ? ' over Wi-Fi' : '';
+  if (story.call) return `I want to call Sam${how}`;
+  return `I want to ${story.image ? 'get a photo' : `open ${story.site}`}${how}`;
 }
+
+/** The QoS of a reading, from the answers it got. */
+function qosOf(story: Story): 0 | 1 | 2 {
+  return story.trips.some((t) => t.card === 'PUBREC') ? 2 : story.trips.some((t) => t.card === 'PUBACK') ? 1 : 0;
+}
+
+const QOS_ASK = ['Sent once, no receipt', 'Send me a receipt', 'Exactly once, please'] as const;
 
 /** What the attackers set out to do. Three bots are one plan: the first says it. */
 function attackPlans(story: Story, kindOf: Map<string, string>): [string, string][] {
@@ -158,18 +178,33 @@ function attackOutcome(story: Story, flooded: boolean, hurt: boolean): string | 
   return story.vpn && !story.probe ? 'The flood missed me: I went another way' : 'That flood never touched me';
 }
 
-/** What it says at the end, if it got what it set out to get. */
-function closing(story: Story): string | null {
-  const done = story.probe?.done;
-  if (done) return story.probe!.kind === 'ping' ? (done.received === done.sent ? 'It answered every time!' : null) : done.reached ? "That's every stop that answered!" : null;
-  if (story.reading || !story.fetched.includes(story.client)) return null;
-  return `Got it! Now I can show the ${story.image ? 'photo' : 'page'}`;
+/** What the run's client says at the end, whatever came of it. */
+function closing(story: Story, many: boolean, dropped: boolean, noisy: boolean): string {
+  if (story.probe) {
+    const done = story.probe.done;
+    if (!done) return "I couldn't find it";
+    if (story.probe.kind === 'ping') return done.received === done.sent ? `It answered every time, in ${Math.round(Number(done.avgMs))} ms!` : done.received ? 'It answered only some of the time' : 'It never answered';
+    if (!done.reached) return "I couldn't get all the way there";
+    return story.vpn ? 'The tunnel hid the stops in between' : "That's every stop that answered!";
+  }
+  if (story.call) return story.voice?.heard.includes(null) ? 'Lost sound stays lost. Bye!' : 'Every sound got through. Bye!';
+  const thing = story.image ? 'photo' : 'page';
+  if (!story.fetched.includes(story.client)) return `I couldn't get the ${thing}`;
+  const wan = story.links.find((l) => l.id === 'wan')?.delay ?? 0;
+  if (wan > SATELLITE) return 'Got it! Slow, because it went via space';
+  if (dropped) return 'Got it, once the lost part came again';
+  if (noisy) return 'Got it! Noisy air, but it got through';
+  if (story.thin) return `Got it! This ${thing} fit down the slow line`;
+  if (wan > FIBRE) return 'Got it! The long cable made it slower';
+  return `${many ? 'Got every part!' : 'Got it!'} Now I can show the ${thing}`;
 }
 
-export function buildSpeech(story: Story, segs: Seg[]): Bubble[] {
+export function buildSpeech(story: Story, segs: Seg[], settled = segs[segs.length - 1]?.t1): Bubble[] {
   const bubbles: Bubble[] = [];
-  const say = (device: string, t0: number, text: string, until = 0): void => {
-    bubbles.push({ device, t0, t1: Math.max(until, t0 + Math.max(SAY, text.length * SAY_CHAR)), text });
+  const say = (device: string, t0: number, text: string, until = 0): Bubble => {
+    const bubble = { device, t0, t1: Math.max(until, t0 + Math.max(SAY, text.length * SAY_CHAR)), text };
+    bubbles.push(bubble);
+    return bubble;
   };
   const spoken = new Set<string>();
   const once = (key: string): boolean => {
@@ -180,16 +215,33 @@ export function buildSpeech(story: Story, segs: Seg[]): Bubble[] {
   const kindOf = new Map(story.devices.map((d) => [d.id, d.kind]));
   const walk: Walk = { asked: new Set(), looking: false, explained: false, answered: new Set() };
   const first = segs[0];
-  const opens = opening(story);
+  const opens = opening(story, kindOf);
   if (opens && first) say(story.client, 0, opens, first.t0);
   if (first) for (const [device, plan] of attackPlans(story, kindOf)) say(device, 0, plan, first.t0);
   const flooded = story.attackers.some((d) => kindOf.get(d) === 'bot');
+  const home = story.devices.find((d) => d.kind === 'home-router')?.id;
+  const wanDelay = story.links.find((l) => l.id === 'wan')?.delay ?? 0;
   const webServer = story.devices.find((d) => d.kind === 'web-server')?.id ?? 'server';
   /** The devices that lost a packet of theirs, when each of them was last at it, and those that made a call. */
   const hurt = new Set<string>();
   const lastAt = new Map<string, number>();
   const callers = new Set<string>();
   let scanDone = 0;
+  /** The page came in several parts; a packet of it was dropped on its way. */
+  let many = false;
+  let dropped = false;
+  let noisy = false;
+  /** What a stretch of Wi-Fi or a router's queue did, said where it happened. */
+  const said = (p: Trip, at: number): void => {
+    const fall = p.steps.find((x) => x.kind === 'lost');
+    if (!fall || fall.kind !== 'lost') return;
+    const air = story.links.find((l) => l.id === fall.link)?.medium === 'wifi';
+    if (air && story.noise) noisy = true;
+    else if (p.client === story.client) dropped = true;
+    if (air && story.noise && once('noise')) say(fall.from, at, 'Noisy air! Trying that again');
+    if (p.droppedAtQueue && !flooded && once('queue')) say(fall.from, at, 'My queue is full! That one is lost');
+  };
+  const waits = new Map<string, number>();
   /** When what the run set out to get has reached the device that wanted it. */
   let got = 0;
 
@@ -197,11 +249,14 @@ export function buildSpeech(story: Story, segs: Seg[]): Bubble[] {
     const s = seg.step;
     for (const p of seg.flow ?? []) {
       // The quick repeats of a trace say nothing new.
-      const line = p.trip.chapter === 'trace' ? null : lineOf(p.trip, walk);
+      const line = p.trip.chapter === 'trace' ? null : lineOf(p.trip, walk, story);
       // An attack goes too fast to read line by line: each says what it is once.
       if (line && (p.trip.chapter !== 'attack' || once(`${p.trip.origin}|${line}`))) say(p.trip.origin, p.t0, line);
       if (p.trip.chapter === 'page' && !p.trip.outward && p.trip.client === story.client) got = Math.max(got, p.t1);
       if (p.trip.chapter === 'attack' && kindOf.get(p.trip.client) === 'scanner') scanDone = Math.max(scanDone, p.t1);
+      if (p.trip.chapter === 'page' && (p.trip.part?.of ?? 0) > 1) many = true;
+      said(p.trip, p.t1);
+      if (story.joiners.includes(p.trip.client) && home && once('sharing')) say(home, p.t0, 'Two devices, one address: ports sort them out');
       if (p.trip.chapter !== 'attack') {
         lastAt.set(p.trip.client, Math.max(lastAt.get(p.trip.client) ?? 0, p.t1));
         if (p.trip.steps.some((x) => x.kind === 'lost')) hurt.add(p.trip.client);
@@ -212,37 +267,58 @@ export function buildSpeech(story: Story, segs: Seg[]): Bubble[] {
     }
     if (s.kind === 'read' && seg.trip.chapter === 'page' && !seg.trip.outward && seg.trip.client === story.client) got = seg.t1;
     for (const w of [...(seg.waits ?? []).map((x) => ({ step: x.step, t0: x.t0 })), ...(s.kind === 'wait' ? [{ step: s, t0: seg.t0 }] : [])]) {
-      say(w.step.device, w.t0, w.step.giveUp ? 'No answer. I give up.' : 'No answer yet...');
+      const longer = w.step.seconds > (waits.get(w.step.device) ?? Infinity) && once(`longer ${w.step.device}`);
+      waits.set(w.step.device, w.step.seconds);
+      const silence = w.step.giveUp ? (story.probe ? 'No answer' : 'No answer. I give up.') : longer ? 'Still nothing. Waiting longer this time' : 'No answer yet...';
+      say(w.step.device, w.t0, silence);
     }
     // A server finds what was asked first, and speaks when it has it.
     if (!seg.flow && s.kind !== 'lookup' && s.kind !== 'wait' && once(seg.trip.packetId)) {
-      const line = lineOf(seg.trip, walk);
+      const line = lineOf(seg.trip, walk, story);
       const leaves = segs.find((x) => x.trip === seg.trip && (x.step.kind === 'travel' || x.step.kind === 'lost'));
       // A certificate takes several packets, and it only needs saying once.
       if (line && ((seg.trip.chapter !== 'secret' && seg.trip.message?.kind !== 'reading') || once(line))) say(seg.trip.origin, seg.t0, line, leaves?.t0);
     }
-    if (s.kind === 'nat' && once(`nat-${s.which}`)) {
-      const owner = story.devices.find((d) => d.id === seg.trip.client)?.label.toLowerCase();
-      say(s.device, seg.t0, s.which === 'from' ? "Sending this out under our home's address" : `This reply is for the ${owner}`, seg.t1);
+    if (s.kind === 'lost') said(seg.trip, seg.t0);
+    if (seg.trip.chapter === 'page' && (seg.trip.part?.of ?? 0) > 1) many = true;
+    const owner = story.devices.find((d) => d.id === seg.trip.client)?.label.toLowerCase();
+    if (s.kind === 'nat' && kindOf.get(s.device) !== 'vpn-server' && once(`nat-${s.which}`)) {
+      const out = wanDelay > SATELLITE ? "Under our home's address, up to space it goes" : "Sending this out under our home's address";
+      say(s.device, seg.t0, s.which === 'from' ? out : `This reply is for the ${owner}`, seg.t1);
     }
-    if (s.kind === 'unwrap' && kindOf.get(s.device) === 'router' && once('pass')) say(s.device, seg.t0, 'Not for me, pass it on');
-    if (s.kind === 'unwrap' && s.layer === 'vpn' && kindOf.get(s.device) === 'vpn-server' && once('vpn')) say(s.device, seg.t0, 'Opening this, sending it on');
+    if (s.kind === 'unwrap' && kindOf.get(s.device) === 'router' && once('pass')) say(s.device, seg.t0, seg.trip.tunnel ? "It's locked. I can only pass it on" : 'Not for me, pass it on');
+    if (s.kind === 'wrap' && s.layer === 'vpn' && s.device === seg.trip.client && once('vpn lock')) say(s.device, seg.t0, 'Locked! Only the VPN server can open this');
+    if (s.kind === 'unwrap' && s.layer === 'vpn' && kindOf.get(s.device) === 'vpn-server' && once('vpn')) say(s.device, seg.t0, "Unlocking this. I'll send it on for you");
+    if (s.kind === 'wrap' && s.layer === 'vpn' && kindOf.get(s.device) === 'vpn-server' && once('vpn reply')) say(s.device, seg.t0, `Locking the reply for your ${owner}`);
   }
 
-  const end = segs[segs.length - 1]?.t1;
-  if (story.attackers.length && !story.reading && end !== undefined) {
-    const outcome = attackOutcome(story, flooded, hurt.has(story.client));
-    if (outcome) say(story.client, got || (lastAt.get(story.client) ?? end), outcome);
-    for (const d of story.joiners) if (flooded && callers.has(d) && !hurt.has(d)) say(d, lastAt.get(d) ?? end, NO_FLOOD_ON_CALL);
-  } else {
-    const closes = closing(story);
-    if (closes && end !== undefined) say(story.client, story.probe ? end : got || end, closes);
+  const end = settled;
+  /** The last line of a run, which nothing of the same device's talks over. */
+  const finals: Bubble[] = [];
+  if (end !== undefined && story.reading) {
+    const told = story.trips.filter((t) => t.message?.kind === 'reading').flatMap((t) => t.steps.flatMap((x) => (x.kind === 'read' && APPS.has(kindOf.get(x.device) ?? '') ? [x.device] : [])));
+    const broker = story.devices.find((d) => d.kind === 'mqtt-broker')?.id;
+    for (const app of story.devices.filter((d) => APPS.has(d.kind) && !told.includes(d.id))) {
+      if (broker) finals.push(say(broker, end, `The ${app.label.toLowerCase()} is away. ${qosOf(story) ? "I'll keep this for it" : 'It misses this one'}`, end + END_HOLD));
+    }
+    finals.push(told[0] ? say(told[0], end, 'I never asked. The broker just told me', end + END_HOLD) : say(story.client, end, 'Nobody heard that reading', end + END_HOLD));
+  } else if (end !== undefined) {
+    const outcome = story.attackers.length ? attackOutcome(story, flooded, hurt.has(story.client)) : null;
+    const last = lastAt.get(story.client) ?? end;
+    const at = story.fetched.includes(story.client) ? got || end : story.call || outcome ? last : end;
+    // Someone who joined in ends the run if it finished; anyone else gets to the end on the client's word.
+    const others = story.joiners.filter((d) => lastAt.has(d) && !hurt.has(d));
+    finals.push(say(story.client, at, outcome ?? closing(story, many, dropped, noisy), others.length ? 0 : end + END_HOLD));
+    for (const d of others) {
+      const text = callers.has(d) ? (flooded ? NO_FLOOD_ON_CALL : 'Call done. Bye!') : story.fetched.includes(d) ? 'Got it too!' : 'All done';
+      finals.push(say(d, lastAt.get(d)!, text, end + END_HOLD));
+    }
   }
   if (scanDone) say(webServer, scanDone, 'Someone tried all my doors');
   if (story.listener && end !== undefined && !story.heard.some((h) => h.seen.kind !== 'empty')) say(story.listener, end, "I can't hear a thing: that's a cable");
 
   // One device says one thing at a time: the next line takes over.
-  const sorted = bubbles.sort((a, b) => a.t0 - b.t0);
+  const sorted = bubbles.filter((b) => !finals.some((f) => f !== b && f.device === b.device && b.t0 >= f.t0 && b.t0 < f.t1)).sort((a, b) => a.t0 - b.t0);
   sorted.forEach((b, i) => {
     const next = sorted.slice(i + 1).find((x) => x.device === b.device);
     if (next) b.t1 = Math.min(b.t1, next.t0);

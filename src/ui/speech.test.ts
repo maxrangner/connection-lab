@@ -46,7 +46,7 @@ describe('what the devices say', () => {
 
   it('walks the HTTPS handshake in words', () => {
     const lines = said(run({ https: true })).map((x) => x[1]);
-    expect(lines).toEqual(expect.arrayContaining(["Let's agree on a secret", 'OK, work it out from this', "Here's my ID", 'It really is me']));
+    expect(lines).toEqual(expect.arrayContaining(["Let's agree on a secret nobody else can read", 'OK, work it out from this', "Here's my ID", 'It really is me']));
   });
 
   it('has the resolver sent from server to server', () => {
@@ -72,19 +72,97 @@ describe('what the devices say', () => {
     const open = tl.speech[0]!;
     expect(open).toMatchObject({ device: 'laptop', t0: 0, text: 'I want to get a photo' });
     expect(open.t1).toBeGreaterThanOrEqual(tl.segs[0]!.t0);
-    expect(tl.speech.at(-1)).toMatchObject({ device: 'laptop', text: 'Got it! Now I can show the photo' });
+    expect(tl.speech.at(-1)).toMatchObject({ device: 'laptop', text: 'Got every part! Now I can show the photo' });
     expect(said(run({ call: true })).map((x) => x[1])).toContain('I want to call Sam');
     const ping = said(run({ probe: 'ping' })).map((x) => x[1]);
     expect(ping[0]).toBe('Is example.com there?');
-    expect(ping).toContain('It answered every time!');
+    expect(ping).toContain('It answered every time, in 12 ms!');
     const trace = said(run({ probe: 'traceroute' })).map((x) => x[1]);
     expect(trace[0]).toBe("What's the way to example.com?");
     expect(trace).toContain("That's every stop that answered!");
   });
 
-  it('does not claim a page it never got', () => {
-    const lines = said(run({}, [{ link: 'wan', from: 0 }])).map((x) => x[1]);
-    expect(lines.join()).not.toContain('Now I can show');
+  it('does not claim a page it never got, and still says how it ended, after trying', () => {
+    const tl = run({}, [{ link: 'wan', from: 0.03 }]);
+    expect(tl.speech.map((b) => b.text).join()).not.toContain('Now I can show');
+    const last = tl.speech.find((b) => b.text === "I couldn't get the page")!;
+    expect(last.t0).toBeCloseTo(tl.settled);
+    expect(tl.speech.filter((b) => b.device === 'laptop' && b.text === 'No answer yet...').length).toBeGreaterThan(0);
+  });
+
+  it('ends every run on a last line that stays after the last packet', () => {
+    const runs: [Parameters<typeof fetchWebPage>[0], Cut[]?][] = [[{}], [{ https: true }], [{ vpn: true }], [{ call: true }], [{ probe: 'ping' }], [{ probe: 'traceroute' }], [{ site: 'httpbin.org' }], [{ thin: true }], [{ slow: true }], [{ from: 'phone', noise: 0.5 }], [{ reading: true, smart: true }], [{ attacks: ['flood'] }], [{ attacks: ['scan'] }], [{ attacks: ['listen'] }], [{ joins: [{ job: 'call', at: 0.01 }] }], [{}, [{ link: 'wan', from: 0 }]], [{ probe: 'ping' }, [{ link: 'bb2', from: 0 }]]];
+    for (const [opts, cuts] of runs) {
+      const tl = run(opts, cuts);
+      expect(tl.total - tl.settled, JSON.stringify(opts)).toBeGreaterThanOrEqual(2.5);
+      expect(tl.speech.some((b) => b.t1 >= tl.total - 0.01), JSON.stringify(opts)).toBe(true);
+    }
+  });
+
+  describe('says what makes each option what it is', () => {
+    const lines = (opts: Parameters<typeof fetchWebPage>[0], cuts: Cut[] = []): string[] => said(run(opts, cuts)).map((x) => x.join(': '));
+
+    it('a VPN: locked at the laptop, opaque on the way, opened far away, and a server that sees the VPN', () => {
+      expect(lines({ vpn: true })).toEqual(expect.arrayContaining([
+        'laptop: I want to open example.com through my VPN',
+        'laptop: Locked! Only the VPN server can open this',
+        "isp: It's locked. I can only pass it on",
+        "vpn: Unlocking this. I'll send it on for you",
+        'vpn: Locking the reply for your laptop',
+        'server: This came from the VPN server',
+      ]));
+      expect(lines({ vpn: true, probe: 'traceroute' }).at(-1)).toBe('laptop: The tunnel hid the stops in between');
+    });
+
+    it('HTTPS: why, and from when', () => {
+      expect(lines({ https: true })).toEqual(expect.arrayContaining(["laptop: Let's agree on a secret nobody else can read", 'laptop: Locked now: please send the page']));
+    });
+
+    it('a remembered address, a big page, a call', () => {
+      expect(lines({ revisit: true, knownIp: '104.20.23.154' })).toContain('laptop: I remember the address! Hi, can we talk?');
+      const big = lines({ site: 'info.cern.ch' });
+      expect(big).toContain("server: Too big for one packet: here's part 1");
+      expect(big.at(-1)).toBe('laptop: Got every part! Now I can show the page');
+      const call = lines({ call: true });
+      expect(call).toContain('laptop: Tiny packets: no time to resend any');
+      expect(call.at(-1)).toBe('laptop: Every sound got through. Bye!');
+    });
+
+    it('a slow way out: space, a long cable, a slow line, a full queue', () => {
+      const space = lines({ slow: true });
+      expect(space).toContain("home: Under our home's address, up to space it goes");
+      expect(space.at(-1)).toBe('laptop: Got it! Slow, because it went via space');
+      expect(lines({ wanDelay: 0.03 }).at(-1)).toBe('laptop: Got it! The long cable made it slower');
+      expect(lines({ thin: true }).at(-1)).toBe('laptop: Got it! This page fit down the slow line');
+      const queue = lines({ thin: true, site: 'httpbin.org' });
+      expect(queue).toContain('isp: My queue is full! That one is lost');
+      expect(queue.at(-1)).toBe('laptop: Got it, once the lost part came again');
+    });
+
+    it('noisy Wi-Fi, a cut cable, and two devices at once', () => {
+      const noise = lines({ from: 'phone', noise: 0.5 });
+      expect(noise.join()).toContain('Noisy air! Trying that again');
+      expect(noise.at(-1)).toBe('phone: Got it! Noisy air, but it got through');
+      expect(lines({ attacks: ['flood'] })).toContain('laptop: Still nothing. Waiting longer this time');
+      expect(lines({ joins: [{ job: 'photo', at: 0.01 }] })).toContain('home: Two devices, one address: ports sort them out');
+    });
+
+    it('a ping or trace that got nowhere', () => {
+      expect(lines({ probe: 'ping' }, [{ link: 'bb2', from: 0 }]).at(-1)).toBe('laptop: It never answered');
+      const trace = lines({ probe: 'traceroute' }, [{ link: 'bb2', from: 0 }]);
+      expect(trace.at(-1)).toBe("laptop: I couldn't get all the way there");
+      expect(trace.join()).not.toContain('I give up');
+    });
+
+    it('a reading: what QoS was asked for, who was told, and an app that is away', () => {
+      const away = (qos: 0 | 1): string[] => lines({ reading: true, smart: true, cloud: true, qos }, [{ link: 'wlan', from: 0 }]);
+      expect(lines({ reading: true, smart: true, qos: 0 })[0]).toMatch(/^sensor: It's .* °C\. Sent once, no receipt$/);
+      expect(lines({ reading: true, smart: true, qos: 1 })[0]).toMatch(/Send me a receipt$/);
+      expect(lines({ reading: true, smart: true, qos: 2 })[0]).toMatch(/Exactly once, please$/);
+      expect(lines({ reading: true, smart: true }).at(-1)).toBe('laptop: I never asked. The broker just told me');
+      expect(away(0)).toContain('broker: The phone is away. It misses this one');
+      expect(away(1)).toContain("broker: The phone is away. I'll keep this for it");
+    });
   });
 
   describe('an attack', () => {

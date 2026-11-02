@@ -300,7 +300,7 @@ export class NetworkScene {
     private tl: Timeline,
   ) {
     // One picture to a screen reader: its words are labels on things, not text to read out.
-    this.svg = el('svg', { class: 'net-stage', preserveAspectRatio: 'xMidYMid meet', role: 'img', 'aria-label': "A laptop and a phone, a home router, an internet provider's router, a DNS phone book and a web server, with the packets travelling between them" });
+    this.svg = el('svg', { class: 'net-stage', preserveAspectRatio: 'xMidYMid meet', role: 'img', 'aria-label': "A laptop and a phone, a home router, an internet provider's router, a DNS resolver and a web server, with the packets travelling between them" });
     host.appendChild(this.svg);
     this.photo = el('image', { id: PHOTO_ID, width: PAPER_W, height: PAPER_H, preserveAspectRatio: 'xMidYMid slice' }, el('defs', {}, this.svg));
     const world = el('g', {}, this.svg);
