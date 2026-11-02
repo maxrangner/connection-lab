@@ -46,7 +46,7 @@ describe('what the devices say', () => {
 
   it('walks the HTTPS handshake in words', () => {
     const lines = said(run({ https: true })).map((x) => x[1]);
-    expect(lines).toEqual(expect.arrayContaining(["Let's agree on a secret", "OK, here's my half", "Here's my ID", 'It really is me']));
+    expect(lines).toEqual(expect.arrayContaining(["Let's agree on a secret", 'OK, work it out from this', "Here's my ID", 'It really is me']));
   });
 
   it('has the resolver sent from server to server', () => {
@@ -79,7 +79,7 @@ describe('what the devices say', () => {
     expect(ping).toContain('It answered every time!');
     const trace = said(run({ probe: 'traceroute' })).map((x) => x[1]);
     expect(trace[0]).toBe("What's the way to example.com?");
-    expect(trace).toContain("That's the whole way there!");
+    expect(trace).toContain("That's every stop that answered!");
   });
 
   it('does not claim a page it never got', () => {

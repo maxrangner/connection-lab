@@ -174,9 +174,10 @@ const HOMES: Record<Job, { sx: number; sy: number }> = {
   ping: { sx: home.sx, sy: home.sy + 186 },
   trace: { sx: home.sx, sy: home.sy + 248 },
 };
+/** Whether a run has started: until then the hint names a first thing to try. */
+let played = false;
 // Above the stack, as it goes for every card in it. The first card's badges stick out above it, so this clears them.
 const hint = el('text', { class: 'cards-hint', 'text-anchor': 'middle', x: home.sx, y: home.sy - 46 }, svg);
-hint.textContent = 'drag a card onto a device';
 const card = el('g', { class: 'site-card' }, svg);
 const cardBody = el('g', {}, card);
 el('rect', { x: -88, y: -22, width: 176, height: 44, rx: 10, class: 'site-card-bg' }, cardBody);
@@ -218,11 +219,11 @@ const CARDS: Record<Job, SVGGElement> = { page: card, photo: photoCard, call: ca
 
 /** What each card does, in a beginner's words: it hangs under the card for as long as the card is held. */
 const CARD_HELP: Record<Job, [string, string]> = {
-  page: ['Open a website', 'and see every step it takes'],
+  page: ['Open a website using packets:', 'small messages you can tap open'],
   photo: ['Fetch a photo:', 'too big for one packet'],
   call: ['Make a voice call', 'over the internet'],
   ping: ['Ask a server if it is there', 'and how fast it answers'],
-  trace: ['See every stop', 'on the way to a server'],
+  trace: ['Find the stops that answer', 'on the way to a server'],
 };
 const CARD_HELP_W = 224;
 const CARD_HELP_H = 50;
@@ -357,13 +358,13 @@ scene.setCut([...cutLines]);
 
 const VPN_LINKS = ['bb3', 'bb4', 'bb5'];
 const SETUP: { id: Setting; label: string; hint: string; draw: (g: SVGGElement) => void; span: number }[] = [
-  { id: 'https', label: 'Secure page (HTTPS)', hint: 'Scrambles everything after hello', draw: drawPadlock, span: 34 },
+  { id: 'https', label: 'Secure page (HTTPS)', hint: "Hides the page, not where it's going", draw: drawPadlock, span: 34 },
   { id: 'big', label: 'Bigger page', hint: 'Too big for one packet', draw: drawPage, span: 34 },
   { id: 'slow', label: 'Satellite internet', hint: 'To space and back: long waits', draw: drawSatellite, span: 64 },
-  { id: 'vpn', label: 'VPN', hint: 'Sealed tunnel past your ISP', draw: drawShield, span: 34 },
+  { id: 'vpn', label: 'VPN', hint: 'Sealed tunnel past your provider', draw: drawShield, span: 34 },
   { id: 'dhcp', label: 'New on the network', hint: 'Gets an address, then finds the router', draw: drawTag, span: 34 },
   { id: 'cold', label: 'DNS has to ask around', hint: "The site's address isn't saved yet", draw: drawSnowflake, span: 34 },
-  { id: 'thin', label: 'Slow home line', hint: 'Big downloads lose packets', draw: drawPipe, span: 34 },
+  { id: 'thin', label: 'Slow home line', hint: 'Queues fill up and drop packets', draw: drawPipe, span: 34 },
   { id: 'smart', label: 'Smart home', hint: 'A sensor that reports to apps', draw: drawThermometer, span: 34 },
 ];
 /** The lines that go when the smart home changes. */
@@ -391,9 +392,13 @@ function showSetup(): void {
   setupMenu.button.classList.toggle('on', SETTINGS.some((k) => features[k]));
 }
 
-const CHAPTERS: Record<Chapter, string> = { address: 'Get an address', arp: 'Find the router', dns: 'Find the address', hello: 'Say hello', secret: 'Check and agree', page: 'Get the page', call: 'Make a call', ping: 'Ping the server', trace: 'Trace the path', traffic: 'All at once', attack: 'Attack' };
+const CHAPTERS: Record<Chapter, string> = { address: 'Get an address', arp: 'Find the router', dns: "Find the site's address", hello: 'Say hello', secret: 'Check and agree', page: 'Get the page', call: 'Make a call', ping: 'Ping the server', trace: 'Trace the path', traffic: 'All at once', attack: 'Attack' };
 /** Chapter number in this run (a second visit skips the address, HTTPS adds the secret). */
-const chapterName = (ch: Chapter): string => (ch === 'page' && story.reading ? 'Send the reading' : ch === 'page' && story.image ? 'Get the photo' : CHAPTERS[ch]);
+const chapterName = (ch: Chapter): string => {
+  if (ch === 'dns' && story.call) return "Find Sam's address";
+  if (ch === 'dns' && story.reading) return 'Find the broker';
+  return ch === 'page' && story.reading ? 'Send the reading' : ch === 'page' && story.image ? 'Get the photo' : CHAPTERS[ch];
+};
 
 function chapterNumber(ch: Chapter): number {
   const order: Chapter[] = [];
@@ -500,9 +505,9 @@ const smartMenu = new Menu<SmartOption>(
   [
     { id: 'home', label: 'Broker at home', hint: 'Readings stay in the house' },
     { id: 'cloud', label: 'Broker in the cloud', hint: 'Out through your router and back' },
-    { id: 'qos0', label: 'QoS 0', hint: 'Sent once, can be lost' },
+    { id: 'qos0', label: 'QoS 0', hint: 'No receipt, so it can be lost' },
     { id: 'qos1', label: 'QoS 1', hint: 'Confirmed, can arrive twice' },
-    { id: 'qos2', label: 'QoS 2', hint: 'Arrives exactly once' },
+    { id: 'qos2', label: 'QoS 2', hint: 'Extra checks stop it arriving twice' },
   ],
   (id) => {
     if (id === 'home' || id === 'cloud') {
@@ -1164,6 +1169,7 @@ function beginRun(): void {
   spyCard.reset();
   spyFrom = -Infinity;
   mode = 'play';
+  played = true;
   v = 0;
   seek = null;
   doneFor = 0;
@@ -1263,6 +1269,8 @@ function frame(now: number): void {
     resting.setAttribute('opacity', '1');
   }
   hint.style.display = mode === 'idle' ? '' : 'none';
+  const nextMove = played ? 'drag a card onto a device' : `Start: drag ${pageSite()} onto Laptop`;
+  if (hint.textContent !== nextMove) hint.textContent = nextMove;
 
   // The camera eases between the whole network (between runs) and a close follow of the packet,
   // unless the viewer has taken it over. More than one action at a time needs the whole network.

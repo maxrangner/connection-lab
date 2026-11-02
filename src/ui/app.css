@@ -557,7 +557,7 @@ body {
   z-index: -1;
   top: calc(18px + env(safe-area-inset-top, 0px));
   right: max(16px, env(safe-area-inset-right, 0px));
-  width: min(100vw - 225px, 300px);
+  width: min(100vw - 261px, 300px);
   pointer-events: none;
   user-select: none;
 }
@@ -570,7 +570,7 @@ body {
 }
 
 /* Too narrow for the words beside the chapter name: the image hangs off the screen, with only its mark showing */
-@media (max-width: 349px) {
+@media (max-width: 379px) {
   .logo {
     width: 200px;
     right: -139px;

@@ -48,7 +48,7 @@ function pingReadout(probe: Probe, title: string, trips: Trip[], timing: Timing,
     screens.push({ t, lines: [title, ...rows] });
   });
   const done = probe.done;
-  if (done && screens.length > 1) screens[screens.length - 1]!.lines.push(`${done.sent} sent, ${done.received} received${done.received ? `, ${short(Number(done.avgMs))} ms` : ''}`);
+  if (done && screens.length > 1) screens[screens.length - 1]!.lines.push(`${done.sent} sent, ${done.received} ${done.received === 1 ? 'reply' : 'replies'}${done.received ? `, average ${short(Number(done.avgMs))} ms` : ''}`);
   return { screens, flags: [] };
 }
 
@@ -57,7 +57,7 @@ function traceReadout(probe: Probe, title: string, trips: Trip[], timing: Timing
   const hops = new Map<number, { from: string; times: string[] }>();
   const flags: Readout['flags'] = [];
   const screens: Readout['screens'] = tries.length ? [{ t: timing.get(tries[0]!.packetId)?.t0 ?? 0, lines: [title] }] : [];
-  const rows = (): string[] => [...hops].map(([ttl, h]) => `${ttl}  ${h.from.padEnd(ADDRESS)} ${h.times.map((x) => x.padStart(2)).join(' ')}${h.from ? ' ms' : ''}`);
+  const rows = (): string[] => [...hops].map(([ttl, h]) => (h.from ? `${ttl}  ${h.from.padEnd(ADDRESS)} ${h.times.map((x) => x.padStart(2)).join(' ')} ms` : `${ttl}  no reply`));
   tries.forEach((trip, i) => {
     const ttl = trip.probeTtl!;
     const row = hops.get(ttl) ?? { from: '', times: [] };

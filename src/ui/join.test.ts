@@ -216,7 +216,7 @@ describe('a card dropped in during a run', () => {
 
   it('a ping or trace dropped in prints its own results, on its own terminal', () => {
     const ping = dropped('page', 'ping', 0.2).after.joinReadouts[0]!.readout.screens.at(-1)!.lines;
-    expect(ping).toContain('4 sent, 4 received, 12 ms');
+    expect(ping).toContain('4 sent, 4 replies, average 12 ms');
     const both = dropped('ping', 'trace', 0.2).after;
     expect(both.readout.screens.at(-1)!.lines[0]).toBe('ping example.com');
     expect(both.joinReadouts[0]!.readout.screens.at(-1)!.lines[0]).toBe('traceroute example.com');
