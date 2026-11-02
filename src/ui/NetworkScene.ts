@@ -8,7 +8,7 @@ import type { Details, PartKey, Row, Story, Trip, Wrap } from './story';
 import { bandPoint, pageContent, Paper, PAPER_H, PAPER_W, photoContent } from './paper';
 import { screenAt, type Readout } from './readout';
 import { BOOK, drawBook, drawShelf, SERVER } from './stations';
-import { addressBefore, ATTACKER_KINDS, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, LEVEL, lockPose, NO_LOCK, NOTE_LIFE, namedAcks, packetPos, packetPose, pageParts, segAt, swapLanding, swapMoment, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowHop, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
+import { addressBefore, ATTACKER_KINDS, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, laneShare, LEVEL, lockPose, NO_LOCK, NOTE_LIFE, namedAcks, packetPos, packetPose, pageParts, segAt, swapLanding, swapMoment, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowHop, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
 
 export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', vpn: '#2e5e6e', eth: '#e08b33', wifi: '#2a9d8f' } as const;
 /** The bold-outline style: a warm light body, a blue that goes with it, and glass that is blue until it shows something. */
@@ -63,7 +63,6 @@ const NOTE_STEM = 'M7 5 V-16 C8 -10 14 -9 14 -3';
 const NOTE_SIDE = 70;
 /** How far to the side of its cable a small block rides, in tiles, so blocks going opposite ways pass each other; and how soon it gets there. */
 const LANE = 0.55;
-const LANE_IN = 0.14;
 /** How small a device starts when it springs up, and how soon it is solid. */
 const SPRING_SIZE = 0.5;
 const SPRING_SOLID = 0.35;
@@ -1577,7 +1576,7 @@ export class NetworkScene {
     const a = this.tl.pos.get(hop.from) ?? { x: 0, y: 0 };
     const b = this.tl.pos.get(hop.to) ?? { x: 0, y: 0 };
     const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-    const side = LANE * easeInOut(clamp01(Math.min(k, 1 - k) / LANE_IN));
+    const side = LANE * laneShare(k);
     return v3(at.x + (-(b.y - a.y) / len) * side, at.y + ((b.x - a.x) / len) * side, at.z);
   }
 

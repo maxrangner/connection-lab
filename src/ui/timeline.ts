@@ -227,6 +227,8 @@ export const TUMBLE = 1.8;
 const FLOW_GAP = 0.26;
 const FLOW_HOP = 1;
 export const FLOW_FLY = 0.5;
+/** The share of a hop's way, at each end, a small block takes to move between the middle of the cable and its lane. */
+const LANE_IN = 0.2;
 export const FLOW_FALL = 0.9;
 /** Seconds a sender of a stream visibly waits when only its timer can tell it a packet is gone. */
 const FLOW_TIMER = 1.6;
@@ -849,6 +851,16 @@ const smooth = (t: number): number => {
   const x = clamp01(t);
   return x * x * (3 - 2 * x);
 };
+
+/**
+ * How far into its lane a block is, a share k through a hop, from none at the devices to all of it on the cable. It goes by
+ * how far the block has really come, not by the clock: a block slows down as it arrives, and a lane timed by the clock
+ * would still be sliding it sideways once it had all but stopped.
+ */
+export function laneShare(k: number): number {
+  const came = easeInOut(k);
+  return smooth(Math.min(came, 1 - came) / LANE_IN);
+}
 
 export function travelPath(
   pos: Map<string, { x: number; y: number }>,
