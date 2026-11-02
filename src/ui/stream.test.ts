@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { fetchWebPage, runScenario, type Cut, type FaultPlan, type ManualFault } from '../sim';
 import { THIN_QUEUE, type FetchWebPageOptions } from '../sim/scenarios/fetchWebPage';
 import { buildStory, type Step, type Story, type Trip } from './story';
-import { buildTimeline, crossings, ridingOn, seenSoFar, spyLog, stepTarget, type FlowPacket, type Seg, type Timeline } from './timeline';
+import { buildTimeline, crossings, laneShare, ridingOn, seenSoFar, spyLog, stepTarget, type FlowPacket, type Seg, type Timeline } from './timeline';
+import { easeInOut } from './project';
 
 const CLEAN: FaultPlan = { randomLoss: 0, manual: [] };
 const photo = (opts: FetchWebPageOptions = {}, faults: FaultPlan = CLEAN) =>
@@ -31,6 +32,16 @@ describe('a photo: many packets at once', () => {
     expect(data[0]!.part!.of).toBe(25);
     expect(parts(s)).toEqual(Array.from({ length: 25 }, (_, i) => i + 1));
     expect(packets(s).filter((t) => t.l4Label === 'ACK').length).toBeGreaterThan(10);
+  });
+
+  it('moves a block into its lane while it moves along, never after it has all but stopped', () => {
+    for (let k = 0; k <= 1; k += 0.01) {
+      const came = easeInOut(k);
+      if (Math.min(came, 1 - came) < 0.02) expect(laneShare(k)).toBeLessThan(0.03);
+    }
+    expect(laneShare(0)).toBe(0);
+    expect(laneShare(1)).toBe(0);
+    expect(laneShare(0.5)).toBe(1);
   });
 
   it('shows the real JPEG', () => {
