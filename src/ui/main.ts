@@ -1277,7 +1277,8 @@ function frame(now: number): void {
   // unless the viewer has taken it over. More than one action at a time needs the whole network.
   const wide = mode === 'play' && (joined.length > 0 || story.attackers.length > 0);
   if (!camFree) {
-    const target = wide ? scene.busyCamera() : mode === 'play' ? scene.followCamera(v) : showAll || attacks.size ? scene.wholeCamera() : scene.overviewCamera();
+    const aim = wide ? scene.busyCamera() : mode === 'play' ? scene.followCamera(v) : showAll || attacks.size ? scene.wholeCamera() : scene.overviewCamera();
+    const target = peekTarget ? scene.fitChips(aim) : aim;
     const ease = snapCamera ? 1 : Math.min(1, dt * (seek ? 6 : 3.5));
     cam = { cx: lerp(cam.cx, target.cx, ease), cy: lerp(cam.cy, target.cy, ease), scale: lerp(cam.scale, target.scale, ease) };
   }
