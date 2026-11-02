@@ -3,6 +3,8 @@ import { hash32 } from './core/Rng';
 export interface ManualFault {
   packetId: string;
   linkId: string;
+  /** Which of its crossings of this link, from 0, if it has more than one: a radio's retries, or a tunnel's way there and back. */
+  crossing?: number;
 }
 
 /** A cable cut through for a span of sim time; `to` omitted means it stays cut. */
@@ -23,7 +25,7 @@ export interface FaultPlan {
   /** If set, random loss only happens on these links (e.g. the internet side, not the home cable). */
   lossyLinks?: string[];
   /**
-   * Outcomes already decided, keyed "packetId@linkId" (true: lost). Used to keep what a viewer has already seen
+   * Outcomes already decided, keyed by `crossingKey` (true: lost). Used to keep what a viewer has already seen
    * unchanged when a cable is cut or mended mid-run.
    */
   decided?: Record<string, boolean>;
@@ -37,9 +39,12 @@ export function isCut(plan: FaultPlan, linkId: string, now: number): boolean {
   return !!plan.cuts?.some((c) => c.link === linkId && now >= c.from && (c.to === undefined || now < c.to));
 }
 
-export function shouldDrop(plan: FaultPlan, seed: number, linkId: string, packetId: string, now = 0): boolean {
-  if (plan.manual.some((m) => m.packetId === packetId && m.linkId === linkId)) return true;
-  const decided = plan.decided?.[`${packetId}@${linkId}`];
+/** One crossing of a link by one packet: a packet can cross the same link more than once, and each has its own outcome. */
+export const crossingKey = (packetId: string, linkId: string, crossing: number): string => `${packetId}@${linkId}${crossing ? `#${crossing}` : ''}`;
+
+export function shouldDrop(plan: FaultPlan, seed: number, linkId: string, packetId: string, now = 0, crossing = 0): boolean {
+  if (plan.manual.some((m) => m.packetId === packetId && m.linkId === linkId && (m.crossing ?? crossing) === crossing)) return true;
+  const decided = plan.decided?.[crossingKey(packetId, linkId, crossing)];
   if (decided !== undefined) return decided;
   if (isCut(plan, linkId, now)) return true;
   if (plan.randomLoss <= 0) return false;

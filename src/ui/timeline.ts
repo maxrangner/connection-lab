@@ -1,4 +1,4 @@
-import type { PduSnapshot } from '../sim';
+import { crossingKey, type PduSnapshot } from '../sim';
 import { toneOf } from './notes';
 import type { Parts } from './paper';
 import { clamp01, easeIn, easeInOut, easeOutBack, easeOutBounce, lerp, lerpV, v3, type Vec3 } from './project';
@@ -266,7 +266,7 @@ const crosses = (t: Trip): boolean => t.steps.some((s) => s.kind === 'travel' ||
  * `drops` has the visual second each device had an action added, if any did. What was on screen by the first of them stays as
  * it was. The step under way finishes, and everything left of every job then runs at once as small blocks.
  */
-export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> = new Map(), stretch = 0, drops: ReadonlyMap<string, number> = new Map()): Timeline {
+export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> = new Map(), stretch = 0, drops: ReadonlyMap<string, number> = new Map(), past: Past = NO_PAST): Timeline {
   const mix = Math.min(Infinity, ...drops.values());
   const kind = new Map(story.devices.map((d) => [d.id, d.kind]));
   // An attacker is already at it when the run starts, so nothing runs by itself.
@@ -347,7 +347,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
       t = seg.t1;
     };
     // The timer of a resend runs down just before it goes, whatever else was said in between.
-    if (trip.timedOut) ring({ kind: 'wait', device: trip.origin, seconds: trip.waited ?? 0, giveUp: false, mood: byId.get(trip.retransmitOf ?? '')?.retry ? 'angry' : 'surprise' });
+    if (trip.timedOut) ring({ kind: 'wait', device: trip.origin, seconds: trip.waited ?? 0, giveUp: false, mood: (trip.retransmitOf ? byId.get(trip.retransmitOf)?.retry : story.trips.slice(0, ti).some((x) => x.retry && x.origin === trip.origin && x.chapter === trip.chapter && x.card === trip.card)) ? 'angry' : 'surprise' });
     for (const [i, step] of trip.steps.entries()) {
       const seg: Seg = { step, trip, t0: t, t1: t, p0: p, p1: p };
       let d = DUR[step.kind] * pace(step, trip);
@@ -383,7 +383,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
         case 'lost': {
           const travel = DUR.travel * pace({ ...step, kind: 'travel' }, trip) * linkPace(step.link);
           // Cut under it by the viewer: where it was. Into a cable that was already cut: halfway along.
-          const caught = knocks.get(`${trip.packetId}@${step.link}`);
+          const caught = knocks.get(crossingKey(trip.packetId, step.link, crossingOf(trip, step)));
           const k = caught ?? 0.5;
           seg.knock = { k, travel, byYou: caught !== undefined };
           d = k * travel + TUMBLE;
@@ -412,7 +412,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
     const dns = trip.chapter === 'dns';
     const later = story.trips.slice(ti + 1);
     const tryingOn = later.some((x) => x.origin === trip.origin && x.chapter === trip.chapter && (x.retry || x.card === trip.card)) || (dns && later.some((x) => x.chapter === 'dns'));
-    if (trip.lost && !story.pageTitle && trip.l4Label !== 'ACK' && !resent.has(trip.packetId) && !tryingOn) {
+    if (past.rung.has(trip.packetId) || (trip.lost && !story.pageTitle && trip.l4Label !== 'ACK' && !resent.has(trip.packetId) && !tryingOn)) {
       ring({ kind: 'wait', device: dns || story.probe ? trip.client : trip.origin, seconds: 0, giveUp: true, mood: story.probe ? 'surprise' : 'cry' });
     }
     // The server has forgotten the connection, and says so: that is the end of it.
@@ -439,7 +439,7 @@ export function buildTimeline(story: Story, knocks: ReadonlyMap<string, number> 
     const trip: Trip = { ...traffic[0]!, chapter: 'traffic', part: undefined, retry: false, timedOut: false, lost: false, steps: [step] };
     const p = at(story.client, LEVEL.eth);
     // A page in parts carries on from what has landed so far, whether those parts came as a stream or one by one.
-    const { packets, waits } = planFlow(traffic, t, story, knocks, linkPace, cues, reactions, TRAFFIC_HOP, notes, { ...(cutShort ?? { ...newFlow(), filled }), queued: true, dropped: drops });
+    const { packets, waits } = planFlow(traffic, t, story, knocks, linkPace, cues, reactions, TRAFFIC_HOP, notes, { ...(cutShort ?? { ...newFlow(), filled }), queued: true, dropped: drops, started: past.started });
     const end = Math.max(t, ...packets.map((x) => x.t1), ...waits.map((w) => w.t1));
     segs.push({ step, trip, t0: t, t1: end, p0: p, p1: p, flow: packets, waits });
     t = end + (notes.length ? NOTE_LIFE : 0.5);
@@ -512,11 +512,14 @@ function entrances(segs: Seg[], since: number): Pick<Timeline, 'reveals' | 'laid
   return { reveals, laid };
 }
 
+/** How many times a trip had crossed this step's link before it. */
+const crossingOf = (trip: Trip, step: Extract<Step, { kind: 'travel' | 'lost' }>): number => trip.steps.slice(0, trip.steps.indexOf(step)).filter((x) => (x.kind === 'travel' || x.kind === 'lost') && x.link === step.link).length;
+
 /** When each packet set off and when it was done. */
 function timing(segs: Seg[]): Map<string, { t0: number; t1: number }> {
   const times = new Map<string, { t0: number; t1: number }>();
   for (const s of segs) {
-    for (const p of s.flow ?? []) times.set(p.trip.packetId, { t0: p.t0, t1: p.t1 });
+    for (const p of s.flow ?? []) times.set(p.trip.packetId, { t0: times.get(p.trip.packetId)?.t0 ?? p.t0, t1: p.t1 });
     if (!s.flow) times.set(s.trip.packetId, { t0: times.get(s.trip.packetId)?.t0 ?? s.t0, t1: s.t1 });
   }
   return times;
@@ -593,8 +596,10 @@ interface FlowState {
   queued: boolean;
   /** The visual second each device had an action added: nothing of its job goes before that, also when the traffic began earlier. */
   dropped: ReadonlyMap<string, number>;
+  /** When packets already seen set off: they were seen to go, so nothing that has since changed can hold them back. */
+  started: ReadonlyMap<string, number>;
 }
-const newFlow = (): FlowState => ({ heard: [], lastSent: new Map(), filled: new Set(), sent: new Map(), expected: new Map(), puzzled: false, onCable: new Map(), queued: false, dropped: new Map() });
+const newFlow = (): FlowState => ({ heard: [], lastSent: new Map(), filled: new Set(), sent: new Map(), expected: new Map(), puzzled: false, onCable: new Map(), queued: false, dropped: new Map(), started: new Map() });
 
 /**
  * The first moment from `wanted` on with a free place on this cable. A block takes any gap rather than going to the back of
@@ -660,7 +665,7 @@ function planFlow(
       if (state.queued) t = freeSlot(taken, t);
       taken.push(t);
       // Cut under it by the viewer: where it was. Dropped off a full port buffer: right at the router. Lost by itself: halfway along.
-      const caught = knocks.get(`${trip.packetId}@${s.link}`);
+      const caught = knocks.get(crossingKey(trip.packetId, s.link, crossingOf(trip, s)));
       const fall = lost ? (caught ?? (trip.droppedAtQueue ? 0.08 : 0.5)) : 1;
       const d = hop * linkPace(s.link) * fall;
       hops.push({ from: s.from, to: s.to, link: s.link, at: s.at, t0: t, t1: t + d, lost, fall, seen: s.seen });
@@ -722,7 +727,9 @@ function planFlow(
     // In a call each side's first word still waits for what it answers (the friend speaks only once called); after that
     // a side talks on its own clock. An attacker's junk and knocks answer nothing either, and go at their own pace.
     const ownClock = trip.chapter === 'call' ? trip.part?.n !== 1 : trip.chapter === 'attack' && trip.outward && !trip.l4Label.includes('RST');
-    if (!ownClock) for (const h of heard) if (h.client === trip.client && h.sim <= trip.start) t = Math.max(t, h.v);
+    const seen = state.started.get(trip.packetId);
+    if (seen !== undefined) t = Math.max(t, seen);
+    else if (!ownClock) for (const h of heard) if (h.client === trip.client && h.sim <= trip.start) t = Math.max(t, h.v);
     if (t > until || stopped.has(chain)) {
       stopped.add(chain);
       rest.push(trip);
@@ -731,6 +738,11 @@ function planFlow(
   const last = planned[planned.length - 1];
   const part = last?.trip.part;
   if (!rest.length && last?.trip.chapter !== 'call' && last?.trip.lost && part && filled.size < part.of) wait({ kind: 'wait', device: last.trip.origin, seconds: 0, giveUp: true, mood: 'cry' }, last.t1);
+  // Among other jobs' traffic the last packet needn't be the client's, and a fetch can die before there are parts to count.
+  const mine = state.queued && !rest.length ? planned.filter((p) => p.trip.client === story.client).at(-1) : undefined;
+  if (mine?.trip.lost && !mine.trip.part && mine.trip.l4Label !== 'ACK' && mine.trip.chapter !== 'call' && !story.probe && !story.reading && !story.fetched.includes(story.client)) {
+    wait({ kind: 'wait', device: story.client, seconds: 0, giveUp: true, mood: 'cry' }, mine.t1);
+  }
   return { packets: planned, waits, rest };
 }
 
@@ -957,6 +969,8 @@ export function chapterAt(tl: Timeline, v: number): Trip['chapter'] | null {
 export interface Crossing {
   trip: Trip;
   link: string;
+  /** Which of this packet's crossings of this link, from 0. */
+  crossing: number;
   /** Sim time the frame was sent. */
   at: number;
   t0: number;
@@ -971,10 +985,16 @@ export function crossings(tl: Pick<Timeline, 'segs'>): Crossing[] {
   if (!list) {
     list = tl.segs.flatMap((s): Crossing[] => {
       const st = s.step;
-      if (s.flow) return s.flow.flatMap((p) => p.hops.map((h) => ({ trip: p.trip, link: h.link, at: h.at, t0: h.t0, t1: h.t1, lost: h.lost, seen: h.seen })));
+      if (s.flow) return s.flow.flatMap((p) => p.hops.map((h) => ({ trip: p.trip, link: h.link, crossing: 0, at: h.at, t0: h.t0, t1: h.t1, lost: h.lost, seen: h.seen })));
       if (st.kind !== 'travel' && st.kind !== 'lost') return [];
-      return [{ trip: s.trip, link: st.link, at: st.at, t0: s.t0, t1: s.t1, lost: st.kind === 'lost', seen: st.seen }];
+      return [{ trip: s.trip, link: st.link, crossing: 0, at: st.at, t0: s.t0, t1: s.t1, lost: st.kind === 'lost', seen: st.seen }];
     });
+    const counted = new Map<string, number>();
+    for (const c of [...list].sort((a, b) => a.at - b.at)) {
+      const key = `${c.trip.packetId}@${c.link}`;
+      c.crossing = counted.get(key) ?? 0;
+      counted.set(key, c.crossing + 1);
+    }
     CROSSINGS.set(tl.segs, list);
   }
   return list;
@@ -988,6 +1008,24 @@ export function spyLog(tl: Timeline, line: string, v: number, from = -Infinity):
     .filter((c) => c.link === line && c.seen && readAt(c) >= from && readAt(c) <= v)
     .sort((a, b) => readAt(a) - readAt(b))
     .map((c) => c.seen!);
+}
+
+/** What a run has shown so far, which a mended cable must not take back: the rings of those who gave up, and when each packet set off. */
+export interface Past {
+  rung: ReadonlySet<string>;
+  started: ReadonlyMap<string, number>;
+}
+export const NO_PAST: Past = { rung: new Set(), started: new Map() };
+
+/** What has been shown by visual time v, on top of what had been before. */
+export function pastAt(tl: Timeline, v: number, before: Past): Past {
+  const rung = new Set(before.rung);
+  const started = new Map(before.started);
+  for (const s of tl.segs) {
+    if (s.step.kind === 'wait' && s.step.giveUp && s.t0 <= v) rung.add(s.trip.packetId);
+    for (const p of s.flow ?? []) if (p.t0 <= v && !started.has(p.trip.packetId)) started.set(p.trip.packetId, p.t0);
+  }
+  return { rung, started };
 }
 
 /**
@@ -1005,7 +1043,7 @@ export function seenSoFar(tl: Timeline, v: number, line?: string): { decided: Re
       if (c.link === line) next = Math.min(next, c.at);
       continue;
     }
-    decided[`${c.trip.packetId}@${c.link}`] = c.lost;
+    decided[crossingKey(c.trip.packetId, c.link, c.crossing)] = c.lost;
     now = Math.max(now, c.at);
   }
   return { decided, now: Math.min(now, next) };
@@ -1015,12 +1053,12 @@ export function seenSoFar(tl: Timeline, v: number, line?: string): { decided: Re
 export const joinAt = (tl: Timeline, v: number): number => seenSoFar(tl, v).now + 1e-9;
 
 /** The packets on a line at v and how far along they are, for a cut to catch; one nearly across gets there. */
-export function ridingOn(tl: Timeline, v: number, line: string): { packetId: string; k: number }[] {
+export function ridingOn(tl: Timeline, v: number, line: string): { packetId: string; crossing: number; k: number }[] {
   return crossings(tl).flatMap((c) => {
     if (c.link !== line || c.lost || v < c.t0 || v >= c.t1) return [];
     const k = (v - c.t0) / (c.t1 - c.t0);
     // Still dropping out of its tray: it falls as it reaches the cable.
-    return k > 0.9 ? [] : [{ packetId: c.trip.packetId, k: Math.max(k, 0.12) }];
+    return k > 0.9 ? [] : [{ packetId: c.trip.packetId, crossing: c.crossing, k: Math.max(k, 0.12) }];
   });
 }
 

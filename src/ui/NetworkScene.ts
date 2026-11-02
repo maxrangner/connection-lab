@@ -10,6 +10,13 @@ import { screenAt, type Readout } from './readout';
 import { BOOK, drawBook, drawShelf, SERVER } from './stations';
 import { addressBefore, ATTACKER_KINDS, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, laneShare, LEVEL, lockPose, NO_LOCK, NOTE_LIFE, namedAcks, packetPos, packetPose, pageParts, segAt, swapLanding, swapMoment, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, travelPose, type FlowHop, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
 
+/** A cable cut from one moment of a run to another; `to` left out while it stays cut. Cut before a run, it is from -Infinity. */
+export interface CutSpan {
+  link: string;
+  from: number;
+  to?: number;
+}
+
 export const COLOR = { app: '#4f9d69', tcp: '#8b6fd0', udp: '#b8609f', ip: '#4a84d4', vpn: '#2e5e6e', eth: '#e08b33', wifi: '#2a9d8f' } as const;
 /** The bold-outline style: a warm light body, a blue that goes with it, and glass that is blue until it shows something. */
 const DEVICE = '#f2ebdd';
@@ -260,6 +267,8 @@ export class NetworkScene {
   }
   private readonly cables: SVGGElement;
   private cut = new Set<string>();
+  private cutSpans: readonly CutSpan[] = [];
+  private cutKey = '';
   /** The line a tool would work on, highlighted. */
   private readonly hover: SVGGElement;
   /** Each drawn cable (or satellite hop) and the devices at its ends, to grey out the unused ones. */
@@ -607,9 +616,19 @@ export class NetworkScene {
     setAttr(c.g, 'clip-path', laying ? `url(#laying-${c.id})` : 'none');
   }
 
-  /** Which cables are cut. */
-  setCut(lines: readonly string[]): void {
-    this.cut = new Set(lines);
+  /** Which cables are cut, and from when to when in the run. */
+  setCut(spans: readonly CutSpan[]): void {
+    this.cutSpans = spans;
+    this.showCuts(this.now);
+  }
+
+  /** A cable is drawn cut only at the moments it is: going back in a run takes you to before the cut. */
+  private showCuts(v: number): void {
+    const cut = this.cutSpans.filter((s) => v >= s.from && (s.to === undefined || v < s.to)).map((s) => s.link).sort();
+    const key = cut.join(' ');
+    if (key === this.cutKey) return;
+    this.cutKey = key;
+    this.cut = new Set(cut);
     this.buildCables();
   }
 
@@ -1167,6 +1186,7 @@ export class NetworkScene {
     const tl = this.tl;
     const hit = segAt(tl, v);
     this.now = v;
+    this.showCuts(v);
     this.frameTable();
     // Once a run starts, whatever it doesn't use steps back, until the run is over.
     const greying = v >= 0 && over < 1;

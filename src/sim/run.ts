@@ -64,7 +64,9 @@ export function runScenario(scenario: Scenario, opts: RunOptions): SimResult {
   const starts = [{ device: scenario.startDevice, at: 0 }, ...(scenario.attackers ?? []), ...(scenario.companions ?? [])];
   for (const [job, s] of starts.entries()) {
     const start = world.devices.get(s.device);
-    const apps = start ? (scenario.devices.find((d) => d.id === start.id)?.apps ?? []) : [];
+    const spec = start && scenario.devices.find((d) => d.id === start.id);
+    const apps = spec?.apps ?? [];
+    const mss = (spec?.tunnel && scenario.tcp.tunnelMss) || scenario.tcp.clientMss;
     const browser = apps.find((a) => a.kind === 'browser');
     const call = apps.find((a) => a.kind === 'voice-call');
     const probe = apps.find((a) => a.kind === 'ping' || a.kind === 'traceroute');
@@ -77,12 +79,12 @@ export function runScenario(scenario: Scenario, opts: RunOptions): SimResult {
       if (call?.kind === 'voice-call') startVoiceCall(start, call, resolver);
       else if (probe?.kind === 'ping') startPing(start, probe, resolver);
       else if (probe?.kind === 'traceroute') startTraceroute(start, probe, resolver);
-      else if (browser?.kind === 'browser') startBrowser(start, browser, scenario.tcp.clientMss, resolver);
+      else if (browser?.kind === 'browser') startBrowser(start, browser, mss, resolver);
     };
     world.sim.job = job;
     if (flood?.kind === 'flood') world.sim.at(s.at, () => startFlood(start, flood));
     if (scan?.kind === 'port-scan') world.sim.at(s.at, () => startPortScan(start, scan));
-    if (mqtt?.kind === 'mqtt-client') world.sim.at(s.at, () => startMqttClient(start, mqtt, scenario.tcp.clientMss));
+    if (mqtt?.kind === 'mqtt-client') world.sim.at(s.at, () => startMqttClient(start, mqtt, mss));
     if (call || probe || browser) world.sim.at(s.at, () => (dhcp?.kind === 'dhcp-client' ? startDhcpClient(start, dhcp, (lease) => open(lease.dns[0])) : open()));
   }
   world.sim.run(opts.maxTime ?? 600);

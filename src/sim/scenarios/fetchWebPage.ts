@@ -499,7 +499,7 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
     // Your apps are jobs of their own, already connected by the time anything is told.
     ...(reading ? { quietUntil: READING_AT, companions: homes.filter((d) => d.id !== from && d.actions.length).map((d) => ({ device: d.id, at: 0 })) } : {}),
     ...(bots.length || scanner.length ? { attackers: [...bots.map((b, i) => ({ device: b.device.id, at: (reading ? READING_AT : 0) + i * FLOOD.stagger })), ...scanner.map((s) => ({ device: s.device.id, at: reading ? READING_AT : 0 }))] } : {}),
-    tcp: { clientMss: opts.vpn ? Math.min(mss, 1380) : mss, serverMss: 1460 },
+    tcp: { clientMss: mss, ...(opts.vpn ? { tunnelMss: Math.min(mss, 1380) } : {}), serverMss: 1460 },
     devices: [
       ...homes.map(homeDevice),
       {

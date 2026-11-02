@@ -191,6 +191,8 @@ export interface DeviceSpec {
 export interface TcpSettings {
   /** MSS the laptop advertises. 1460 for Ethernet; 536 is the IPv4 default when nothing better is known. */
   clientMss: number;
+  /** MSS a device with a tunnel advertises instead: the tunnel's headers leave less room. */
+  tunnelMss?: number;
   serverMss: number;
 }
 

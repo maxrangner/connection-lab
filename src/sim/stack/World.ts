@@ -36,6 +36,8 @@ export interface WifiSend {
 
 export class Link {
   private busyUntil = new Map<string, number>();
+  /** How many times each packet has set off on this link. */
+  private crossings = new Map<string, number>();
   /** Per port, when each frame waiting in its transmit buffer starts on the wire. Only kept for a link with a finite `queue`. */
   private waiting = new Map<string, number[]>();
 
@@ -118,11 +120,16 @@ export class Link {
       });
       const ear = this.spec.overheardBy && this.world.devices.get(this.spec.overheardBy);
       if (ear) sim.at(arrive, () => ear.overhear(frame, frameId));
-      if (shouldDrop(this.world.faults, this.world.seed, this.spec.id, packetId, start)) {
+      const crossing = this.crossings.get(packetId) ?? 0;
+      this.crossings.set(packetId, crossing + 1);
+      const noisy = arq && lostToNoise(this.world.seed, this.spec.id, packetId, wifi.attempt ?? 0, this.spec.noise!);
+      const cut = isCut(this.world.faults, this.spec.id, start);
+      // A frame already seen lost to noise is lost to noise again, not to whatever else has been decided since.
+      if ((!noisy || cut) && shouldDrop(this.world.faults, this.world.seed, this.spec.id, packetId, start, crossing)) {
         sim.at(start + (arrive - start) / 2, () =>
-          sim.emit({ type: 'drop', packetId, reason: isCut(this.world.faults, this.spec.id, start) ? 'cut' : 'fault', linkId: this.spec.id, frameId }),
+          sim.emit({ type: 'drop', packetId, reason: cut ? 'cut' : 'fault', linkId: this.spec.id, frameId }),
         );
-      } else if (arq && lostToNoise(this.world.seed, this.spec.id, packetId, wifi.attempt ?? 0, this.spec.noise!)) {
+      } else if (noisy) {
         // Damaged on the air: the receiver's FCS check fails and it says nothing.
         sim.at(arrive, () => sim.emit({ type: 'drop', packetId, reason: 'interference', deviceId: to.id, linkId: this.spec.id, frameId }));
       } else {

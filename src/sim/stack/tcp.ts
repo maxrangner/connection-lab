@@ -236,7 +236,8 @@ export class TcpConnection {
       ) {
         this.dupAcks++;
         this.host.sim.emit({ type: 'tcp:dup-ack', deviceId: this.host.id, connId: this.id, count: this.dupAcks, packetId });
-        if (this.dupAcks === 3) {
+        // Already recovering, dup ACKs are only new data arriving behind a hole being filled (RFC 6582 section 3.2).
+        if (this.dupAcks === 3 && this.recover === undefined) {
           const first = this.outstanding[0];
           if (first) {
             this.recover = this.sndNxt;
@@ -407,9 +408,9 @@ export class TcpConnection {
     return Math.min(this.peerMss, this.opts.mss) - (this.tsOk ? 12 : 0);
   }
 
-  /** What is really on its way: everything outstanding but what a timeout wrote off. */
+  /** What is really on its way: everything outstanding but what a timeout wrote off and what the peer says it has (RFC 6675). */
   private pipe(): number {
-    return this.outstanding.reduce((n, s) => n + (s.lost ? 0 : s.data.length + (s.syn ? 1 : 0) + (s.fin ? 1 : 0)), 0);
+    return this.outstanding.reduce((n, s) => n + (s.lost || this.isSacked(s) ? 0 : s.data.length + (s.syn ? 1 : 0) + (s.fin ? 1 : 0)), 0);
   }
 
   /** Did the peer's SACK blocks say it has this whole segment? (They describe data only, so never a FIN.) */
