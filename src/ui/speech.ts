@@ -12,8 +12,9 @@ export interface Bubble {
   text: string;
 }
 
-/** Seconds a line stays up at the least. */
-const SAY = 2.2;
+/** Seconds a line stays up at the least, and how long reading a character of a long one takes. */
+const SAY = 3.5;
+const SAY_CHAR = 0.1;
 /** A line cut shorter than this by the same device's next one is not worth showing. */
 const SHORTEST = 0.6;
 
@@ -34,10 +35,15 @@ const MQTT: Record<string, string> = {
   CONNACK: 'Welcome back',
 };
 
-/** A resolver going from server to server: it says why once, and knows when an answer is one it went looking for. */
+/**
+ * What has been said so far that changes what comes next. A resolver going from server to server says why once, and knows
+ * when an answer is one it went looking for; the resolver says what it is once; and a device says so when it has its answer.
+ */
 interface Walk {
   asked: Set<string>;
   looking: boolean;
+  explained: boolean;
+  answered: Set<string>;
 }
 
 /** What the resolver says as it asks a server. */
@@ -72,15 +78,20 @@ function lineOf(t: Trip, walk: Walk): string | null {
     case 'arp':
       return card.startsWith('who has') ? `W${card.slice(1)}` : "That's me!";
     case 'dns':
-      if (card.endsWith('?')) return t.origin === 'resolver' ? asking(card.slice(0, -1), walk) : `What's the address of ${card.slice(0, -1)}?`;
+      if (card.endsWith('?')) return t.origin === 'resolver' ? asking(card.slice(0, -1), walk) : 'First I need its address. Who knows it?';
       if (card.startsWith('ask ')) return card.startsWith('ask .') ? `Not me. Ask the ${card.slice(4)} server.` : 'Not me. Ask its name server.';
       if (card === 'DNS') return null;
       if (t.origin !== 'resolver') return `That's mine: ${card}`;
-      if (!walk.looking) return `It's ${card}`;
-      walk.looking = false;
-      return `Found it! It's ${card}`;
+      walk.answered.add(t.client);
+      if (walk.looking) {
+        walk.looking = false;
+        return `Found it! It's ${card}`;
+      }
+      if (walk.explained) return `It's ${card}`;
+      walk.explained = true;
+      return `I'm like a phone book. It's ${card}`;
     case 'hello':
-      if (t.l4Label === 'SYN') return 'Hi, can we talk?';
+      if (t.l4Label === 'SYN') return walk.answered.delete(t.client) ? 'Got the address! Hi, can we talk?' : 'Hi, can we talk?';
       if (t.l4Label === 'SYN-ACK') return "Hi! Yes, let's.";
       return t.hello ? 'Great!' : null;
     case 'secret':
@@ -115,10 +126,26 @@ export function listenerSpeech(device: string, heard: Heard[], heardAt: Readonly
   return [...firsts].map(([kind, t]) => ({ device, t0: t, t1: t + SAY, text: lines[kind] }));
 }
 
+/** What the device starting the run sets out to do. */
+function opening(story: Story): string | null {
+  if (story.reading || story.attackers.length) return null;
+  if (story.probe) return story.probe.kind === 'ping' ? `Is ${story.probe.to} there?` : `What's the way to ${story.probe.to}?`;
+  if (story.call) return 'I want to call Sam';
+  return story.image ? 'I want to get a photo' : `I want to open ${story.site}`;
+}
+
+/** What it says at the end, if it got what it set out to get. */
+function closing(story: Story): string | null {
+  const done = story.probe?.done;
+  if (done) return story.probe!.kind === 'ping' ? (done.received === done.sent ? 'It answered every time!' : null) : done.reached ? "That's the whole way there!" : null;
+  if (story.reading || !story.fetched.includes(story.client)) return null;
+  return `Got it! Now I can show the ${story.image ? 'photo' : 'page'}`;
+}
+
 export function buildSpeech(story: Story, segs: Seg[]): Bubble[] {
   const bubbles: Bubble[] = [];
   const say = (device: string, t0: number, text: string, until = 0): void => {
-    bubbles.push({ device, t0, t1: Math.max(until, t0 + SAY), text });
+    bubbles.push({ device, t0, t1: Math.max(until, t0 + Math.max(SAY, text.length * SAY_CHAR)), text });
   };
   const spoken = new Set<string>();
   const once = (key: string): boolean => {
@@ -127,7 +154,12 @@ export function buildSpeech(story: Story, segs: Seg[]): Bubble[] {
     return true;
   };
   const kindOf = new Map(story.devices.map((d) => [d.id, d.kind]));
-  const walk: Walk = { asked: new Set(), looking: false };
+  const walk: Walk = { asked: new Set(), looking: false, explained: false, answered: new Set() };
+  const first = segs[0];
+  const opens = opening(story);
+  if (opens && first) say(story.client, 0, opens, first.t0);
+  /** When what the run set out to get has reached the device that wanted it. */
+  let got = 0;
 
   for (const seg of segs) {
     const s = seg.step;
@@ -136,7 +168,9 @@ export function buildSpeech(story: Story, segs: Seg[]): Bubble[] {
       const line = p.trip.chapter === 'trace' ? null : lineOf(p.trip, walk);
       // An attack goes too fast to read line by line: each says what it is once.
       if (line && (p.trip.chapter !== 'attack' || once(`${p.trip.origin}|${line}`))) say(p.trip.origin, p.t0, line);
+      if (p.trip.chapter === 'page' && !p.trip.outward && p.trip.client === story.client) got = Math.max(got, p.t1);
     }
+    if (s.kind === 'read' && seg.trip.chapter === 'page' && !seg.trip.outward && seg.trip.client === story.client) got = seg.t1;
     for (const w of [...(seg.waits ?? []).map((x) => ({ step: x.step, t0: x.t0 })), ...(s.kind === 'wait' ? [{ step: s, t0: seg.t0 }] : [])]) {
       say(w.step.device, w.t0, w.step.giveUp ? 'No answer. I give up.' : 'No answer yet...');
     }
@@ -147,10 +181,17 @@ export function buildSpeech(story: Story, segs: Seg[]): Bubble[] {
       // A certificate takes several packets, and it only needs saying once.
       if (line && ((seg.trip.chapter !== 'secret' && seg.trip.message?.kind !== 'reading') || once(line))) say(seg.trip.origin, seg.t0, line, leaves?.t0);
     }
-    if (s.kind === 'nat' && once(`nat-${s.which}`)) say(s.device, seg.t0, s.which === 'from' ? "I'll put my address on it" : 'Back to the right device', seg.t1);
+    if (s.kind === 'nat' && once(`nat-${s.which}`)) {
+      const owner = story.devices.find((d) => d.id === seg.trip.client)?.label.toLowerCase();
+      say(s.device, seg.t0, s.which === 'from' ? "Sending this out under our home's address" : `This reply is for the ${owner}`, seg.t1);
+    }
     if (s.kind === 'unwrap' && kindOf.get(s.device) === 'router' && once('pass')) say(s.device, seg.t0, 'Not for me, pass it on');
     if (s.kind === 'unwrap' && s.layer === 'vpn' && kindOf.get(s.device) === 'vpn-server' && once('vpn')) say(s.device, seg.t0, 'Opening this, sending it on');
   }
+
+  const closes = closing(story);
+  const end = segs[segs.length - 1]?.t1;
+  if (closes && end !== undefined) say(story.client, story.probe ? end : got || end, closes);
 
   // One device says one thing at a time: the next line takes over.
   const sorted = bubbles.sort((a, b) => a.t0 - b.t0);

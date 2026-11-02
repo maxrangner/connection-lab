@@ -11,22 +11,24 @@ const said = (tl: Timeline): string[][] => tl.speech.map((b) => [b.device, b.tex
 describe('what the devices say', () => {
   it('tells a plain fetch from the question to the page', () => {
     expect(said(run())).toEqual([
-      ['laptop', "What's the address of example.com?"],
-      ['home', "I'll put my address on it"],
+      ['laptop', 'I want to open example.com'],
+      ['laptop', 'First I need its address. Who knows it?'],
+      ['home', "Sending this out under our home's address"],
       ['isp', 'Not for me, pass it on'],
-      ['resolver', "It's 104.20.23.154"],
-      ['home', 'Back to the right device'],
-      ['laptop', 'Hi, can we talk?'],
+      ['resolver', "I'm like a phone book. It's 104.20.23.154"],
+      ['home', 'This reply is for the laptop'],
+      ['laptop', 'Got the address! Hi, can we talk?'],
       ['server', "Hi! Yes, let's."],
       ['laptop', 'Great!'],
       ['laptop', 'Please send the page'],
       ['server', 'Here it is'],
+      ['laptop', 'Got it! Now I can show the page'],
     ]);
   });
 
   it('speaks in the open, before the packet is gone and with a server speaking only once it has found the answer', () => {
     const tl = run();
-    const answer = tl.speech.find((b) => b.text.startsWith("It's"))!;
+    const answer = tl.speech.find((b) => b.text.includes("It's"))!;
     const lookup = tl.segs.find((s) => s.step.kind === 'lookup')!;
     expect(answer.t0).toBe(lookup.t1);
     for (const b of tl.speech) expect(b.t1 - b.t0).toBeGreaterThanOrEqual(0.6);
@@ -62,7 +64,32 @@ describe('what the devices say', () => {
 
   it('asks for an address by name when it has none', () => {
     const lines = said(run({ dhcp: true })).map((x) => x[1]);
-    expect(lines.slice(0, 4)).toEqual(['Can anyone give me an address?', 'You can have 192.168.1.23', "I'll take it", "It's yours"]);
+    expect(lines.slice(1, 5)).toEqual(['Can anyone give me an address?', 'You can have 192.168.1.23', "I'll take it", "It's yours"]);
+  });
+
+  it('opens on what the run is for, before anything moves, and ends on having got it', () => {
+    const tl = run({ site: 'httpbin.org' });
+    const open = tl.speech[0]!;
+    expect(open).toMatchObject({ device: 'laptop', t0: 0, text: 'I want to get a photo' });
+    expect(open.t1).toBeGreaterThanOrEqual(tl.segs[0]!.t0);
+    expect(tl.speech.at(-1)).toMatchObject({ device: 'laptop', text: 'Got it! Now I can show the photo' });
+    expect(said(run({ call: true })).map((x) => x[1])).toContain('I want to call Sam');
+    const ping = said(run({ probe: 'ping' })).map((x) => x[1]);
+    expect(ping[0]).toBe('Is example.com there?');
+    expect(ping).toContain('It answered every time!');
+    const trace = said(run({ probe: 'traceroute' })).map((x) => x[1]);
+    expect(trace[0]).toBe("What's the way to example.com?");
+    expect(trace).toContain("That's the whole way there!");
+  });
+
+  it('does not claim a page it never got', () => {
+    const lines = said(run({}, [{ link: 'wan', from: 0 }])).map((x) => x[1]);
+    expect(lines.join()).not.toContain('Now I can show');
+  });
+
+  it('keeps a line up long enough to read it', () => {
+    const tl = run();
+    expect(tl.speech.filter((b) => b.text.startsWith("I'm like a phone book"))[0]!.t1 - tl.speech.filter((b) => b.text.startsWith("I'm like a phone book"))[0]!.t0).toBeGreaterThanOrEqual(3.5);
   });
 
   it('asks for the photo when the photo is what is wanted', () => {
