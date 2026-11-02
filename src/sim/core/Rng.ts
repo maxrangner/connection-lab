@@ -14,11 +14,6 @@ export class Rng {
     return (t ^ (t >>> 14)) >>> 0;
   }
 
-  /** Uniform float in [0, 1). */
-  float(): number {
-    return this.u32() / 4294967296;
-  }
-
   /** Uniform integer in [min, max] inclusive. */
   int(min: number, max: number): number {
     return min + (this.u32() % (max - min + 1));

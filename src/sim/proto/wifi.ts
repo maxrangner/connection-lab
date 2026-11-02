@@ -1,6 +1,6 @@
 import { bytesToMac, macToBytes, BROADCAST_MAC, type Mac } from '../bytes/addr';
 import { ByteWriter, hex, u16 } from '../bytes/bytes';
-import { crc32 } from '../bytes/checksum';
+import { crc32, FCS_LEN, readFcs, withFcs } from '../bytes/checksum';
 import { etherTypeName } from './ethernet';
 import { FieldList, type LayerPdu } from './types';
 
@@ -18,7 +18,6 @@ import { FieldList, type LayerPdu } from './types';
  */
 export const WIFI_HEADER_LEN = 24;
 export const LLC_SNAP_LEN = 8;
-export const WIFI_FCS_LEN = 4;
 /** An Ack control frame: Frame Control, Duration, RA, FCS. */
 export const WIFI_ACK_LEN = 14;
 /** Microseconds reserved for the link-layer ACK that follows a data frame (SIFS + ACK at 24 Mbit/s). */
@@ -83,17 +82,6 @@ export function buildWifiAck(ra: Mac): Uint8Array {
   return withFcs(w.toBytes());
 }
 
-function withFcs(body: Uint8Array): Uint8Array {
-  const fcs = crc32(body);
-  const out = new Uint8Array(body.length + 4);
-  out.set(body);
-  out[body.length] = fcs & 0xff;
-  out[body.length + 1] = (fcs >>> 8) & 0xff;
-  out[body.length + 2] = (fcs >>> 16) & 0xff;
-  out[body.length + 3] = (fcs >>> 24) & 0xff;
-  return out;
-}
-
 /** What kind of frame this is, from Frame Control: a data frame, an Ack, or something this sim never sends. */
 export function wifiFrameKind(frame: Uint8Array): 'data' | 'ack' | 'other' {
   const fc = frame[0] ?? 0;
@@ -117,7 +105,7 @@ export function parseWifi(frame: Uint8Array): ParsedWifi {
   const addr1 = bytesToMac(frame, 4);
   const addr2 = bytesToMac(frame, 10);
   const addr3 = bytesToMac(frame, 16);
-  const payloadEnd = frame.length - WIFI_FCS_LEN;
+  const payloadEnd = frame.length - FCS_LEN;
   return {
     toAp,
     addr1,
@@ -141,12 +129,7 @@ export interface ParsedWifiAck {
 }
 
 export function parseWifiAck(frame: Uint8Array): ParsedWifiAck {
-  return { ra: bytesToMac(frame, 4), fcsValid: frame.length === WIFI_ACK_LEN && readFcs(frame) === crc32(frame, 0, WIFI_ACK_LEN - WIFI_FCS_LEN) };
-}
-
-function readFcs(frame: Uint8Array): number {
-  const n = frame.length;
-  return (((frame[n - 4] ?? 0) | ((frame[n - 3] ?? 0) << 8) | ((frame[n - 2] ?? 0) << 16) | ((frame[n - 1] ?? 0) << 24)) >>> 0);
+  return { ra: bytesToMac(frame, 4), fcsValid: frame.length === WIFI_ACK_LEN && readFcs(frame) === crc32(frame, 0, WIFI_ACK_LEN - FCS_LEN) };
 }
 
 export function describeWifi(frame: Uint8Array, innerEnd?: number): LayerPdu {
@@ -178,7 +161,7 @@ export function describeWifi(frame: Uint8Array, innerEnd?: number): LayerPdu {
   f.add('wifi.llc', 'LLC/SNAP', WIFI_HEADER_LEN, LLC_SNAP_LEN, `aa aa 03 00 00 00 · ${hex(p.type, 4)} (${etherTypeName(p.type)})`, 'detail',
     'Wi-Fi frames have no EtherType of their own, so this small header carries one: it says which protocol is inside, just as Ethernet does.');
   const padStart = innerEnd ?? p.payloadEnd;
-  f.add('wifi.fcs', 'Frame Check Sequence', p.payloadEnd, 4, `${hex(readFcs(frame), 8)} ${p.fcsValid ? '✓' : '✗ corrupt'}`, 'detail',
+  f.add('wifi.fcs', 'Frame Check Sequence', p.payloadEnd, FCS_LEN, `${hex(readFcs(frame), 8)} ${p.fcsValid ? '✓' : '✗ corrupt'}`, 'detail',
     'CRC-32 over the whole frame, like Ethernet. Radio is noisy: a frame that arrives damaged is dropped and sent again.');
   return {
     protocol: 'wifi',
@@ -201,14 +184,14 @@ function describeWifiAck(frame: Uint8Array): LayerPdu {
     'Nothing follows an Ack, so it reserves no more time on the air.');
   f.add('wifi.ra', 'Receiver', 4, 6, p.ra, 'key',
     'The device whose frame is being acknowledged: it was waiting for exactly this. An Ack has no sender address; the one who sent the data knows who must have answered.');
-  f.add('wifi.fcs', 'Frame Check Sequence', WIFI_ACK_LEN - WIFI_FCS_LEN, 4, `${hex(readFcs(frame), 8)} ${p.fcsValid ? '✓' : '✗ corrupt'}`, 'detail',
+  f.add('wifi.fcs', 'Frame Check Sequence', WIFI_ACK_LEN - FCS_LEN, FCS_LEN, `${hex(readFcs(frame), 8)} ${p.fcsValid ? '✓' : '✗ corrupt'}`, 'detail',
     'CRC-32 over the Ack. An Ack can be lost to interference too: then the sender, hearing nothing, sends its frame again, and the receiver gets it twice.');
   return {
     protocol: 'wifi',
     layer: 2,
     start: 0,
-    headerEnd: WIFI_ACK_LEN - WIFI_FCS_LEN,
-    payloadEnd: WIFI_ACK_LEN - WIFI_FCS_LEN,
+    headerEnd: WIFI_ACK_LEN - FCS_LEN,
+    payloadEnd: WIFI_ACK_LEN - FCS_LEN,
     end: frame.length,
     summary: `Wi-Fi ACK → ${p.ra}`,
     fields: f.list,

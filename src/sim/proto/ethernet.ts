@@ -1,17 +1,13 @@
 import { bytesToMac, macToBytes, BROADCAST_MAC, type Mac } from '../bytes/addr';
 import { ByteWriter, hex, u16 } from '../bytes/bytes';
-import { crc32 } from '../bytes/checksum';
+import { crc32, FCS_LEN, readFcs, withFcs } from '../bytes/checksum';
 import { FieldList, type LayerPdu } from './types';
 
 export const ETHERTYPE_IPV4 = 0x0800;
 export const ETHERTYPE_ARP = 0x0806;
 export const ETH_HEADER_LEN = 14;
-export const ETH_FCS_LEN = 4;
 /** Minimum payload so the frame (header + payload + FCS) is at least 64 bytes. */
 export const ETH_MIN_PAYLOAD = 46;
-
-/** 7 bytes of preamble + 1 start-of-frame delimiter, sent before every frame on the wire (layer 1). */
-export const ETH_PREAMBLE = [0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0xd5];
 
 export interface EthernetHeader {
   dst: Mac;
@@ -29,15 +25,7 @@ export function etherTypeName(t: number): string {
 export function buildEthernet(h: EthernetHeader, payload: Uint8Array): Uint8Array {
   const w = new ByteWriter().bytes(macToBytes(h.dst)).bytes(macToBytes(h.src)).u16(h.type).bytes(payload);
   if (payload.length < ETH_MIN_PAYLOAD) w.zeros(ETH_MIN_PAYLOAD - payload.length);
-  const body = w.toBytes();
-  const fcs = crc32(body);
-  const out = new Uint8Array(body.length + 4);
-  out.set(body);
-  out[body.length] = fcs & 0xff;
-  out[body.length + 1] = (fcs >>> 8) & 0xff;
-  out[body.length + 2] = (fcs >>> 16) & 0xff;
-  out[body.length + 3] = (fcs >>> 24) & 0xff;
-  return out;
+  return withFcs(w.toBytes());
 }
 
 export interface ParsedEthernet extends EthernetHeader {
@@ -48,7 +36,7 @@ export interface ParsedEthernet extends EthernetHeader {
 }
 
 export function parseEthernet(frame: Uint8Array): ParsedEthernet {
-  const payloadEnd = frame.length - ETH_FCS_LEN;
+  const payloadEnd = frame.length - FCS_LEN;
   return {
     dst: bytesToMac(frame, 0),
     src: bytesToMac(frame, 6),
@@ -57,14 +45,6 @@ export function parseEthernet(frame: Uint8Array): ParsedEthernet {
     payloadEnd,
     fcsValid: readFcs(frame) === crc32(frame, 0, payloadEnd),
   };
-}
-
-function readFcs(frame: Uint8Array): number {
-  const n = frame.length;
-  return (
-    ((frame[n - 4] ?? 0) | ((frame[n - 3] ?? 0) << 8) | ((frame[n - 2] ?? 0) << 16) | ((frame[n - 1] ?? 0) << 24)) >>>
-    0
-  );
 }
 
 /**
@@ -120,7 +100,7 @@ export function describeEthernet(frame: Uint8Array, innerEnd?: number): LayerPdu
     'eth.fcs',
     'Frame Check Sequence',
     p.payloadEnd,
-    4,
+    FCS_LEN,
     `${hex(readFcs(frame), 8)} ${p.fcsValid ? '✓' : '✗ corrupt'}`,
     'detail',
     'CRC-32 over the whole frame, sent least-significant byte first. The receiving NIC recomputes it and silently drops damaged frames. NICs normally strip it, so packet captures often do not show it.',

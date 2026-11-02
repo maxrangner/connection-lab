@@ -95,7 +95,7 @@ describe('stretching the fibre to the ISP', () => {
     expect(wanDelayFor(0)).toBeCloseTo(0.002, 9);
     expect(wanDelayFor(MAX_STRETCH)).toBeCloseTo(0.042, 9);
     const r = runScenario(fetchWebPage({ wanDelay: wanDelayFor(40) }), { seed: 1, faults: { randomLoss: 0, manual: [] } });
-    expect(r.scenario.links.find((l) => l.id === 'wan')).toMatchObject({ delay: 0.012, label: 'Fiber to ISP · 1 Gbit/s · 12 ms' });
+    expect(r.scenario.links.find((l) => l.id === 'wan')).toMatchObject({ delay: 0.012 });
     const syn = r.events.find((e) => e.type === 'tx' && e.linkId === 'wan');
     expect(syn && syn.type === 'tx' ? syn.arrive - syn.txEnd : 0).toBeCloseTo(0.012, 9);
   });

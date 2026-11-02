@@ -5,10 +5,10 @@ import { ICMP_DEST_UNREACHABLE, ICMP_ECHO, ICMP_PORT_UNREACHABLE, parseIcmp, typ
 import { buildIpv4, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP, parseIpv4, type ParsedIpv4 } from '../proto/ipv4';
 import { buildTcp, parseTcp, TCP_ACK, TCP_RST, TCP_SYN, type ParsedTcp } from '../proto/tcp';
 import type { Protocol } from '../proto/types';
-import { buildUdp, parseUdp, UDP_HEADER_LEN } from '../proto/udp';
+import { buildUdp, parseUdp } from '../proto/udp';
 import { WG_PORT } from '../proto/wireguard';
 import { Device } from './Device';
-import { TcpConnection, type TcpConnOptions, type TcpHandlers } from './tcp';
+import { TcpConnection, tcpKey, type TcpConnOptions, type TcpHandlers } from './tcp';
 import type { TunnelClient } from './vpn';
 
 export type UdpHandler = (from: { ip: Ip4; port: number }, data: Uint8Array, packetId: string, pduId: string) => void;
@@ -103,16 +103,14 @@ export class Host extends Device {
       protocol: 'udp',
       pduId: sim.pdu(packetId, seg, 'udp', { srcIp: this.ip, dstIp: dst, appHint: app }),
     });
-    // Linux sets Don't Fragment on UDP too when path-MTU discovery is on (the default).
-    this.ipOutput(IPPROTO_UDP, dst, seg, packetId, true, app, this.ip, ttl);
+    this.ipOutput(IPPROTO_UDP, dst, seg, packetId, app, this.ip, ttl);
   }
 
   /** An ICMP message of a program's own (ping's echo request), sent like any packet of the host's. */
   icmpSend(dst: Ip4, msg: Uint8Array, packetId: string): void {
     const sim = this.sim;
     sim.emit({ type: 'encapsulate', deviceId: this.id, packetId, layer: 3, protocol: 'icmp', pduId: sim.pdu(packetId, msg, 'icmp') });
-    // ping's requests get Don't Fragment from the kernel's path-MTU discovery default, like UDP.
-    this.ipOutput(IPPROTO_ICMP, dst, msg, packetId, true);
+    this.ipOutput(IPPROTO_ICMP, dst, msg, packetId);
   }
 
   tcpListen(port: number, opts: TcpConnOptions, onAccept: (c: TcpConnection) => void): void {
@@ -136,7 +134,7 @@ export class Host extends Device {
     const ack = acked ? 0 : (t.seq + length + (t.flags & TCP_SYN ? 1 : 0)) >>> 0;
     const seg = buildTcp({ srcPort: t.dstPort, dstPort: t.srcPort, seq, ack, flags, window: 0, options: [] }, new Uint8Array(0), ip.dst, ip.src);
     const pk = this.sim.newPacket(this.id, 'tcp', 'TCP RST', { tcp: { connId: `${this.id}:${t.dstPort}-${ip.src}:${t.srcPort}`, relSeq: 0, relAck: 0, len: 0, flags } });
-    this.ipOutput(IPPROTO_TCP, ip.src, seg, pk.id, true, undefined, ip.dst);
+    this.ipOutput(IPPROTO_TCP, ip.src, seg, pk.id, undefined, ip.dst);
   }
 
   tcpRemove(c: TcpConnection): void {
@@ -144,7 +142,7 @@ export class Host extends Device {
   }
 
   /** Wraps a transport segment in an IPv4 header and routes it. A socket bound to one of several addresses sends from that one. */
-  ipOutput(protocol: number, dst: Ip4, l4: Uint8Array, packetId: string, df: boolean, app?: Protocol, src: Ip4 = this.ip, ttl = this.spec.initialTtl ?? 64): void {
+  ipOutput(protocol: number, dst: Ip4, l4: Uint8Array, packetId: string, app?: Protocol, src: Ip4 = this.ip, ttl = 64): void {
     const sim = this.sim;
     if (protocol === IPPROTO_TCP) {
       sim.emit({
@@ -156,7 +154,8 @@ export class Host extends Device {
         pduId: sim.pdu(packetId, l4, 'tcp', { srcIp: src, dstIp: dst, appHint: app }),
       });
     }
-    const ip = buildIpv4({ id: this.nextIpId(), df, ttl, protocol, src, dst }, l4);
+    // Linux sets Don't Fragment on all of it when path-MTU discovery is on (the default), UDP and ping's requests too.
+    const ip = buildIpv4({ id: this.nextIpId(), df: true, ttl, protocol, src, dst }, l4);
     sim.emit({
       type: 'encapsulate',
       deviceId: this.id,
@@ -179,7 +178,7 @@ export class Host extends Device {
     if (this.tunnel && ip.protocol === IPPROTO_UDP && ip.src === this.tunnel.server) {
       const u = parseUdp(ipBytes, ip.headerLen);
       if (u.srcPort === WG_PORT) {
-        this.tunnel.receive(iface, ipBytes.slice(ip.headerLen + UDP_HEADER_LEN, ip.headerLen + u.length), packetId);
+        this.tunnel.receive(iface, ipBytes.slice(u.payloadStart, u.payloadEnd), packetId);
         return;
       }
     }
@@ -217,7 +216,7 @@ export class Host extends Device {
       sock.handler({ ip: ip.src, port: u.srcPort }, data, packetId, pduId);
     } else if (ip.protocol === IPPROTO_TCP) {
       const t = parseTcp(l4, 0);
-      let conn = this.tcpConns.get(`${t.dstPort}|${ip.src}|${t.srcPort}`);
+      let conn = this.tcpConns.get(tcpKey(t.dstPort, ip.src, t.srcPort));
       const app = conn?.opts.app ?? this.tcpListeners.get(t.dstPort)?.opts.app;
       const pduId = sim.pdu(packetId, l4, 'tcp', { ...ctx, appHint: app });
       sim.emit({ type: 'decapsulate', deviceId: this.id, packetId, layer: 3, protocol: 'ipv4', pduId });

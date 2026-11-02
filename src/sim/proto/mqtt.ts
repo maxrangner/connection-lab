@@ -1,4 +1,4 @@
-import { ascii, ByteWriter, hex, toAscii, u16, u8 } from '../bytes/bytes';
+import { ByteWriter, hex, toAscii, u16, u8 } from '../bytes/bytes';
 import { bitField, FieldList, PROTOCOL_LAYER, type LayerPdu } from './types';
 
 /**
@@ -40,7 +40,7 @@ const TYPE_NAMES: Record<number, string> = {
   [MQTT_SUBACK]: 'SUBACK',
 };
 
-const string = (s: string): Uint8Array => new ByteWriter().u16(s.length).bytes(ascii(s)).toBytes();
+const string = (s: string): Uint8Array => new ByteWriter().u16(s.length).ascii(s).toBytes();
 
 function remainingLength(n: number): number[] {
   const out: number[] = [];
@@ -88,7 +88,7 @@ export function buildMqttSuback(packetId: number, qos: MqttQos = 0): Uint8Array 
 export function buildMqttPublish(topic: string, payload: string, qos: MqttQos = 0, packetId = 0): Uint8Array {
   const w = new ByteWriter().bytes(string(topic));
   if (qos) w.u16(packetId);
-  return message(MQTT_PUBLISH, qos << 1, w.bytes(ascii(payload)).toBytes());
+  return message(MQTT_PUBLISH, qos << 1, w.ascii(payload).toBytes());
 }
 
 /** A step of a QoS exchange: PUBACK ends QoS 1; PUBREC, PUBREL and PUBCOMP are the three that follow a QoS 2 PUBLISH. */

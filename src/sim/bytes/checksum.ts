@@ -61,3 +61,22 @@ export function crc32(data: Uint8Array, start = 0, end = data.length): number {
   for (let i = start; i < end; i++) crc = (crcTable[(crc ^ (data[i] ?? 0)) & 0xff] ?? 0) ^ (crc >>> 8);
   return (crc ^ 0xffffffff) >>> 0;
 }
+
+/** The frame check sequence that ends an Ethernet or Wi-Fi frame: the CRC-32, least-significant byte first. */
+export const FCS_LEN = 4;
+
+export function withFcs(body: Uint8Array): Uint8Array {
+  const fcs = crc32(body);
+  const out = new Uint8Array(body.length + FCS_LEN);
+  out.set(body);
+  out[body.length] = fcs & 0xff;
+  out[body.length + 1] = (fcs >>> 8) & 0xff;
+  out[body.length + 2] = (fcs >>> 16) & 0xff;
+  out[body.length + 3] = (fcs >>> 24) & 0xff;
+  return out;
+}
+
+export function readFcs(frame: Uint8Array): number {
+  const n = frame.length;
+  return ((frame[n - 4] ?? 0) | ((frame[n - 3] ?? 0) << 8) | ((frame[n - 2] ?? 0) << 16) | ((frame[n - 1] ?? 0) << 24)) >>> 0;
+}

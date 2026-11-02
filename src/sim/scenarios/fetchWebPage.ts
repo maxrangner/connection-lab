@@ -235,13 +235,12 @@ export interface HomeDevice {
   id: string;
   label: string;
   kind: DeviceKind;
-  layout: { x: number; y: number };
   ip: string;
   mac: string;
   iface: Pick<IfaceSpec, 'name' | 'wifi'>;
   /** The home router's end of its link. The first device's port holds the home network's route. */
   port: Pick<IfaceSpec, 'id' | 'name' | 'ip' | 'mac' | 'wifi'>;
-  link: Pick<LinkSpec, 'id' | 'bitsPerSecond' | 'delay' | 'label' | 'name'>;
+  link: Pick<LinkSpec, 'id' | 'bitsPerSecond' | 'delay'>;
   actions: Action[];
   /** Its colour, once several devices' packets are on the table at once. */
   color: string;
@@ -254,11 +253,10 @@ export const HOME_DEVICES: HomeDevice[] = [
     id: 'laptop',
     label: 'Laptop',
     kind: 'laptop',
-    layout: { x: 160, y: 470 },
     ...ADDR.laptop,
     iface: { name: 'eth0' },
     port: { id: 'home.lan', name: 'lan', ...ADDR.homeLan },
-    link: { id: 'lan', bitsPerSecond: 1e9, delay: 5e-8, label: 'Ethernet cable · 1 Gbit/s', name: 'the Ethernet cable' },
+    link: { id: 'lan', bitsPerSecond: 1e9, delay: 5e-8 },
     actions: EVERY_JOB,
     color: '#4f9d69',
   },
@@ -266,13 +264,12 @@ export const HOME_DEVICES: HomeDevice[] = [
     id: 'phone',
     label: 'Phone',
     kind: 'phone',
-    layout: { x: 600, y: 700 },
     ...ADDR.phone,
     iface: { name: 'wlan0', wifi: 'station' },
     // The built-in Wi-Fi access point. Real home routers bridge Wi-Fi and the Ethernet ports into one network
     // with one address; here that bridge is two interfaces sharing 192.168.1.1, with a route to the phone.
     port: { id: 'home.wlan', name: 'wlan', ...ADDR.homeWlan, wifi: 'ap' },
-    link: { id: 'wlan', bitsPerSecond: 300e6, delay: 3e-8, label: 'Wi-Fi · 300 Mbit/s', name: 'the Wi-Fi' },
+    link: { id: 'wlan', bitsPerSecond: 300e6, delay: 3e-8 },
     actions: EVERY_JOB,
     color: '#d6488f',
   },
@@ -283,11 +280,10 @@ const SENSOR: HomeDevice = {
   id: 'sensor',
   label: 'Sensor',
   kind: 'sensor',
-  layout: { x: 380, y: 585 },
   ...ADDR.sensor,
   iface: { name: 'wlan0', wifi: 'station' },
   port: { id: 'home.wlan2', name: 'wlan2', ...ADDR.homeSensor, wifi: 'ap' },
-  link: { id: 'wlan2', bitsPerSecond: 72e6, delay: 3e-8, label: 'Wi-Fi · 72 Mbit/s', name: "the sensor's Wi-Fi" },
+  link: { id: 'wlan2', bitsPerSecond: 72e6, delay: 3e-8 },
   actions: ['reading'],
   color: '#c98a1b',
 };
@@ -297,11 +293,10 @@ const LOCAL_BROKER: HomeDevice = {
   id: 'local-broker',
   label: 'MQTT broker',
   kind: 'mqtt-broker',
-  layout: { x: 820, y: 585 },
   ...ADDR.localBroker,
   iface: { name: 'eth0' },
   port: { id: 'home.lan2', name: 'lan2', ...ADDR.homeBroker },
-  link: { id: 'lan2', bitsPerSecond: 1e9, delay: 5e-8, label: 'Ethernet cable · 1 Gbit/s', name: "the broker's cable" },
+  link: { id: 'lan2', bitsPerSecond: 1e9, delay: 5e-8 },
   actions: [],
   color: '#7a8a99',
 };
@@ -336,15 +331,13 @@ function nameServers(host: string): { devices: DeviceSpec[]; links: LinkSpec[]; 
     devices.push({
       id: ids[i]!,
       label: labels[i]!,
-      sublabel: hop.server.name,
       kind: kinds[i]!,
-      layout: { x: 1920 + i * 240, y: 205 },
-      ifaces: [{ id: `${ids[i]}.eth0`, name: 'eth0', mac, ip: hop.server.ip, prefixLen: 32 }],
+      ifaces: [{ id: `${ids[i]}.eth0`, name: 'eth0', mac, ip: hop.server.ip }],
       routes: [{ network: '0.0.0.0', prefixLen: 0, via: up.ip, iface: `${ids[i]}.eth0` }],
       arp: { [up.ip]: up.mac },
       apps: [{ kind: 'dns-authority', processing: 0.0002, answers: [{ name: host, response: fromBase64(hop.response) }] }],
     });
-    links.push({ id: `up${i + 1}`, a: `resolver.up${i + 1}`, b: `${ids[i]}.eth0`, bitsPerSecond: 1e10, delay, label: `Backbone · 10 Gbit/s · ${Math.round(delay * 1e4) / 10} ms`, name: 'a backbone link' });
+    links.push({ id: `up${i + 1}`, a: `resolver.up${i + 1}`, b: `${ids[i]}.eth0`, bitsPerSecond: 1e10, delay });
     routes.push({ network: hop.server.ip, prefixLen: 32, iface: `resolver.up${i + 1}` });
     arp[hop.server.ip] = mac;
   });
@@ -362,16 +355,14 @@ function outsider(n: number, id: string, label: string, kind: 'bot' | 'scanner' 
     device: {
       id,
       label,
-      sublabel: ip,
       kind,
-      layout: { x: 1040, y: 100 + n * 40 },
-      ifaces: [{ id: `${id}.eth0`, name: 'eth0', mac, ip, prefixLen: 32 }],
+      ifaces: [{ id: `${id}.eth0`, name: 'eth0', mac, ip }],
       routes: [{ network: '0.0.0.0', prefixLen: 0, via: gateway.ip, iface: `${id}.eth0` }],
       arp: { [gateway.ip]: gateway.mac },
       apps,
     },
-    link: { id: `${id}-link`, a: `isp.${id}`, b: `${id}.eth0`, bitsPerSecond: 1e9, delay: 0.005, label: 'Backbone · 1 Gbit/s · 5 ms', name: 'a backbone link' },
-    port: { id: `isp.${id}`, name: id, mac: gateway.mac, ip: gateway.ip, prefixLen: 30 },
+    link: { id: `${id}-link`, a: `isp.${id}`, b: `${id}.eth0`, bitsPerSecond: 1e9, delay: 0.005 },
+    port: { id: `isp.${id}`, name: id, mac: gateway.mac, ip: gateway.ip },
     route: { network: ip, prefixLen: 32, iface: `isp.${id}` },
     arp: [ip, mac],
   };
@@ -466,34 +457,29 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
   // The device that gets its address by DHCP starts with none: no address, no routes.
   const addressed = (d: HomeDevice) =>
     dhcp && from === d.id
-      ? { ip: '0.0.0.0', prefixLen: 0, routes: [] }
+      ? { ip: '0.0.0.0', routes: [] }
       : {
           ip: d.ip,
-          prefixLen: 24,
           routes: [
             { network: '192.168.1.0', prefixLen: 24, iface: ifaceOf(d) },
             { network: '0.0.0.0', prefixLen: 0, via: d.port.ip, iface: ifaceOf(d) },
           ],
         };
   const homeDevice = (d: HomeDevice): DeviceSpec => {
-    const { ip, prefixLen, routes } = addressed(d);
+    const { ip, routes } = addressed(d);
     return {
       id: d.id,
       label: d.label,
-      sublabel: d.ip,
       kind: d.kind,
-      layout: d.layout,
       actions: d.actions,
       color: d.color,
-      ifaces: [{ id: ifaceOf(d), name: d.iface.name, mac: d.mac, ip, prefixLen, ...(d.iface.wifi ? { wifi: d.iface.wifi } : {}) }],
+      ifaces: [{ id: ifaceOf(d), name: d.iface.name, mac: d.mac, ip, ...(d.iface.wifi ? { wifi: d.iface.wifi } : {}) }],
       routes,
       ...appsOf(d),
     };
   };
   const macsOf = (ids: string[]) => Object.fromEntries(homes.filter((d) => ids.includes(d.id)).map((d) => [d.ip, d.mac]));
   return {
-    id: 'fetch-web-page',
-    title: reading ? 'Take a reading' : opts.call ? `Call ${ADDR.friend.name}` : opts.probe === 'ping' ? `Ping ${host}` : opts.probe === 'traceroute' ? `Trace the path to ${host}` : `Fetch ${url}`,
     startDevice: from,
     ...(joins.length ? { companions: joins.map(({ device, at }) => ({ device, at })) } : {}),
     // Your apps are jobs of their own, already connected by the time anything is told.
@@ -505,12 +491,10 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
       {
         id: 'home',
         label: 'Home router',
-        sublabel: 'NAT',
         kind: 'home-router',
-        layout: { x: 600, y: 470 },
         ifaces: [
-          ...homes.map((d) => ({ ...d.port, prefixLen: 24 })),
-          { id: 'home.wan', name: 'wan', mac: ADDR.homeWan.mac, ip: ADDR.homeWan.ip, prefixLen: 24 },
+          ...homes.map((d) => d.port),
+          { id: 'home.wan', name: 'wan', mac: ADDR.homeWan.mac, ip: ADDR.homeWan.ip },
         ],
         routes: [
           { network: '192.168.1.0', prefixLen: 24, iface: homes[0]!.port.id },
@@ -542,15 +526,13 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
       {
         id: 'isp',
         label: "Internet provider's router",
-        sublabel: 'internet',
         kind: 'router',
-        layout: { x: 1040, y: 470 },
         ifaces: [
-          { id: 'isp.cust', name: 'cust0', mac: ADDR.ispCustomer.mac, ip: ADDR.ispCustomer.ip, prefixLen: 24 },
-          { id: 'isp.p1', name: 'peer1', mac: ADDR.ispToResolver.mac, ip: ADDR.ispToResolver.ip, prefixLen: 30 },
-          { id: 'isp.p2', name: 'peer2', mac: ADDR.ispToServer.mac, ip: ADDR.ispToServer.ip, prefixLen: 30 },
-          { id: 'isp.p3', name: 'peer3', mac: ADDR.ispToVpn.mac, ip: ADDR.ispToVpn.ip, prefixLen: 30 },
-          { id: 'isp.p4', name: 'peer4', mac: ADDR.ispToFriend.mac, ip: ADDR.ispToFriend.ip, prefixLen: 30 },
+          { id: 'isp.cust', name: 'cust0', mac: ADDR.ispCustomer.mac, ip: ADDR.ispCustomer.ip },
+          { id: 'isp.p1', name: 'peer1', mac: ADDR.ispToResolver.mac, ip: ADDR.ispToResolver.ip },
+          { id: 'isp.p2', name: 'peer2', mac: ADDR.ispToServer.mac, ip: ADDR.ispToServer.ip },
+          { id: 'isp.p3', name: 'peer3', mac: ADDR.ispToVpn.mac, ip: ADDR.ispToVpn.ip },
+          { id: 'isp.p4', name: 'peer4', mac: ADDR.ispToFriend.mac, ip: ADDR.ispToFriend.ip },
           ...outsiders.map((o) => o.port),
         ],
         routes: [
@@ -577,13 +559,11 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
       {
         id: 'vpn',
         label: 'VPN server',
-        sublabel: ADDR.vpn.ip,
         kind: 'vpn-server',
-        layout: { x: 1040, y: 735 },
         ifaces: [
-          { id: 'vpn.eth0', name: 'eth0', mac: ADDR.vpn.mac, ip: ADDR.vpn.ip, prefixLen: 32 },
-          { id: 'vpn.eth1', name: 'eth1', mac: ADDR.vpnToServer.mac, ip: ADDR.vpn.ip, prefixLen: 32 },
-          { id: 'vpn.eth2', name: 'eth2', mac: ADDR.vpnToResolver.mac, ip: ADDR.vpn.ip, prefixLen: 32 },
+          { id: 'vpn.eth0', name: 'eth0', mac: ADDR.vpn.mac, ip: ADDR.vpn.ip },
+          { id: 'vpn.eth1', name: 'eth1', mac: ADDR.vpnToServer.mac, ip: ADDR.vpn.ip },
+          { id: 'vpn.eth2', name: 'eth2', mac: ADDR.vpnToResolver.mac, ip: ADDR.vpn.ip },
         ],
         routes: [
           { network: '0.0.0.0', prefixLen: 0, via: ADDR.ispToVpn.ip, iface: 'vpn.eth0' },
@@ -596,14 +576,12 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
       {
         id: 'resolver',
         label: 'DNS resolver',
-        sublabel: ADDR.resolver.ip,
         kind: 'dns-resolver',
-        layout: { x: 1480, y: 205 },
         ifaces: [
-          { id: 'resolver.eth0', name: 'eth0', mac: ADDR.resolver.mac, ip: ADDR.resolver.ip, prefixLen: 32 },
-          { id: 'resolver.eth1', name: 'eth1', mac: ADDR.resolverFromVpn.mac, ip: ADDR.resolver.ip, prefixLen: 32 },
+          { id: 'resolver.eth0', name: 'eth0', mac: ADDR.resolver.mac, ip: ADDR.resolver.ip },
+          { id: 'resolver.eth1', name: 'eth1', mac: ADDR.resolverFromVpn.mac, ip: ADDR.resolver.ip },
           // Its own cables up to the root, TLD and authoritative servers.
-          ...ADDR.resolverUp.map((up, i) => ({ id: `resolver.up${i + 1}`, name: `up${i + 1}`, mac: up.mac, ip: up.ip, prefixLen: 32 })),
+          ...ADDR.resolverUp.map((up, i) => ({ id: `resolver.up${i + 1}`, name: `up${i + 1}`, mac: up.mac, ip: up.ip })),
         ],
         routes: [
           { network: '0.0.0.0', prefixLen: 0, via: ADDR.ispToResolver.ip, iface: 'resolver.eth0' },
@@ -635,12 +613,10 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
       {
         id: 'server',
         label: 'Web server',
-        sublabel: `${new URL(site.url).hostname} · ${knownIp ?? server.ip}`,
         kind: 'web-server',
-        layout: { x: 1480, y: 735 },
         ifaces: [
-          { id: 'server.eth0', name: 'eth0', mac: server.mac, ip: server.ip, prefixLen: 32, aliases },
-          { id: 'server.eth1', name: 'eth1', mac: ADDR.serverFromVpn.mac, ip: server.ip, prefixLen: 32, aliases },
+          { id: 'server.eth0', name: 'eth0', mac: server.mac, ip: server.ip, aliases },
+          { id: 'server.eth1', name: 'eth1', mac: ADDR.serverFromVpn.mac, ip: server.ip, aliases },
         ],
         routes: [
           { network: '0.0.0.0', prefixLen: 0, via: ADDR.ispToServer.ip, iface: 'server.eth0' },
@@ -664,10 +640,8 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
         // speaks when called.
         id: 'friend',
         label: "Sam's phone",
-        sublabel: `${ADDR.friend.name} · ${ADDR.friend.ip}`,
         kind: 'peer',
-        layout: { x: 1900, y: 1000 },
-        ifaces: [{ id: 'friend.eth0', name: 'eth0', mac: ADDR.friend.mac, ip: ADDR.friend.ip, prefixLen: 32 }],
+        ifaces: [{ id: 'friend.eth0', name: 'eth0', mac: ADDR.friend.mac, ip: ADDR.friend.ip }],
         routes: [{ network: '0.0.0.0', prefixLen: 0, via: ADDR.ispToFriend.ip, iface: 'friend.eth0' }],
         arp: { [ADDR.ispToFriend.ip]: ADDR.ispToFriend.mac },
         apps: [{ kind: 'voice-peer', clip: fromBase64(VOICE_CLIP_FRIEND_BASE64), port: RTP_PORT }],
@@ -679,10 +653,8 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
               // A radio with no connection to anything: it joins no network and sends nothing, it only hears.
               id: 'stranger',
               label: 'Stranger',
-              sublabel: 'listening',
               kind: 'stranger' as const,
-              layout: { x: 800, y: 700 },
-              ifaces: [{ id: 'stranger.wlan0', name: 'wlan0', mac: '02:66:00:00:01:00', ip: '192.168.1.66', prefixLen: 24 }],
+              ifaces: [{ id: 'stranger.wlan0', name: 'wlan0', mac: '02:66:00:00:01:00', ip: '192.168.1.66' }],
               routes: [],
               apps: [],
             },
@@ -692,18 +664,18 @@ export function fetchWebPage(opts: FetchWebPageOptions = {}): Scenario {
     links: [
       ...homes.map((d) => ({ ...d.link, a: ifaceOf(d), b: d.port.id, ...(d.iface.wifi && opts.noise ? { noise: opts.noise } : {}), ...(d.iface.wifi && attacks.has('listen') ? { overheardBy: 'stranger' } : {}) })),
       opts.slow
-        ? { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: 25e6, delay: 0.28, label: 'Satellite to ISP · 25 Mbit/s · 280 ms', name: 'the satellite link' }
+        ? { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: 25e6, delay: 0.28 }
         : opts.thin
-          ? { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: THIN_BPS, delay: opts.wanDelay ?? WAN_DELAY, label: `DSL to ISP · 20 Mbit/s · ${Math.round((opts.wanDelay ?? WAN_DELAY) * 1000)} ms`, name: 'the DSL line to the ISP', queue: THIN_QUEUE }
-          : { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: 1e9, delay: opts.wanDelay ?? WAN_DELAY, label: `Fiber to ISP · 1 Gbit/s · ${Math.round((opts.wanDelay ?? WAN_DELAY) * 1000)} ms`, name: 'the fiber line to the ISP' },
-      { id: 'bb1', a: 'isp.p1', b: 'resolver.eth0', bitsPerSecond: 1e10, delay: 0.003, label: 'Backbone · 10 Gbit/s · 3 ms', name: 'a backbone link' },
-      { id: 'bb3', a: 'isp.p3', b: 'vpn.eth0', bitsPerSecond: 1e10, delay: 0.005, label: 'Backbone · 10 Gbit/s · 5 ms', name: 'a backbone link' },
+          ? { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: THIN_BPS, delay: opts.wanDelay ?? WAN_DELAY, queue: THIN_QUEUE }
+          : { id: 'wan', a: 'home.wan', b: 'isp.cust', bitsPerSecond: 1e9, delay: opts.wanDelay ?? WAN_DELAY },
+      { id: 'bb1', a: 'isp.p1', b: 'resolver.eth0', bitsPerSecond: 1e10, delay: 0.003 },
+      { id: 'bb3', a: 'isp.p3', b: 'vpn.eth0', bitsPerSecond: 1e10, delay: 0.005 },
       bots.length
-        ? { id: 'bb2', a: 'isp.p2', b: 'server.eth0', bitsPerSecond: FLOODED_LINE_BPS, delay: 0.004, label: "The server's line, under attack", name: "the server's line", queue: THIN_QUEUE }
-        : { id: 'bb2', a: 'isp.p2', b: 'server.eth0', bitsPerSecond: 1e10, delay: 0.004, label: 'Backbone · 10 Gbit/s · 4 ms', name: 'a backbone link' },
-      { id: 'bb4', a: 'vpn.eth1', b: 'server.eth1', bitsPerSecond: 1e10, delay: 0.004, label: 'Backbone · 10 Gbit/s · 4 ms', name: 'a backbone link' },
-      { id: 'bb5', a: 'vpn.eth2', b: 'resolver.eth1', bitsPerSecond: 1e10, delay: 0.003, label: 'Backbone · 10 Gbit/s · 3 ms', name: 'a backbone link' },
-      { id: 'bb6', a: 'isp.p4', b: 'friend.eth0', bitsPerSecond: 1e10, delay: 0.006, label: 'Backbone · 10 Gbit/s · 6 ms', name: 'a backbone link' },
+        ? { id: 'bb2', a: 'isp.p2', b: 'server.eth0', bitsPerSecond: FLOODED_LINE_BPS, delay: 0.004, queue: THIN_QUEUE }
+        : { id: 'bb2', a: 'isp.p2', b: 'server.eth0', bitsPerSecond: 1e10, delay: 0.004 },
+      { id: 'bb4', a: 'vpn.eth1', b: 'server.eth1', bitsPerSecond: 1e10, delay: 0.004 },
+      { id: 'bb5', a: 'vpn.eth2', b: 'resolver.eth1', bitsPerSecond: 1e10, delay: 0.003 },
+      { id: 'bb6', a: 'isp.p4', b: 'friend.eth0', bitsPerSecond: 1e10, delay: 0.006 },
       ...upstream.links,
       ...outsiders.map((o) => o.link),
     ],

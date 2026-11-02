@@ -20,8 +20,6 @@ export interface RunOptions {
 
 export interface SimResult {
   scenario: Scenario;
-  seed: number;
-  faults: FaultPlan;
   events: SimEvent[];
   pdus: Map<string, PduSnapshot>;
   packets: Map<string, PacketInfo>;
@@ -29,8 +27,7 @@ export interface SimResult {
 }
 
 export function runScenario(scenario: Scenario, opts: RunOptions): SimResult {
-  const faults = opts.faults ?? NO_FAULTS;
-  const world = new World(scenario, opts.seed, faults);
+  const world = new World(opts.seed, opts.faults ?? NO_FAULTS);
   for (const spec of scenario.devices) {
     const isRouter = spec.kind === 'router' || spec.kind === 'home-router';
     const dev: Device = isRouter ? new Router(world, spec) : spec.kind === 'vpn-server' ? new VpnServer(world, spec) : new Host(world, spec);
@@ -40,7 +37,6 @@ export function runScenario(scenario: Scenario, opts: RunOptions): SimResult {
   }
   for (const spec of scenario.links) {
     const link = new Link(world, spec);
-    world.links.set(spec.id, link);
     world.ifaceLink.set(spec.a, link);
     world.ifaceLink.set(spec.b, link);
   }
@@ -90,8 +86,6 @@ export function runScenario(scenario: Scenario, opts: RunOptions): SimResult {
   world.sim.run(opts.maxTime ?? 600);
   return {
     scenario,
-    seed: opts.seed,
-    faults,
     events: world.sim.events,
     pdus: world.sim.pdus,
     packets: world.sim.packets,
