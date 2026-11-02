@@ -104,7 +104,7 @@ const FLAG_ROW = 30;
 const SPEECH_CHAR = 7.1;
 /** The colours of a voice: its packets on the cables and its notes at the far end. */
 const VOICE_OF_CALLER = '#8b6fd0';
-const VOICE_OF_FRIEND = '#1f9a8c';
+const VOICE_OF_FRIEND = '#2f86e6';
 /** The blade of the session key, with its teeth; the tip at the origin. */
 const KEY_BLADE = 'M0 -2.2 H30 V2.2 H16 V8 H12 V2.2 H8 V6 H4 V2.2 H0 Z';
 
