@@ -692,6 +692,16 @@ export class NetworkScene {
     return { x: (p.sx - this.viewX) * this.viewScale, y: (p.sy - this.viewY) * this.viewScale };
   }
 
+  /**
+   * The nearest point that lands on a whole pixel of this screen. Browsers draw straight text on whole pixels and shapes
+   * anywhere, so a box with text on it that moves by less than a pixel leaves its text behind and then the text jumps.
+   * Placed here, the two go together.
+   */
+  onPixel(p: { sx: number; sy: number }): { sx: number; sy: number } {
+    const px = this.viewScale * (window.devicePixelRatio || 1);
+    return { sx: this.viewX + Math.round((p.sx - this.viewX) * px) / px, sy: this.viewY + Math.round((p.sy - this.viewY) * px) / px };
+  }
+
   /** How big a device's button is drawn: smaller as the camera goes back, as far as a finger can still hit it. */
   actionSize(): number {
     return Math.max(MIN_ACTION_SIZE, Math.min(1, this.viewScale / this.followScale()));
@@ -1437,9 +1447,10 @@ export class NetworkScene {
     }
     looks.forEach(({ s, w, x, y, size, op }, i) => {
       const { g, shape } = this.speechNodes[i]!;
+      const at = this.onPixel({ sx: x, sy: y });
       setAttr(g, 'opacity', op.toFixed(3));
-      setAttr(g, 'transform', `translate(${x.toFixed(2)} ${y.toFixed(2)}) scale(${(size * big).toFixed(3)})`);
-      const tip = Math.max(-w / 2 + 28, Math.min(w / 2 - 28, (s.sx - x) / big));
+      setAttr(g, 'transform', `translate(${at.sx.toFixed(3)} ${at.sy.toFixed(3)}) scale(${(size * big).toFixed(3)})`);
+      const tip = Math.max(-w / 2 + 28, Math.min(w / 2 - 28, (s.sx - at.sx) / big));
       setAttr(shape, 'd', `M${-w / 2 + 16} 8 H${(tip - 9).toFixed(2)} L${tip.toFixed(2)} -2 L${(tip + 9).toFixed(2)} 8 H${w / 2 - 16} a16 16 0 0 1 0 32 H${-w / 2 + 16} a16 16 0 0 1 0 -32 Z`);
     });
   }
