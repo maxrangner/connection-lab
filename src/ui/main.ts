@@ -1,6 +1,6 @@
 import './app.css';
 import { version } from '../../package.json';
-import { crossingKey, EVERY_JOB, fetchWebPage, OFFLINE_AT, RTP_SAMPLES_PER_PACKET, runScenario, ulawDecodeAll, type Attack, type Cut, type Job, type ManualFault } from '../sim';
+import { crossingKey, EVERY_JOB, fetchWebPage, OFFLINE_AT, runScenario, type Attack, type Cut, type Job, type ManualFault } from '../sim';
 import { el, setAttr, setText } from './svg';
 import { clamp01, easeInOut, easeOutBack, iso, ISO_X, ISO_Y, lerp, U } from './project';
 import { HexCard } from './hexCard';
@@ -1219,8 +1219,6 @@ function beginRun(): void {
 function endRun(): void {
   const ip = story.remembered ?? story.dnsAnswer;
   if (ip && !revisit && !reading) noteDown(client, { site: story.site, ip, until: performance.now() + (story.dnsTtl ?? 0) * 1000 });
-  // A call over: hear what came through, holes and all.
-  if (story.voice) sound.playVoice(story.voice.heard.map((b) => (b ? ulawDecodeAll(b) : null)), RTP_SAMPLES_PER_PACKET);
   idleV = tl.total;
   // Over: a cable cut during it is simply cut now.
   cutSpans = [...cutLines].map((link) => ({ link, from: -Infinity }));
@@ -1277,39 +1275,6 @@ function frame(now: number): void {
   if (!pillTarget && hexCard.isOpen) hexCard.hide();
   pillOpen += (pillTarget - pillOpen) * Math.min(1, dt * 12);
 
-  cardFit = Math.min(1, CARD_MAX_PX / (CARD_W * cam.scale));
-  if (mode === 'idle') cardPos = restAt(carried);
-  const bob = mode === 'idle' && !stillness.matches ? Math.sin(clock * 2.4) * 4 * cardFit : 0;
-  const dropK = mode === 'drop' ? clamp01(anim.t / anim.dur) : 0;
-  const riseK = mode === 'return' ? clamp01(anim.t / anim.dur) : 1;
-  cardPop += dt;
-  const pop = cardPop < 0.4 ? 1 + 0.12 * Math.sin((cardPop / 0.4) * Math.PI) : 1;
-  const scale = (mode === 'drop' ? 1 - 0.8 * dropK : mode === 'drag' ? 1.06 : 0.2 + 0.8 * riseK) * pop;
-  const cardOp = (1 - dropK) * riseK;
-  const moving = CARDS[carried];
-  moving.style.display = mode === 'play' ? 'none' : '';
-  setAttr(moving, 'transform', `translate(${cardPos.sx.toFixed(1)} ${(cardPos.sy + bob).toFixed(1)}) scale(${(scale * cardFit).toFixed(3)})`);
-  setAttr(moving, 'opacity', cardOp.toFixed(3));
-  cardHelp.style.display = mode === 'drag' ? '' : 'none';
-  if (mode === 'drag') {
-    // Readable however far back the camera is. To the right of the card, away from the finger holding it, even past the screen's edge.
-    const size = Math.max(cardFit, HELP_FLOOR / cam.scale);
-    const x = cardPos.sx + 12 + (CARD_W / 2) * cardFit + (CARD_HELP_W / 2) * size;
-    const y = cardPos.sy - (CARD_HELP_H / 2) * size;
-    setAttr(cardHelp, 'transform', `translate(${x.toFixed(1)} ${y.toFixed(1)}) scale(${size.toFixed(3)})`);
-  }
-  for (const w of EVERY_JOB) {
-    if (w === carried) continue;
-    const resting = CARDS[w];
-    const rest = restAt(w);
-    resting.style.display = mode === 'play' ? 'none' : '';
-    setAttr(resting, 'transform', `translate(${rest.sx.toFixed(1)} ${(rest.sy + bob).toFixed(1)}) scale(${cardFit.toFixed(3)})`);
-    setAttr(resting, 'opacity', '1');
-  }
-  hint.style.display = mode === 'idle' ? '' : 'none';
-  setAttr(hint, 'transform', `translate(${home.sx.toFixed(1)} ${(restAt('page').sy - HINT_OVER * cardFit).toFixed(1)}) scale(${cardFit.toFixed(3)})`);
-  setText(hint, played ? 'drag a card onto a device' : `Start: drag ${pageSite()} onto Laptop`);
-
   // The camera eases between the whole network (between runs) and a close follow of the packet,
   // unless the viewer has taken it over. More than one action at a time needs the whole network.
   const wide = mode === 'play' && (joined.length > 0 || story.attackers.length > 0);
@@ -1321,6 +1286,45 @@ function frame(now: number): void {
   }
   snapCamera = false;
   scene.applyCamera(cam);
+
+  // After the camera: a card's text keeps to its card only if both go by the pixels of this frame (`onPixel`).
+  cardFit = Math.min(1, CARD_MAX_PX / (CARD_W * cam.scale));
+  if (mode === 'idle') cardPos = restAt(carried);
+  const bob = mode === 'idle' && !stillness.matches ? Math.sin(clock * 2.4) * 4 * cardFit : 0;
+  const dropK = mode === 'drop' ? clamp01(anim.t / anim.dur) : 0;
+  const riseK = mode === 'return' ? clamp01(anim.t / anim.dur) : 1;
+  cardPop += dt;
+  const pop = cardPop < 0.4 ? 1 + 0.12 * Math.sin((cardPop / 0.4) * Math.PI) : 1;
+  const scale = (mode === 'drop' ? 1 - 0.8 * dropK : mode === 'drag' ? 1.06 : 0.2 + 0.8 * riseK) * pop;
+  const cardOp = (1 - dropK) * riseK;
+  const placed = (sx: number, sy: number, size: number): string => {
+    const at = scene.onPixel({ sx, sy });
+    return `translate(${at.sx.toFixed(3)} ${at.sy.toFixed(3)}) scale(${size.toFixed(3)})`;
+  };
+  const moving = CARDS[carried];
+  moving.style.display = mode === 'play' ? 'none' : '';
+  setAttr(moving, 'transform', placed(cardPos.sx, cardPos.sy + bob, scale * cardFit));
+  setAttr(moving, 'opacity', cardOp.toFixed(3));
+  cardHelp.style.display = mode === 'drag' ? '' : 'none';
+  if (mode === 'drag') {
+    // Readable however far back the camera is. To the right of the card, away from the finger holding it, even past the screen's edge.
+    const size = Math.max(cardFit, HELP_FLOOR / cam.scale);
+    const x = cardPos.sx + 12 + (CARD_W / 2) * cardFit + (CARD_HELP_W / 2) * size;
+    const y = cardPos.sy - (CARD_HELP_H / 2) * size;
+    setAttr(cardHelp, 'transform', placed(x, y, size));
+  }
+  for (const w of EVERY_JOB) {
+    if (w === carried) continue;
+    const resting = CARDS[w];
+    const rest = restAt(w);
+    resting.style.display = mode === 'play' ? 'none' : '';
+    setAttr(resting, 'transform', placed(rest.sx, rest.sy + bob, cardFit));
+    setAttr(resting, 'opacity', '1');
+  }
+  hint.style.display = mode === 'idle' ? '' : 'none';
+  setAttr(hint, 'transform', placed(home.sx, restAt('page').sy - HINT_OVER * cardFit, cardFit));
+  setText(hint, played ? 'drag a card onto a device' : `Start: drag ${pageSite()} onto Laptop`);
+
   const lowest = (spyCard.top ?? window.innerHeight - scene.barHeight) - ACTION_H / 2 - 8;
   /** A button stands by its device and moves only as the device does: out of view with it, and not over the bar. Says whether it is in view. */
   const putAction = (b: HTMLButtonElement, device: string): boolean => {

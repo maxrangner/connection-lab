@@ -2,13 +2,13 @@ import type { Action } from '../sim';
 import { el, setAttr, setText } from './svg';
 import { box, groundShadow, line, panel, rbox, slab, tile, tiles } from './prims';
 import { clamp01, easeIn, easeInOut, easeOut, easeOutBack, easeOutBounce, iso, isoV, lerp, lerpV, U, unproject, v3, type Pt, type Vec3 } from './project';
-import { drawSatellite, drawScissors, drawShield, drawSpyglass } from './icons';
+import { drawBoardScissors, drawBoardSpyglass, drawHandset, drawSatellite, drawShield } from './icons';
 import { shade } from './shade';
 import type { Details, PartKey, Row, Story, Trip, Wrap } from './story';
 import { bandPoint, pageContent, Paper, PAPER_H, PAPER_W, photoContent } from './paper';
 import { screenAt, type Readout } from './readout';
 import { BOOK, drawBook, drawShelf, SERVER } from './stations';
-import { addressBefore, ATTACKER_KINDS, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, laneShare, LEVEL, lockPose, NO_LOCK, NOTE_LIFE, namedAcks, packetPos, packetPose, pageParts, segAt, swapLanding, swapMoment, travelPath, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, type FlowHop, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
+import { addressBefore, ATTACKER_KINDS, callSpan, detailsAt, DEVICE_TOP, FACE_EMOJI, formatWait, frameAt, KM_PER_SECOND, laneShare, LEVEL, lockPose, NO_LOCK, NOTE_LIFE, namedAcks, packetPos, packetPose, pageParts, segAt, swapLanding, swapMoment, travelPath, trayOpacity, UPSTREAM_KINDS, wrapsBefore, type LockPose, type Seg, type Timeline, FLOW_FALL, FLOW_FLY, type FlowHop, type FlowPacket, type FlowWait, type WaitStep } from './timeline';
 
 /** A cable cut from one moment of a run to another; `to` left out while it stays cut. Cut before a run, it is from -Infinity. */
 export interface CutSpan {
@@ -199,6 +199,8 @@ interface Screen {
   dnsAddr: SVGTextElement;
   fail: SVGTextElement;
   photo: SVGImageElement;
+  call: SVGGElement;
+  callName: SVGTextElement;
 }
 
 export interface Camera {
@@ -471,7 +473,7 @@ export class NetworkScene {
     this.spyGlass.replaceChildren();
     if (!this.spy) return;
     const glass = this.linkSpot(this.spy, 0.5, 0);
-    drawSpyglass(el('g', { transform: `translate(${glass.sx.toFixed(1)} ${glass.sy.toFixed(1)})` }, this.spyGlass));
+    drawBoardSpyglass(el('g', { transform: `translate(${glass.sx.toFixed(1)} ${glass.sy.toFixed(1)})` }, this.spyGlass));
   }
 
   /** Cables between devices; a slow link is a radio hop up to a satellite instead. */
@@ -529,7 +531,10 @@ export class NetworkScene {
           }
         }
         const c = iso(mid(0).x, mid(0).y, 0);
-        drawScissors(el('g', { transform: `translate(${c.sx.toFixed(1)} ${(c.sy - 8).toFixed(1)}) scale(0.5)` }, g));
+        // Across the cable, with their tips away from the viewer.
+        const across = { x: a.y - b.y, y: b.x - a.x };
+        const away = across.x + across.y > 0 ? -1 : 1;
+        drawBoardScissors(el('g', { class: 'board-cut', transform: `translate(${c.sx.toFixed(1)} ${c.sy.toFixed(1)})` }, g), Math.atan2(away * across.y, away * across.x));
       } else {
         line(g, path[0]!, path[1]!, { class: 'cable' });
         // The fibre to the ISP says how long it is: light takes its time, and the router can be dragged further away.
@@ -690,6 +695,16 @@ export class NetworkScene {
   /** Screen pixels of a point in the world. */
   private onScreen(p: { sx: number; sy: number }): { x: number; y: number } {
     return { x: (p.sx - this.viewX) * this.viewScale, y: (p.sy - this.viewY) * this.viewScale };
+  }
+
+  /**
+   * The nearest point that lands on a whole pixel of this screen. Browsers draw straight text on whole pixels and shapes
+   * anywhere, so a box with text on it that moves by less than a pixel leaves its text behind and then the text jumps.
+   * Placed here, the two go together.
+   */
+  onPixel(p: { sx: number; sy: number }): { sx: number; sy: number } {
+    const px = this.viewScale * (window.devicePixelRatio || 1);
+    return { sx: this.viewX + Math.round((p.sx - this.viewX) * px) / px, sy: this.viewY + Math.round((p.sy - this.viewY) * px) / px };
   }
 
   /** How big a device's button is drawn: smaller as the camera goes back, as far as a finger can still hit it. */
@@ -999,8 +1014,14 @@ export class NetworkScene {
     }
     const fail = el('text', { x: w / 2, y: h / 2, dy: '0.35em', class: 'screen-fail', 'text-anchor': 'middle', opacity: 0 }, face);
     fail.textContent = '✗';
+    // On a call: a handset and who is on the line, over whatever else the screen shows.
+    const call = el('g', { class: 'screen-call', opacity: 0 }, face);
+    el('rect', { x: 0, y: 0, width: w, height: h, rx: 3 }, call);
+    const side = Math.min(w, h);
+    drawHandset(el('g', { transform: `translate(${(w / 2).toFixed(2)} ${(h * 0.42).toFixed(2)}) scale(${((side * 0.6) / 64).toFixed(3)}) translate(-7 -6)` }, call));
+    const callName = el('text', { x: w / 2, y: h * 0.84, 'font-size': (side * 0.2).toFixed(2), class: 'screen-call-name', 'text-anchor': 'middle' }, call);
     el('rect', { x: 0, y: 0, width: w, height: h, rx: 3, class: 'dev-line dev-glass-line' }, face);
-    return { face, page, title, dns, dnsName: name, dnsAddr, fail, photo };
+    return { face, page, title, dns, dnsName: name, dnsAddr, fail, photo, call, callName };
   }
 
   /** A rounded plate on a device's face, or a hole in it: `at` is its top corner on the left, seen from in front of that face. */
@@ -1064,11 +1085,11 @@ export class NetworkScene {
         return screen;
       }
       case 'peer': {
-        // The friend's phone, far away: the same phone with nothing on its screen.
+        // The friend's phone, far away: the same phone, with nothing on its screen but a call.
         this.standingPhone(g, x, y, color);
-        this.plate(g, '+y', v3(x - 0.6, y + 0.1, 2.18), 1.2, 2.0, 'dev-glass');
+        const screen = this.buildScreen(g, iso(x - 0.6, y + 0.1, 2.18), 1.2 * U, 2.0 * U);
         this.plate(g, '+y', v3(x - 0.16, y + 0.1, 2.13), 0.32, 0.07, 'dev-notch');
-        return null;
+        return screen;
       }
       case 'sensor': {
         // A little box on the shelf: a lens, a light, and slots for the air it measures.
@@ -1263,6 +1284,11 @@ export class NetworkScene {
       setText(screen.dnsAddr, known.ip);
       setAttr(screen.dns, 'opacity', '1');
     }
+    for (const [id, screen] of this.screens) {
+      const call = callSpan(tl, id);
+      setAttr(screen.call, 'opacity', call && v >= call.from && v <= call.to ? '1' : '0');
+      if (call) setText(screen.callName, call.heardBy === 'friend' ? 'You' : 'Sam');
+    }
     if (v < 0) return;
     for (const id of this.story.clients) {
       const screen = this.screens.get(id);
@@ -1437,9 +1463,10 @@ export class NetworkScene {
     }
     looks.forEach(({ s, w, x, y, size, op }, i) => {
       const { g, shape } = this.speechNodes[i]!;
+      const at = this.onPixel({ sx: x, sy: y });
       setAttr(g, 'opacity', op.toFixed(3));
-      setAttr(g, 'transform', `translate(${x.toFixed(2)} ${y.toFixed(2)}) scale(${(size * big).toFixed(3)})`);
-      const tip = Math.max(-w / 2 + 28, Math.min(w / 2 - 28, (s.sx - x) / big));
+      setAttr(g, 'transform', `translate(${at.sx.toFixed(3)} ${at.sy.toFixed(3)}) scale(${(size * big).toFixed(3)})`);
+      const tip = Math.max(-w / 2 + 28, Math.min(w / 2 - 28, (s.sx - at.sx) / big));
       setAttr(shape, 'd', `M${-w / 2 + 16} 8 H${(tip - 9).toFixed(2)} L${tip.toFixed(2)} -2 L${(tip + 9).toFixed(2)} 8 H${w / 2 - 16} a16 16 0 0 1 0 32 H${-w / 2 + 16} a16 16 0 0 1 0 -32 Z`);
     });
   }

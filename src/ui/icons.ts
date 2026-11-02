@@ -1,16 +1,38 @@
 import { el } from './svg';
-import { line, slab, tiles } from './prims';
+import { groundShadow, line, plate, ring, slab, tiles } from './prims';
 import { v3 } from './project';
 
 /** The things you handle, drawn from simple shapes around the origin, for the menus and the scene alike. */
 
-/** A pair of scissors. */
+const TOOL_BODY = '#f2ebdd';
+const TOOL_BLUE = '#5b8ec4';
+const TOOL_STEEL = '#d9dde3';
+
+/** One half of a pair of scissors: one straight piece through the pivot at the origin, from the tip to its grip on the other side. */
+const BLADE = 'M-15.2 -28.1 L3 -3.9 L10.3 13.7 L5.9 16.1 L-4 -0.1 Z';
+
+/** A pair of scissors, for the menu. */
 export function drawScissors(g: SVGGElement): void {
   for (const s of [-1, 1]) {
-    el('line', { x1: s * 13, y1: 16, x2: -s * 7, y2: -26, class: 'scissor-blade' }, g);
-    el('circle', { cx: s * 16, cy: 24, r: 8, class: 'scissor-grip' }, g);
+    el('path', { d: BLADE, transform: `scale(${s} 1)`, class: 'scissor-blade' }, g);
+    el('circle', { cx: s * 12.9, cy: 23.7, r: 8, class: 'scissor-grip' }, g);
   }
   el('circle', { cx: 0, cy: 0, r: 2.5, class: 'scissor-pin' }, g);
+}
+
+/** How far each half of the scissors on the table stands open, in radians. */
+const OPEN = 0.36;
+
+/** The scissors on the table, open and lying flat, built as the devices are. `angle` is the way their tips point. */
+export function drawBoardScissors(g: SVGGElement, angle: number): void {
+  for (const s of [-1, 1]) {
+    const [cos, sin] = [Math.cos(angle + s * OPEN), Math.sin(angle + s * OPEN)];
+    const on = (a: number, b: number): { x: number; y: number } => ({ x: a * cos - b * sin, y: a * sin + b * cos });
+    const grip = on(-1, 0);
+    ring(g, { x: grip.x, y: grip.y, z: 0.02, h: 0.09, r: 0.34, hole: 0.17, color: TOOL_BLUE });
+    plate(g, [on(1.2, 0), on(0.12, 0.17), on(-0.72, 0.1), on(-0.72, -0.1), on(0.12, -0.17)], 0.02, 0.08, TOOL_STEEL);
+  }
+  slab(g, { x: -0.07, y: -0.07, z: 0.1, w: 0.14, d: 0.14, h: 0.02, r: 0.07, color: '#3b4049' });
 }
 
 /** Two bars, to pause. */
@@ -37,11 +59,19 @@ export function drawSun(g: SVGGElement): void {
   }
 }
 
-/** A magnifying glass. */
+/** A magnifying glass, for the menu. */
 export function drawSpyglass(g: SVGGElement): void {
-  el('line', { x1: 13, y1: 13, x2: 30, y2: 30, class: 'spy-handle' }, g);
+  el('line', { x1: 15, y1: 15, x2: 30, y2: 30, class: 'spy-handle-line' }, g);
+  el('line', { x1: 15, y1: 15, x2: 30, y2: 30, class: 'spy-handle' }, g);
   el('circle', { cx: 0, cy: 0, r: 19, class: 'spy-lens' }, g);
   el('path', { d: 'M-11 -6 A12 12 0 0 1 -4 -12', class: 'spy-shine' }, g);
+}
+
+/** The magnifying glass on the table, held flat over the cable and built as the devices are. See-through, for the cable under it. */
+export function drawBoardSpyglass(g: SVGGElement): void {
+  groundShadow(g, { x: -0.5, y: -0.5, w: 1.2, d: 1.2, r: 0.6 });
+  ring(g, { x: 0, y: 0, z: 0.42, h: 0.14, r: 0.62, hole: 0.47, color: TOOL_BODY, glass: 'board-lens' });
+  slab(g, { x: 0.6, y: -0.11, z: 0.42, w: 0.95, d: 0.22, h: 0.14, r: 0.1, color: TOOL_BODY });
 }
 
 /** A small satellite, the same boxes and panels as a device. */

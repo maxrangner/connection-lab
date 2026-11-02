@@ -644,6 +644,19 @@ body {
   fill: #ffffff;
 }
 
+.screen-call rect {
+  fill: #2f9e6a;
+}
+
+.screen-call .handset {
+  fill: #fffdf8;
+}
+
+.screen-call-name {
+  font-weight: 700;
+  fill: #fffdf8;
+}
+
 .screen-fail {
   font-size: 20px;
   font-weight: 800;
@@ -975,16 +988,22 @@ body {
 }
 
 /* The spyglass, and the popup with what it reads */
-.spy-handle {
+.spy-handle-line {
   stroke: #7d5a10;
-  stroke-width: 7;
+  stroke-width: 11;
+  stroke-linecap: round;
+}
+
+.spy-handle {
+  stroke: #d9a520;
+  stroke-width: 6;
   stroke-linecap: round;
 }
 
 .spy-lens {
-  fill: rgba(190, 220, 235, 0.45);
-  stroke: #7d5a10;
-  stroke-width: 5;
+  fill: #cfe6f1;
+  stroke: #3d7ea6;
+  stroke-width: 4;
 }
 
 .spy-shine {
@@ -1094,19 +1113,26 @@ body {
 
 /* Scissors, and a cut cable */
 .scissor-blade {
-  stroke: #8b8f98;
-  stroke-width: 5;
-  stroke-linecap: round;
+  fill: #dfe3e8;
+  stroke: #6b7078;
+  stroke-width: 3;
+  stroke-linejoin: round;
 }
 
 .scissor-grip {
   fill: none;
   stroke: #c2562f;
-  stroke-width: 4.5;
+  stroke-width: 6;
 }
 
 .scissor-pin {
   fill: #3d352c;
+}
+
+/* The glass of the spyglass on the table: the cable shows through it */
+.board-lens {
+  fill: #5b8ec4;
+  fill-opacity: 0.35;
 }
 
 .fray {
@@ -1171,11 +1197,11 @@ body {
 }
 
 .net-stage.tool-spy {
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Ccircle cx='13' cy='13' r='9' fill='none' stroke='%237d5a10' stroke-width='3'/%3E%3Cpath d='M20 20l8 8' stroke='%237d5a10' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E") 13 13, crosshair;
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Cpath d='M20 20l8 8' stroke='%231f2633' stroke-width='6' stroke-linecap='round'/%3E%3Cpath d='M20 20l8 8' stroke='%23f2ebdd' stroke-width='3' stroke-linecap='round'/%3E%3Ccircle cx='13' cy='13' r='10' fill='%23f2ebdd' stroke='%231f2633' stroke-width='1.6'/%3E%3Ccircle cx='13' cy='13' r='7.5' fill='%235b8ec4' fill-opacity='.6' stroke='%231f2633' stroke-width='1.6'/%3E%3C/svg%3E") 13 13, crosshair;
 }
 
 .net-stage.tool-cut {
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Cg fill='none' stroke-width='2.5'%3E%3Cpath d='M9 22 22 3M23 22 10 3' stroke='%233d352c'/%3E%3Ccircle cx='8' cy='25' r='4' stroke='%23c2562f'/%3E%3Ccircle cx='24' cy='25' r='4' stroke='%23c2562f'/%3E%3C/g%3E%3C/svg%3E") 16 8, crosshair;
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Cg fill='none' stroke-linecap='round'%3E%3Cpath d='M9 22 22 3M23 22 10 3' stroke='%231f2633' stroke-width='4.5'/%3E%3Cpath d='M9 22 22 3M23 22 10 3' stroke='%23f2ebdd' stroke-width='2'/%3E%3Ccircle cx='8' cy='25' r='4' stroke='%231f2633' stroke-width='4.5'/%3E%3Ccircle cx='24' cy='25' r='4' stroke='%231f2633' stroke-width='4.5'/%3E%3Ccircle cx='8' cy='25' r='4' stroke='%235b8ec4' stroke-width='2'/%3E%3Ccircle cx='24' cy='25' r='4' stroke='%235b8ec4' stroke-width='2'/%3E%3C/g%3E%3C/svg%3E") 16 8, crosshair;
 }
 
 .line-hover {

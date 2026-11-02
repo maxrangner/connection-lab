@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { fetchWebPage, runScenario, ulawEncode, type FaultPlan } from '../sim';
 import { toneOf } from './notes';
 import { buildStory, type Trip } from './story';
-import { buildTimeline, type Note } from './timeline';
+import { buildTimeline, callSpan, type Note } from './timeline';
 
 const sine = (hz: number, amp: number): Uint8Array => Uint8Array.from({ length: 160 }, (_, i) => ulawEncode(Math.round(amp * Math.sin((2 * Math.PI * hz * i) / 8000))));
 const run = (faults: Partial<FaultPlan> = {}) => {
@@ -26,6 +26,23 @@ describe('the tone of a voice packet', () => {
     expect(toneOf(sine(300, 12000))!.loud).toBeGreaterThan(toneOf(sine(300, 2000))!.loud);
     expect(toneOf(sine(300, 40))).toBeNull();
     expect(toneOf(new Uint8Array(160).fill(0xff))).toBeNull();
+  });
+});
+
+describe('who is on a call', () => {
+  it('each phone from when it first hears the other side, and the call ends for both at once', () => {
+    const { tl } = run();
+    const first = (d: string): number => Math.min(...tl.notes.filter((n) => n.device === d).map((n) => n.t));
+    const end = Math.max(...tl.notes.map((n) => n.t));
+    expect(callSpan(tl, 'friend')).toEqual({ from: first('friend'), to: end, heardBy: 'friend' });
+    expect(callSpan(tl, 'laptop')).toEqual({ from: first('laptop'), to: end, heardBy: 'caller' });
+  });
+
+  it('a phone that hears nothing is on no call', () => {
+    expect(callSpan(run().tl, 'phone')).toBeNull();
+    const cut = run({ cuts: [{ link: 'lan', from: 0 }] }).tl;
+    expect(callSpan(cut, 'friend')).toBeNull();
+    expect(callSpan(buildTimeline(buildStory(runScenario(fetchWebPage({}), { seed: 1, faults: { randomLoss: 0, manual: [] }, maxTime: 1000 }))), 'laptop')).toBeNull();
   });
 });
 
