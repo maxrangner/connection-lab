@@ -10,3 +10,4 @@ export { clientHelloSni, openRecords, sessionStream, TLS_ALERT, TLS_APPLICATION_
 export { hexBytes } from './bytes/bytes';
 export { RTP_SAMPLES_PER_PACKET } from './proto/rtp';
 export { ulawDecodeAll, ulawEncode } from './bytes/ulaw';
+export { VOICE_SAMPLE_RATE } from './scenarios/voiceClip';
